@@ -40,6 +40,24 @@ services:
       POSTGRES_DSN: postgresql+psycopg://${POSTGRES_USER:-picsou}:${POSTGRES_PASSWORD:-picsou-change-me}@postgres:5432/${POSTGRES_DB:-picsou}
       REDIS_URL: redis://redis:6379/0
       KILL_SWITCH_DEFAULT: ${KILL_SWITCH_DEFAULT:-false}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-development-only-change-me}
+      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+      ACCESS_TOKEN_TTL_MINUTES: ${ACCESS_TOKEN_TTL_MINUTES:-15}
+      REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-7}
+      MAX_LOGIN_ATTEMPTS: ${MAX_LOGIN_ATTEMPTS:-5}
+      LOGIN_LOCKOUT_MINUTES: ${LOGIN_LOCKOUT_MINUTES:-15}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://79.137.75.219}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Picsou IA}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+      SMTP_USE_SSL: ${SMTP_USE_SSL:-false}
+      SMTP_TIMEOUT_SECONDS: ${SMTP_TIMEOUT_SECONDS:-10}
     expose:
       - "8000"
 
@@ -66,6 +84,7 @@ services:
         condition: service_started
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

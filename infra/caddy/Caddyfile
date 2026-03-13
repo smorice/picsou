@@ -1,7 +1,11 @@
-:80 {
+{
+  default_sni 79.137.75.219
+}
+
+(picsou_app) {
   encode gzip zstd
 
-  @api path /api/* /health
+  @api path /api/* /auth/* /health
   handle @api {
     reverse_proxy api:8000
   }
@@ -14,6 +18,34 @@
     X-Frame-Options DENY
     X-Content-Type-Options nosniff
     Referrer-Policy strict-origin-when-cross-origin
-    Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; connect-src 'self' http: https:; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self' http: https:; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
   }
+}
+
+http://79.137.75.219 {
+  redir https://79.137.75.219{uri} permanent
+}
+
+https://79.137.75.219 {
+  tls internal {
+    key_type rsa2048
+  }
+
+  import picsou_app
+}
+
+http://www.nayonne.ovh {
+  redir https://www.nayonne.ovh{uri} permanent
+}
+
+https://www.nayonne.ovh {
+  import picsou_app
+}
+
+http://nayonne.ovh {
+  redir https://www.nayonne.ovh{uri} permanent
+}
+
+https://nayonne.ovh {
+  redir https://www.nayonne.ovh{uri} 308
 }

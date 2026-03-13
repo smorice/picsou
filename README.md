@@ -43,6 +43,12 @@ docker-compose.yml
 3. Lancer `docker compose up -d --build`.
 4. Ouvrir `http://localhost`.
 
+## Reset password par email
+
+- Si `SMTP_HOST` et `SMTP_FROM_EMAIL` sont renseignes, l API envoie un email de reinitialisation avec un lien direct vers l interface.
+- Si SMTP n est pas configure, l API conserve un fallback en renvoyant un code temporaire dans la reponse pour les environnements de test et d administration.
+- Variables utiles: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME`, `SMTP_STARTTLS`, `SMTP_USE_SSL`.
+
 ## Deploiement VPS
 
 1. Copier `.env.example` vers `.env`.

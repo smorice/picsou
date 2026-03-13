@@ -2,10 +2,57 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    full_name: Mapped[str] = mapped_column(String(255))
+    password_hash: Mapped[str] = mapped_column(Text)
+    role: Mapped[str] = mapped_column(String(32), default="user")
+    assigned_roles: Mapped[list[str]] = mapped_column(JSON, default=list)
+    personal_settings: Mapped[dict] = mapped_column(JSON, default=dict)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MfaDevice(Base):
+    __tablename__ = "mfa_devices"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    label: Mapped[str] = mapped_column(String(120), default="primary")
+    secret_encrypted: Mapped[str] = mapped_column(Text)
+    recovery_codes: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class BrokerConnection(Base):
+    __tablename__ = "broker_connections"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    provider_code: Mapped[str] = mapped_column(String(32), index=True)
+    provider_name: Mapped[str] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(32), default="pending_user_consent")
+    account_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    connection_mode: Mapped[str] = mapped_column(String(32), default="api")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class Portfolio(Base):
@@ -66,6 +113,7 @@ class AuditLog(Base):
     device_fingerprint: Mapped[str | None] = mapped_column(String(255), nullable=True)
     ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
     payload: Mapped[dict] = mapped_column(JSON)
+    severity: Mapped[str] = mapped_column(String(16), default="info")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -76,4 +124,15 @@ class KillSwitchEvent(Base):
     activated: Mapped[bool] = mapped_column(Boolean)
     reason: Mapped[str] = mapped_column(Text)
     actor_id: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class OAuthIdentity(Base):
+    __tablename__ = "oauth_identities"
+    __table_args__ = (UniqueConstraint("provider", "provider_sub", name="uq_oauth_provider_sub"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(32), index=True)
+    provider_sub: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
