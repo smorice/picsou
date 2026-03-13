@@ -51,12 +51,15 @@ from .schemas import (
     DashboardResponse,
     IntegrationConnectionResponse,
     IntegrationCredentialRequest,
+    IntegrationSyncRequest,
     IntegrationSyncResponse,
     KillSwitchRequest,
     LoginRequest,
     MfaSetupRequest,
     LogoutRequest,
     MfaSetupResponse,
+    MfaChallengeRequest,
+    MfaChallengeResponse,
     MfaVerifyRequest,
     MfaVerifyResponse,
     PasswordResetConfirmRequest,
@@ -75,6 +78,7 @@ from .schemas import (
     TradeProposalResponse,
     UserSettingsUpdateRequest,
     UserProfileResponse,
+    VirtualPortfolioResponse,
     AuditLogResponse,
 )
 
@@ -397,13 +401,14 @@ def list_bank_providers_for_user(db: Session, user_id: str) -> list[BankProvider
 
 def serialize_integration_connection(db: Session, connection: BrokerConnection) -> IntegrationConnectionResponse:
     positions_count = len(db.scalars(select(IntegrationPosition).where(IntegrationPosition.connection_id == connection.id)).all())
+    has_credentials = bool(connection.api_key_encrypted) if connection.provider_code != "coinbase" else bool(connection.api_key_encrypted and connection.api_secret_encrypted)
     return IntegrationConnectionResponse(
         connection_id=connection.id,
         provider_code=connection.provider_code,
         provider_name=connection.provider_name,
         status=connection.status,
         account_label=connection.account_label,
-        has_credentials=bool(connection.api_key_encrypted and connection.api_secret_encrypted),
+        has_credentials=has_credentials,
         supports_read=connection.supports_read,
         supports_trade=connection.supports_trade,
         last_sync_status=connection.last_sync_status,
@@ -414,7 +419,99 @@ def serialize_integration_connection(db: Session, connection: BrokerConnection) 
     )
 
 
-def build_dashboard_from_positions(portfolio: Portfolio, bank_connectors: list[BankProvider], connections: list[BrokerConnection], positions: list[IntegrationPosition]) -> DashboardResponse:
+def resolve_agent_name(provider_code: str) -> str:
+    mapping = {
+        "coinbase": "Agent Crypto Momentum",
+        "revolut": "Agent Allocation Multi-Actifs",
+        "boursobank": "Agent Actions Europe",
+        "trade_republic": "Agent ETP Rendement",
+        "virtual_alpha": "Robot Alpha Simulation",
+    }
+    return mapping.get(provider_code, "Agent Allocation")
+
+
+def build_virtual_portfolio(current_user: User) -> VirtualPortfolioResponse:
+    start_value = Decimal("100.00")
+    base_seed = sum(ord(char) for char in current_user.id) % 100
+    day = datetime.utcnow().timetuple().tm_yday
+    drift = Decimal((day % 37) - 18) / Decimal("100")
+    edge = Decimal((base_seed % 13) - 6) / Decimal("100")
+    growth = Decimal("1") + (drift + edge) / Decimal("10")
+    current_value = (start_value * growth).quantize(Decimal("0.01"))
+    pnl = (current_value - start_value).quantize(Decimal("0.01"))
+    roi = float((pnl / start_value) if start_value > 0 else Decimal("0"))
+    return VirtualPortfolioResponse(
+        portfolio_id=f"virtual-{current_user.id[:8]}",
+        label="Portefeuille Virtuel IA",
+        budget_initial=start_value,
+        current_value=current_value,
+        pnl=pnl,
+        roi=roi,
+        strategy_mix=[
+            {"class": "Crypto", "weight": 0.35},
+            {"class": "ETP", "weight": 0.25},
+            {"class": "Bourse", "weight": 0.25},
+            {"class": "Epargne", "weight": 0.15},
+        ],
+        latest_actions=[
+            {"asset": "BTC", "action": "buy", "amount": 8.0},
+            {"asset": "ETF World", "action": "buy", "amount": 11.5},
+            {"asset": "Livret", "action": "rebalance", "amount": 4.0},
+        ],
+        agent_name=resolve_agent_name("virtual_alpha"),
+    )
+
+
+def assert_sensitive_mfa_if_enabled(db: Session, user: User, mfa_code: str | None, purpose: str) -> None:
+    if not user.mfa_enabled:
+        return
+    device = primary_mfa_device(db, user.id)
+    if not device or not device.is_verified:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="MFA device unavailable")
+    if not mfa_code:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="MFA code required for sensitive operation")
+
+    verified = False
+    if device.method == "email":
+        verified = consume_email_mfa_code(redis_client, user.id, mfa_code, purpose)
+    else:
+        secret = decrypt_secret(device.secret_encrypted)
+        verified = verify_totp(secret, mfa_code) or consume_email_mfa_code(redis_client, user.id, mfa_code, purpose)
+    if not verified:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid MFA code")
+
+    device.last_used_at = datetime.utcnow()
+    db.add(device)
+    db.commit()
+
+
+def build_dashboard_from_positions(current_user: User, portfolio: Portfolio, bank_connectors: list[BankProvider], connections: list[BrokerConnection], positions: list[IntegrationPosition]) -> DashboardResponse:
+    virtual_portfolio = build_virtual_portfolio(current_user)
+    portfolio_cards = [
+        {
+            "portfolio_id": connection.id,
+            "provider_code": connection.provider_code,
+            "provider_name": connection.provider_name,
+            "label": connection.account_label or f"Portefeuille {connection.provider_name}",
+            "status": connection.status,
+            "agent_name": resolve_agent_name(connection.provider_code),
+            "last_sync_status": connection.last_sync_status,
+            "current_value": str(connection.last_snapshot_total_value) if connection.last_snapshot_total_value is not None else None,
+        }
+        for connection in connections if connection.status == "active"
+    ]
+    portfolio_cards.append(
+        {
+            "portfolio_id": virtual_portfolio.portfolio_id,
+            "provider_code": "virtual_alpha",
+            "provider_name": "Simulation IA",
+            "label": virtual_portfolio.label,
+            "status": "active",
+            "agent_name": virtual_portfolio.agent_name,
+            "last_sync_status": "simulated",
+            "current_value": str(virtual_portfolio.current_value),
+        }
+    )
     if not positions:
         return DashboardResponse(
             portfolio_id=portfolio.id,
@@ -451,10 +548,12 @@ def build_dashboard_from_positions(portfolio: Portfolio, bank_connectors: list[B
                 }
                 for connection in connections
             ],
+            portfolios=portfolio_cards,
+            virtual_portfolio=virtual_portfolio,
             next_steps=[
-                "Configurer puis synchroniser au moins une integration reelle.",
+                "Configurer puis activer au moins un portefeuille d etablissement.",
                 "Definir votre horizon et votre tolerance au risque.",
-                "Activer la MFA avant toute proposition d ordre.",
+                "Utiliser la MFA pour valider les transactions et activations sensibles.",
             ],
         )
 
@@ -487,7 +586,7 @@ def build_dashboard_from_positions(portfolio: Portfolio, bank_connectors: list[B
             {"label": "Valeur totale", "value": f"{total_value.quantize(Decimal('0.01'))} EUR", "trend": f"{len(positions)} positions"},
             {"label": "Liquidites", "value": f"{cash_balance.quantize(Decimal('0.01'))} EUR", "trend": "Synchronise"},
             {"label": "Sources", "value": str(len([connection for connection in connections if connection.status == 'active'])), "trend": "Actives"},
-            {"label": "Risque actuel", "value": "En calcul", "trend": "Base synchronisee"},
+            {"label": "Virtuel IA", "value": f"{virtual_portfolio.current_value} EUR", "trend": f"ROI {(virtual_portfolio.roi * 100):.1f}%"},
         ],
         sector_heatmap=sector_heatmap,
         allocation=allocation,
@@ -507,6 +606,8 @@ def build_dashboard_from_positions(portfolio: Portfolio, bank_connectors: list[B
             }
             for connection in connections
         ],
+        portfolios=portfolio_cards,
+        virtual_portfolio=virtual_portfolio,
         next_steps=[
             "Verifier la coherence entre objectif d epargne et allocation synchronisee.",
             "Lancer une recommandation multi-agents a partir des positions reelles.",
@@ -635,48 +736,8 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
     if user.locked_until and user.locked_until > datetime.utcnow():
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail="Account temporarily locked")
 
+    # MFA is no longer required at login; it is requested only for sensitive operations.
     mfa_verified = False
-    if user.mfa_enabled:
-        device = primary_mfa_device(db, user.id)
-        if not device or not device.is_verified:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="MFA device unavailable")
-
-        if device.method == "email":
-            if payload.mfa_code and consume_email_mfa_code(redis_client, user.id, payload.mfa_code, "login"):
-                device.last_used_at = datetime.utcnow()
-                db.add(device)
-                db.commit()
-                mfa_verified = True
-            else:
-                remaining_codes = consume_recovery_code(device.recovery_codes, payload.recovery_code)
-                if remaining_codes is None:
-                    if payload.mfa_code or payload.recovery_code:
-                        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid MFA code")
-                    delivery_hint, preview_code = issue_email_mfa_code(user, "login")
-                    return TokenResponse(mfa_required=True, user=to_user_profile(user), mfa_method="email", mfa_delivery_hint=delivery_hint, mfa_preview_code=preview_code)
-                device.recovery_codes = remaining_codes
-                device.last_used_at = datetime.utcnow()
-                db.add(device)
-                db.commit()
-                mfa_verified = True
-        else:
-            secret = decrypt_secret(device.secret_encrypted)
-            if payload.mfa_code and verify_totp(secret, payload.mfa_code):
-                device.last_used_at = datetime.utcnow()
-                db.add(device)
-                db.commit()
-                mfa_verified = True
-            else:
-                remaining_codes = consume_recovery_code(device.recovery_codes, payload.recovery_code)
-                if remaining_codes is None:
-                    if payload.mfa_code or payload.recovery_code:
-                        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid MFA code")
-                    return TokenResponse(mfa_required=True, user=to_user_profile(user), mfa_method="totp", mfa_delivery_hint="Code requis depuis votre appareil ou vos codes de recuperation.")
-                device.recovery_codes = remaining_codes
-                device.last_used_at = datetime.utcnow()
-                db.add(device)
-                db.commit()
-                mfa_verified = True
 
     user.failed_login_attempts = 0
     user.locked_until = None
@@ -687,7 +748,7 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
 
     access_token, expires_in = create_access_token(user.id, user.email, user.role, mfa_verified)
     refresh_token = create_refresh_token(redis_client, user.id, user.email, user.role, mfa_verified)
-    write_audit_log(db, user.id, "auth.login_succeeded", {"mfa_verified": mfa_verified, "client_context": client_context}, ip_address=request_ip)
+    write_audit_log(db, user.id, "auth.login_succeeded", {"mfa_verified": False, "client_context": client_context}, ip_address=request_ip)
     return TokenResponse(
         access_token=access_token,
         refresh_token=refresh_token,
@@ -1039,6 +1100,23 @@ def verify_mfa_setup(payload: MfaVerifyRequest, current_user: User = Depends(get
     return MfaVerifyResponse(enabled=True, recovery_codes=recovery_codes)
 
 
+@app.post("/auth/mfa/challenge", response_model=MfaChallengeResponse)
+def mfa_challenge(payload: MfaChallengeRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> MfaChallengeResponse:
+    if not current_user.mfa_enabled:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MFA is not enabled for this account")
+
+    device = primary_mfa_device(db, current_user.id)
+    if not device or not device.is_verified:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="MFA device not found")
+
+    delivery_hint, preview_code = issue_email_mfa_code(current_user, payload.purpose)
+    return MfaChallengeResponse(
+        method="email" if device.method == "email" else "totp",
+        delivery_hint=delivery_hint if device.method == "email" else f"Code TOTP accepte. {delivery_hint}",
+        preview_code=preview_code,
+    )
+
+
 @app.get("/api/v1/admin/users", response_model=list[UserProfileResponse])
 def admin_list_users(_: User = Depends(require_admin_user), db: Session = Depends(get_db)) -> list[UserProfileResponse]:
     users = db.scalars(select(User).order_by(User.created_at.desc())).all()
@@ -1132,12 +1210,12 @@ def dashboard(portfolio_id: str, current_user: User = Depends(get_current_user),
     connections = db.scalars(select(BrokerConnection).where(BrokerConnection.user_id == current_user.id)).all()
     active_connections = [connection for connection in connections if connection.status == "active"]
     if not active_connections:
-        return build_dashboard_from_positions(portfolio, bank_connectors, connections, [])
+        return build_dashboard_from_positions(current_user, portfolio, bank_connectors, connections, [])
 
     positions = db.scalars(
         select(IntegrationPosition).where(IntegrationPosition.connection_id.in_([connection.id for connection in active_connections]))
     ).all()
-    return build_dashboard_from_positions(portfolio, bank_connectors, connections, positions)
+    return build_dashboard_from_positions(current_user, portfolio, bank_connectors, connections, positions)
 
 
 @app.get("/api/v1/broker-connections/providers", response_model=list[BankProvider])
@@ -1196,6 +1274,8 @@ def toggle_broker_connection(payload: BankIntegrationToggleRequest, current_user
     if provider is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not supported")
 
+    assert_sensitive_mfa_if_enabled(db, current_user, payload.mfa_code, "sensitive")
+
     connection = db.scalar(
         select(BrokerConnection).where(
             BrokerConnection.user_id == current_user.id,
@@ -1236,10 +1316,12 @@ def toggle_broker_connection(payload: BankIntegrationToggleRequest, current_user
 
 
 @app.put("/api/v1/integrations/credentials", response_model=IntegrationConnectionResponse)
-def upsert_integration_credentials(payload: IntegrationCredentialRequest, current_user: User = Depends(require_mfa_for_sensitive_operation), db: Session = Depends(get_db)) -> IntegrationConnectionResponse:
+def upsert_integration_credentials(payload: IntegrationCredentialRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> IntegrationConnectionResponse:
     provider = next((item for item in SUPPORTED_BANK_PROVIDERS if item["code"] == payload.provider_code), None)
     if provider is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not supported")
+
+    assert_sensitive_mfa_if_enabled(db, current_user, payload.mfa_code, "sensitive")
 
     connection = db.scalar(
         select(BrokerConnection).where(
@@ -1259,6 +1341,10 @@ def upsert_integration_credentials(payload: IntegrationCredentialRequest, curren
 
     if payload.account_label is not None:
         connection.account_label = payload.account_label.strip() or None
+    if payload.api_token:
+        connection.api_key_encrypted = encrypt_secret(payload.api_token.strip())
+        if connection.provider_code != "coinbase":
+            connection.api_secret_encrypted = None
     if payload.api_key:
         connection.api_key_encrypted = encrypt_secret(payload.api_key.strip())
     if payload.api_secret:
@@ -1274,7 +1360,9 @@ def upsert_integration_credentials(payload: IntegrationCredentialRequest, curren
 
 
 @app.post("/api/v1/integrations/{provider_code}/sync", response_model=IntegrationSyncResponse)
-def sync_integration(provider_code: str, current_user: User = Depends(require_mfa_for_sensitive_operation), db: Session = Depends(get_db)) -> IntegrationSyncResponse:
+def sync_integration(provider_code: str, payload: IntegrationSyncRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> IntegrationSyncResponse:
+    assert_sensitive_mfa_if_enabled(db, current_user, payload.mfa_code, "sensitive")
+
     connection = db.scalar(
         select(BrokerConnection).where(
             BrokerConnection.user_id == current_user.id,
@@ -1347,7 +1435,7 @@ def recommendations(payload: RecommendationRequest, current_user: User = Depends
 
 
 @app.post("/api/v1/orders/propose", response_model=TradeProposalResponse)
-def propose_order(payload: TradeProposalRequest, current_user: User = Depends(require_mfa_for_sensitive_operation), db: Session = Depends(get_db)) -> TradeProposalResponse:
+def propose_order(payload: TradeProposalRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> TradeProposalResponse:
     if is_kill_switch_active(db):
         raise HTTPException(status_code=423, detail="Kill switch active")
 
@@ -1368,7 +1456,9 @@ def propose_order(payload: TradeProposalRequest, current_user: User = Depends(re
 
 
 @app.post("/api/v1/orders/approve")
-def approve_order(payload: TradeApprovalRequest, current_user: User = Depends(require_mfa_for_sensitive_operation), db: Session = Depends(get_db)) -> dict:
+def approve_order(payload: TradeApprovalRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> dict:
+    assert_sensitive_mfa_if_enabled(db, current_user, payload.mfa_code, "sensitive")
+
     proposal = db.get(TradeProposal, payload.proposal_id)
     if not proposal:
         raise HTTPException(status_code=404, detail="Proposal not found")

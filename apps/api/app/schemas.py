@@ -93,6 +93,16 @@ class MfaVerifyResponse(BaseModel):
     recovery_codes: list[str]
 
 
+class MfaChallengeRequest(BaseModel):
+    purpose: Literal["sensitive"] = "sensitive"
+
+
+class MfaChallengeResponse(BaseModel):
+    method: Literal["email", "totp"]
+    delivery_hint: str
+    preview_code: str | None = None
+
+
 class BankProvider(BaseModel):
     code: str
     name: str
@@ -119,6 +129,7 @@ class BankIntegrationToggleRequest(BaseModel):
     provider_code: str
     enabled: bool
     account_label: str | None = Field(default=None, max_length=255)
+    mfa_code: str | None = Field(default=None, min_length=6, max_length=8)
 
 
 class BankIntegrationToggleResponse(BaseModel):
@@ -137,9 +148,11 @@ class UserSettingsUpdateRequest(BaseModel):
 class IntegrationCredentialRequest(BaseModel):
     provider_code: str
     account_label: str | None = Field(default=None, max_length=255)
+    api_token: str | None = None
     api_key: str | None = None
     api_secret: str | None = None
     external_portfolio_id: str | None = Field(default=None, max_length=128)
+    mfa_code: str | None = Field(default=None, min_length=6, max_length=8)
 
 
 class IntegrationConnectionResponse(BaseModel):
@@ -165,6 +178,22 @@ class IntegrationSyncResponse(BaseModel):
     total_value: Decimal | None = None
     synced_at: str | None = None
     message: str
+
+
+class IntegrationSyncRequest(BaseModel):
+    mfa_code: str | None = Field(default=None, min_length=6, max_length=8)
+
+
+class VirtualPortfolioResponse(BaseModel):
+    portfolio_id: str
+    label: str
+    budget_initial: Decimal
+    current_value: Decimal
+    pnl: Decimal
+    roi: float
+    strategy_mix: list[dict]
+    latest_actions: list[dict]
+    agent_name: str
 
 
 class AdminUserUpdateRequest(BaseModel):
@@ -203,6 +232,8 @@ class DashboardResponse(BaseModel):
     suggestions: list[dict]
     bank_connectors: list[BankProvider]
     connected_accounts: list[dict]
+    portfolios: list[dict]
+    virtual_portfolio: VirtualPortfolioResponse
     next_steps: list[str]
 
 
@@ -246,6 +277,7 @@ class TradeProposalResponse(BaseModel):
 class TradeApprovalRequest(BaseModel):
     proposal_id: str
     approved: bool
+    mfa_code: str | None = Field(default=None, min_length=6, max_length=8)
     actor_id: str = "demo-user"
     device_fingerprint: str | None = None
     ip_address: str | None = None

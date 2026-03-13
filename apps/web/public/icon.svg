@@ -1,27 +1,34 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Picsou IA lion icon">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Picsou IA lion crest icon">
+  <rect width="256" height="256" rx="52" fill="#ffffff"/>
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#fff4cf"/>
-      <stop offset="55%" stop-color="#f6c45c"/>
-      <stop offset="100%" stop-color="#b8651f"/>
-    </linearGradient>
-    <linearGradient id="mane" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#c46b1d"/>
-      <stop offset="100%" stop-color="#8b4513"/>
-    </linearGradient>
+    <radialGradient id="lionMane" cx="50%" cy="38%" r="56%">
+      <stop offset="0%" stop-color="#252525"/>
+      <stop offset="100%" stop-color="#6e6e6e"/>
+    </radialGradient>
   </defs>
-  <rect width="256" height="256" rx="54" fill="url(#bg)"/>
-  <rect x="24" y="24" width="208" height="208" rx="40" fill="rgba(255,255,255,0.16)" stroke="rgba(133,74,17,0.16)"/>
-  <path d="M73 69 45 49l7-27 37 23" fill="url(#mane)"/>
-  <path d="M183 69l28-20-7-27-37 23" fill="url(#mane)"/>
-  <path d="M56 112c0-43 32-72 72-72s72 29 72 72v34c0 42-32 70-72 70s-72-28-72-70v-34Z" fill="url(#mane)" opacity=".9"/>
-  <path d="M75 119c0-32 24-57 53-57s53 25 53 57v22c0 29-24 49-53 49s-53-20-53-49v-22Z" fill="#f7cd6d"/>
-  <path d="M89 111c9-12 22-18 39-18 17 0 30 6 39 18" stroke="#ffd98f" stroke-width="12" stroke-linecap="round"/>
-  <circle cx="105" cy="123" r="11" fill="#2c2114"/>
-  <circle cx="151" cy="123" r="11" fill="#2c2114"/>
-  <circle cx="101" cy="119" r="3" fill="#fff7dc"/>
-  <circle cx="147" cy="119" r="3" fill="#fff7dc"/>
-  <path d="M117 147c8 8 14 8 22 0" stroke="#2c2114" stroke-width="8" stroke-linecap="round"/>
-  <path d="M100 171c10 11 46 11 56 0" stroke="#9a581f" stroke-width="10" stroke-linecap="round"/>
-  <path d="M83 185c13 16 30 25 45 25s32-9 45-25" stroke="#b46d24" stroke-width="10" stroke-linecap="round"/>
+  <!-- Outer dark mane silhouette (scaled from 100→236, offset 10,10) -->
+  <path d="M128 20 C166 20 205 33 225 62 C245 91 245 137 233 172 C222 208 197 236 163 253 C154 258 141 261 128 261 C115 261 102 258 93 253 C59 236 34 208 23 172 C11 137 11 91 31 62 C51 33 90 20 128 20Z" fill="url(#lionMane)"/>
+  <!-- Ear tufts top-left and top-right -->
+  <path d="M82 31 C74 13 92 3 97 21Z" fill="#1a1a1a"/>
+  <path d="M174 31 C182 13 164 3 159 21Z" fill="#1a1a1a"/>
+  <!-- White face interior -->
+  <path d="M128 54 C161 54 189 72 202 103 C215 136 213 169 199 200 C187 223 166 238 146 245 C140 248 134 249 128 249 C122 249 116 248 110 245 C90 238 69 223 57 200 C43 169 41 136 54 103 C67 72 95 54 128 54Z" fill="white"/>
+  <!-- Forehead arc shadow from mane frame -->
+  <path d="M92 67 C102 54 154 54 164 67" stroke="#888" stroke-width="6.5" fill="none" stroke-linecap="round"/>
+  <!-- Brow ridges -->
+  <path d="M82 103 C92 87 108 85 113 95" stroke="#444" stroke-width="5" fill="none" stroke-linecap="round"/>
+  <path d="M174 103 C164 87 148 85 143 95" stroke="#444" stroke-width="5" fill="none" stroke-linecap="round"/>
+  <!-- Eyes -->
+  <ellipse cx="102" cy="118" rx="18" ry="15" fill="#1a1a1a"/>
+  <ellipse cx="154" cy="118" rx="18" ry="15" fill="#1a1a1a"/>
+  <!-- Nose -->
+  <path d="M110 154 C115 172 141 172 146 154 L128 146Z" fill="#1c1c1c"/>
+  <!-- White cheek / muzzle pad -->
+  <ellipse cx="128" cy="197" rx="46" ry="33" fill="white"/>
+  <!-- Wide open mouth – roaring -->
+  <path d="M87 179 C92 226 164 226 169 179 C164 221 92 221 87 179Z" fill="#4a4a4a"/>
+  <!-- Upper teeth band -->
+  <path d="M92 179 C100 169 156 169 164 179 L164 190 C156 179 100 179 92 190Z" fill="white"/>
+  <!-- Lower chin arc -->
+  <path d="M92 215 C103 239 153 239 164 215" stroke="#555" stroke-width="5" fill="none" stroke-linecap="round"/>
 </svg>

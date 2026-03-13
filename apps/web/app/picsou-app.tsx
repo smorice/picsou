@@ -598,6 +598,12 @@ export default function PicsouApp() {
     void loadAdminData(accessToken);
   }, [appView, accessToken, user]);
 
+  useEffect(() => {
+    if (user) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, [user?.id]);
+
   async function refreshSession(token: string) {
     const response = await fetch(apiUrl('/auth/refresh'), {
       method: 'POST',
@@ -1154,15 +1160,38 @@ export default function PicsouApp() {
       <header className="heroTopbar">
         <div className="brandCluster">
           <div className="brandBadge" aria-hidden="true">
-            <svg width="30" height="30" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M14 26c0-10 8-18 18-18s18 8 18 18v12c0 6-4 10-10 10H24c-6 0-10-4-10-10V26Z" fill="#F6C453"/>
-              <path d="M17 23 10 17l2-7 9 5M47 23l7-6-2-7-9 5" fill="#D89B2B"/>
-              <path d="M20 23c-4-2-7-6-7-11 0-1 0-2 1-3 4 2 8 5 11 9M44 23c4-2 7-6 7-11 0-1 0-2-1-3-4 2-8 5-11 9" fill="#E8AA34"/>
-              <circle cx="25" cy="29" r="3" fill="#2D2216"/>
-              <circle cx="39" cy="29" r="3" fill="#2D2216"/>
-              <path d="M29 36c2 2 4 2 6 0" stroke="#2D2216" strokeWidth="3" strokeLinecap="round"/>
-              <path d="M24 40c2 4 14 4 16 0" stroke="#9B5C1F" strokeWidth="3" strokeLinecap="round"/>
-              <path d="M18 47c4 6 10 9 14 9s10-3 14-9" stroke="#B87424" strokeWidth="4" strokeLinecap="round"/>
+            <svg width="30" height="30" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <radialGradient id="lionMane" cx="50%" cy="38%" r="56%">
+                  <stop offset="0%" stopColor="#252525"/>
+                  <stop offset="100%" stopColor="#6e6e6e"/>
+                </radialGradient>
+              </defs>
+              {/* Outer dark mane silhouette */}
+              <path d="M50 4 C65 4 80 10 88 22 C96 35 96 53 91 67 C87 82 77 93 64 99 C60 101 55 102 50 102 C45 102 40 101 36 99 C23 93 13 82 9 67 C4 53 4 35 12 22 C20 10 35 4 50 4Z" fill="url(#lionMane)"/>
+              {/* Ear tufts */}
+              <path d="M32 12 C29 5 36 1 38 8Z" fill="#1a1a1a"/>
+              <path d="M68 12 C71 5 64 1 62 8Z" fill="#1a1a1a"/>
+              {/* White face interior */}
+              <path d="M50 21 C63 21 74 28 79 40 C84 53 83 66 78 78 C73 87 65 93 57 96 C54 97 52 97 50 97 C48 97 46 97 43 96 C35 93 27 87 22 78 C17 66 16 53 21 40 C26 28 37 21 50 21Z" fill="white"/>
+              {/* Forehead shadow from mane */}
+              <path d="M36 26 C40 21 60 21 64 26" stroke="#888" strokeWidth="2.5" fill="none" strokeLinecap="round"/>
+              {/* Brow ridges */}
+              <path d="M32 40 C36 34 42 33 44 37" stroke="#444" strokeWidth="2" fill="none" strokeLinecap="round"/>
+              <path d="M68 40 C64 34 58 33 56 37" stroke="#444" strokeWidth="2" fill="none" strokeLinecap="round"/>
+              {/* Eyes */}
+              <ellipse cx="40" cy="46" rx="7" ry="6" fill="#1a1a1a"/>
+              <ellipse cx="60" cy="46" rx="7" ry="6" fill="#1a1a1a"/>
+              {/* Nose */}
+              <path d="M43 60 C45 67 55 67 57 60 L50 57Z" fill="#1c1c1c"/>
+              {/* White cheek/muzzle pad */}
+              <ellipse cx="50" cy="77" rx="18" ry="13" fill="white"/>
+              {/* Wide open mouth – distinctive roaring feature */}
+              <path d="M34 70 C36 88 64 88 66 70 C64 86 36 86 34 70Z" fill="#4a4a4a"/>
+              {/* Upper teeth */}
+              <path d="M36 70 C39 66 61 66 64 70 L64 74 C61 70 39 70 36 74Z" fill="white"/>
+              {/* Lower chin arc */}
+              <path d="M36 84 C40 93 60 93 64 84" stroke="#555" strokeWidth="2" fill="none" strokeLinecap="round"/>
             </svg>
           </div>
           <div>
@@ -1372,14 +1401,14 @@ export default function PicsouApp() {
       ) : (
         <section className="workspaceShell">
           <nav className="workspaceNav">
-            <button className={appView === 'dashboard' ? 'navButton active' : 'navButton'} onClick={() => setAppView('dashboard')} type="button">
+            <button className={appView === 'dashboard' ? 'navButton active' : 'navButton'} onClick={() => { setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
               Tableau de bord
             </button>
-            <button className={appView === 'settings' ? 'navButton active' : 'navButton'} onClick={() => setAppView('settings')} type="button">
+            <button className={appView === 'settings' ? 'navButton active' : 'navButton'} onClick={() => { setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
               Mon espace
             </button>
             {canAccessAdmin ? (
-              <button className={appView === 'admin' ? 'navButton active' : 'navButton'} onClick={() => setAppView('admin')} type="button">
+              <button className={appView === 'admin' ? 'navButton active' : 'navButton'} onClick={() => { setAppView('admin'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
                 Admin
               </button>
             ) : null}
