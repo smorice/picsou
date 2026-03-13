@@ -124,6 +124,25 @@ const ACCESS_TOKEN_KEY = 'picsou_access_token';
 const REFRESH_TOKEN_KEY = 'picsou_refresh_token';
 const SESSION_LAST_ACTIVITY_AT_KEY = 'picsou_session_last_activity_at';
 const SESSION_TIMEOUT_MS = 2 * 60 * 1000;
+const OTHER_COUNTRY_VALUE = '__OTHER__';
+const COUNTRY_OPTIONS = [
+  { code: 'FR', label: 'France' },
+  { code: 'BE', label: 'Belgique' },
+  { code: 'CH', label: 'Suisse' },
+  { code: 'LU', label: 'Luxembourg' },
+  { code: 'CA', label: 'Canada' },
+  { code: 'US', label: 'Etats-Unis' },
+  { code: 'GB', label: 'Royaume-Uni' },
+  { code: 'DE', label: 'Allemagne' },
+  { code: 'ES', label: 'Espagne' },
+  { code: 'IT', label: 'Italie' },
+  { code: 'NL', label: 'Pays-Bas' },
+  { code: 'PT', label: 'Portugal' },
+  { code: 'IE', label: 'Irlande' },
+  { code: 'MA', label: 'Maroc' },
+  { code: 'SN', label: 'Senegal' },
+  { code: 'CI', label: 'Cote d Ivoire' },
+];
 
 function apiUrl(path: string) {
   if (typeof window === 'undefined') {
@@ -254,6 +273,10 @@ function resolveClientContext(): ClientContext {
     time_zone: timeZone,
     country: inferCountryFromLocale(locale),
   };
+}
+
+function isKnownCountryLabel(value: string) {
+  return COUNTRY_OPTIONS.some((option) => option.label === value);
 }
 
 function statusBadgeClass(status: string) {
@@ -796,6 +819,44 @@ export default function PicsouApp() {
     }
   }
 
+  async function resendEmailMfaCode() {
+    if (!loginForm.email || !loginForm.password) {
+      setError('Renseignez d abord email et mot de passe pour renvoyer le code MFA.');
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const response = await fetch(apiUrl('/auth/login'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: loginForm.email,
+          password: loginForm.password,
+          mfa_code: null,
+          recovery_code: null,
+          client_context: clientContext,
+        }),
+      });
+      const payload = await readJsonResponse<TokenResponse>(response);
+      if (!response.ok) {
+        throw new Error(extractErrorMessage(payload, 'Renvoi du code MFA impossible'));
+      }
+      if (!payload?.mfa_required || payload.mfa_method !== 'email') {
+        throw new Error('Le compte ne requiert pas de code email MFA.');
+      }
+      setMfaRequired(true);
+      setLoginMfaMethod('email');
+      setMfaDeliveryHint(payload.mfa_delivery_hint ?? 'Un nouveau code MFA email vient d etre emis.');
+      setMfaPreviewCode(payload.mfa_preview_code ?? null);
+      setError('Nouveau code MFA email genere.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Renvoi du code MFA impossible');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function handlePasswordResetRequest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitting(true);
@@ -1208,6 +1269,11 @@ export default function PicsouApp() {
                     ) : null}
                     {mfaDeliveryHint ? <p className="helperText">{mfaDeliveryHint}</p> : null}
                     {mfaPreviewCode ? <p className="helperText">Code de previsualisation: <strong>{mfaPreviewCode}</strong></p> : null}
+                    {loginMfaMethod === 'email' ? (
+                      <button className="textLinkButton" onClick={() => void resendEmailMfaCode()} type="button">
+                        {submitting ? 'Renvoi...' : 'Renvoyer un code MFA email'}
+                      </button>
+                    ) : null}
                   </>
                 ) : null}
                 <button className="primaryButton" disabled={submitting} type="submit">
@@ -1503,8 +1569,29 @@ export default function PicsouApp() {
                   </label>
                   <label>
                     Pays de reference
-                    <input value={settingsForm.country} onChange={(event) => setSettingsForm((state) => ({ ...state, country: event.target.value }))} type="text" placeholder={clientContext.country || 'France'} />
+                    <select
+                      value={isKnownCountryLabel(settingsForm.country) ? settingsForm.country : OTHER_COUNTRY_VALUE}
+                      onChange={(event) => {
+                        const selectedValue = event.target.value;
+                        if (selectedValue === OTHER_COUNTRY_VALUE) {
+                          setSettingsForm((state) => ({ ...state, country: '' }));
+                          return;
+                        }
+                        setSettingsForm((state) => ({ ...state, country: selectedValue }));
+                      }}
+                    >
+                      {COUNTRY_OPTIONS.map((option) => (
+                        <option key={option.code} value={option.label}>{option.label}</option>
+                      ))}
+                      <option value={OTHER_COUNTRY_VALUE}>Autre pays (saisie manuelle)</option>
+                    </select>
                   </label>
+                  {!isKnownCountryLabel(settingsForm.country) ? (
+                    <label>
+                      Autre pays
+                      <input value={settingsForm.country} onChange={(event) => setSettingsForm((state) => ({ ...state, country: event.target.value }))} type="text" placeholder={clientContext.country || 'France'} />
+                    </label>
+                  ) : null}
                   <p className="helperText">Prefill navigateur: {clientContext.country || clientContext.locale} · {clientContext.time_zone}</p>
                   <button className="secondaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
                     {submitting ? 'Enregistrement...' : 'Sauvegarder mes coordonnees'}
