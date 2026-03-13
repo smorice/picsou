@@ -1,20 +1,27 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Picsou IA performance icon">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Picsou IA lion icon">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#173542"/>
-      <stop offset="100%" stop-color="#214d45"/>
+      <stop offset="0%" stop-color="#fff4cf"/>
+      <stop offset="55%" stop-color="#f6c45c"/>
+      <stop offset="100%" stop-color="#b8651f"/>
     </linearGradient>
-    <linearGradient id="rise" x1="0" y1="1" x2="1" y2="0">
-      <stop offset="0%" stop-color="#d6ac54"/>
-      <stop offset="100%" stop-color="#f1d388"/>
+    <linearGradient id="mane" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#c46b1d"/>
+      <stop offset="100%" stop-color="#8b4513"/>
     </linearGradient>
   </defs>
   <rect width="256" height="256" rx="54" fill="url(#bg)"/>
-  <rect x="30" y="30" width="196" height="196" rx="38" fill="rgba(255,255,255,0.06)" stroke="rgba(255,255,255,0.12)"/>
-  <path d="M63 176h130" stroke="rgba(255,255,255,0.20)" stroke-width="10" stroke-linecap="round"/>
-  <path d="M78 162 110 131 136 144 182 96" fill="none" stroke="url(#rise)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M167 96h27v27" fill="none" stroke="url(#rise)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="92" cy="110" r="24" fill="#f3f7f8"/>
-  <path d="M82 119c4 4 17 4 21-1 5-5 1-11-6-13l-7-2c-6-2-9-7-6-12 3-4 11-6 18-2" fill="none" stroke="#214d45" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M92 92v35" stroke="#214d45" stroke-width="7" stroke-linecap="round"/>
+  <rect x="24" y="24" width="208" height="208" rx="40" fill="rgba(255,255,255,0.16)" stroke="rgba(133,74,17,0.16)"/>
+  <path d="M73 69 45 49l7-27 37 23" fill="url(#mane)"/>
+  <path d="M183 69l28-20-7-27-37 23" fill="url(#mane)"/>
+  <path d="M56 112c0-43 32-72 72-72s72 29 72 72v34c0 42-32 70-72 70s-72-28-72-70v-34Z" fill="url(#mane)" opacity=".9"/>
+  <path d="M75 119c0-32 24-57 53-57s53 25 53 57v22c0 29-24 49-53 49s-53-20-53-49v-22Z" fill="#f7cd6d"/>
+  <path d="M89 111c9-12 22-18 39-18 17 0 30 6 39 18" stroke="#ffd98f" stroke-width="12" stroke-linecap="round"/>
+  <circle cx="105" cy="123" r="11" fill="#2c2114"/>
+  <circle cx="151" cy="123" r="11" fill="#2c2114"/>
+  <circle cx="101" cy="119" r="3" fill="#fff7dc"/>
+  <circle cx="147" cy="119" r="3" fill="#fff7dc"/>
+  <path d="M117 147c8 8 14 8 22 0" stroke="#2c2114" stroke-width="8" stroke-linecap="round"/>
+  <path d="M100 171c10 11 46 11 56 0" stroke="#9a581f" stroke-width="10" stroke-linecap="round"/>
+  <path d="M83 185c13 16 30 25 45 25s32-9 45-25" stroke="#b46d24" stroke-width="10" stroke-linecap="round"/>
 </svg>

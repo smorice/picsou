@@ -66,3 +66,51 @@ def send_password_reset_email(recipient_email: str, reset_token: str) -> bool:
         return False
 
     return True
+
+
+def send_mfa_email_code(recipient_email: str, code: str, purpose: str) -> bool:
+    if not is_email_delivery_configured():
+        return False
+
+    ttl_minutes = settings.mfa_email_code_ttl_minutes
+    message = EmailMessage()
+    message["Subject"] = "Picsou IA - Code de verification"
+    message["From"] = (
+        f"{settings.smtp_from_name} <{settings.smtp_from_email}>"
+        if settings.smtp_from_name
+        else settings.smtp_from_email
+    )
+    message["To"] = recipient_email
+    context_label = "activation MFA" if purpose == "setup" else "connexion MFA"
+    message.set_content(
+        "Bonjour,\n\n"
+        f"Voici votre code Picsou IA pour {context_label}. Il reste valable {ttl_minutes} minutes.\n\n"
+        f"Code: {code}\n\n"
+        "Si vous n etes pas a l origine de cette operation, ignorez cet email.\n"
+    )
+
+    try:
+        if settings.smtp_use_ssl:
+            smtp_client = smtplib.SMTP_SSL(
+                settings.smtp_host,
+                settings.smtp_port,
+                timeout=settings.smtp_timeout_seconds,
+            )
+        else:
+            smtp_client = smtplib.SMTP(
+                settings.smtp_host,
+                settings.smtp_port,
+                timeout=settings.smtp_timeout_seconds,
+            )
+
+        with smtp_client as server:
+            if settings.smtp_starttls and not settings.smtp_use_ssl:
+                server.starttls()
+            if settings.smtp_username:
+                server.login(settings.smtp_username, settings.smtp_password)
+            server.send_message(message)
+    except Exception:
+        logger.exception("Unable to send MFA email code")
+        return False
+
+    return True

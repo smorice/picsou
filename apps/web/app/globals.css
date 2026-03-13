@@ -102,13 +102,14 @@ h1,h2,h3,p { margin:0; }
 .brandBadge {
   width:40px; height:40px; border-radius:14px; flex-shrink:0;
   display:grid; place-items:center;
-  background:linear-gradient(135deg,var(--brand) 0%,#8b5cf6 100%);
-  box-shadow:0 4px 14px rgba(91,94,245,.35);
+  background:linear-gradient(135deg,#ffe29b 0%,#f4b551 52%,#c9771f 100%);
+  box-shadow:0 6px 18px rgba(176,104,24,.28);
 }
 .brandBadge span {
   font-family:var(--font-mono),monospace;
   font-size:1.1rem; font-weight:700; color:#fff;
 }
+.brandBadge svg { display:block; width:30px; height:30px; }
 .brandCluster strong {
   display:block; font-size:.82rem; font-weight:800;
   letter-spacing:.1em; text-transform:uppercase; color:var(--text);
@@ -235,6 +236,29 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
 .authForm input::placeholder { color:var(--subtle); }
 .authFormStack { display:grid; gap:20px; }
 .resetConfirmCard { border-top:1px solid var(--border); padding-top:18px; }
+.inlineServicePanel {
+  display:grid;
+  gap:14px;
+  padding:16px;
+  border-radius:16px;
+  border:1px solid var(--border);
+  background:var(--surface-2);
+}
+.textLinkButton {
+  display:inline-flex;
+  align-items:center;
+  justify-content:flex-start;
+  width:max-content;
+  padding:0;
+  border:none;
+  background:none;
+  color:var(--brand);
+  font-size:.82rem;
+  font-weight:700;
+  text-decoration:none;
+  cursor:pointer;
+}
+.textLinkButton:hover { text-decoration:underline; }
 
 /* ============================================================ OAUTH */
 .oauthDivider {
@@ -454,15 +478,35 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
   padding:14px 16px; border-radius:14px; border:1px solid var(--border);
   background:var(--surface-2); transition:all var(--dur) var(--ease);
 }
+.providerCard.stacked { flex-direction:column; align-items:stretch; }
 .providerCard:hover { background:var(--surface); border-color:var(--border-md); }
 .providerCard strong { display:block; font-size:.87rem; font-weight:700; }
 .providerCard p { font-size:.77rem; color:var(--muted); margin-top:2px; }
+.providerCardBody { display:grid; gap:8px; }
 .providerActions {
   display:flex;
   align-items:center;
   gap:8px;
   min-width:340px;
   flex-wrap:wrap;
+}
+.providerActions.fullWidth { width:100%; min-width:0; }
+.providerMetaList {
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+}
+.metaPill {
+  display:inline-flex;
+  align-items:center;
+  min-height:28px;
+  padding:0 10px;
+  border-radius:999px;
+  border:1px solid var(--border);
+  background:var(--surface);
+  color:var(--text-2);
+  font-size:.74rem;
+  font-weight:600;
 }
 .providerLabelInput {
   flex:1;
@@ -478,6 +522,19 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
 .providerLabelInput:focus {
   border-color:var(--brand);
   box-shadow:0 0 0 3px var(--brand-soft);
+}
+.integrationCredentialBox {
+  display:grid;
+  gap:10px;
+  width:100%;
+  padding:14px;
+  border-radius:12px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,.42);
+}
+.integrationCredentialBox textarea {
+  min-height:120px;
+  resize:vertical;
 }
 
 /* ============================================================ CONNECTION STATUS LABEL */
@@ -549,6 +606,8 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
   border-radius:12px;
   border:1px solid var(--border);
   background:var(--surface);
+  display:grid;
+  gap:10px;
 }
 .mfaQrImage {
   display:block;

@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     smtp_starttls: bool = True
     smtp_use_ssl: bool = False
     smtp_timeout_seconds: int = 10
+    mfa_email_code_ttl_minutes: int = 10
 
     # OAuth providers
     google_client_id: str | None = None

@@ -4,6 +4,12 @@ from typing import Literal
 from pydantic import BaseModel, EmailStr, Field
 
 
+class ClientContext(BaseModel):
+    locale: str | None = Field(default=None, max_length=32)
+    time_zone: str | None = Field(default=None, max_length=64)
+    country: str | None = Field(default=None, max_length=64)
+
+
 class UserProfileResponse(BaseModel):
     id: str
     email: EmailStr
@@ -21,6 +27,7 @@ class RegisterRequest(BaseModel):
     full_name: str = Field(min_length=2, max_length=255)
     password: str = Field(min_length=14, max_length=128)
     personal_settings: dict = Field(default_factory=dict)
+    client_context: ClientContext | None = None
 
 
 class LoginRequest(BaseModel):
@@ -28,6 +35,7 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=14, max_length=128)
     mfa_code: str | None = Field(default=None, min_length=6, max_length=8)
     recovery_code: str | None = Field(default=None, min_length=8, max_length=32)
+    client_context: ClientContext | None = None
 
 
 class TokenResponse(BaseModel):
@@ -36,6 +44,9 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int | None = None
     mfa_required: bool = False
+    mfa_method: str | None = None
+    mfa_delivery_hint: str | None = None
+    mfa_preview_code: str | None = None
     user: UserProfileResponse | None = None
 
 
@@ -61,9 +72,16 @@ class PasswordResetConfirmRequest(BaseModel):
     new_password: str = Field(min_length=14, max_length=128)
 
 
+class MfaSetupRequest(BaseModel):
+    method: Literal["email", "totp"] = "email"
+
+
 class MfaSetupResponse(BaseModel):
-    secret: str
-    otpauth_uri: str
+    method: Literal["email", "totp"]
+    secret: str | None = None
+    otpauth_uri: str | None = None
+    delivery_hint: str | None = None
+    preview_code: str | None = None
 
 
 class MfaVerifyRequest(BaseModel):
@@ -112,6 +130,7 @@ class BankIntegrationToggleResponse(BaseModel):
 class UserSettingsUpdateRequest(BaseModel):
     full_name: str | None = Field(default=None, min_length=2, max_length=255)
     phone_number: str | None = Field(default=None, max_length=32)
+    client_context: ClientContext | None = None
     personal_settings: dict = Field(default_factory=dict)
 
 

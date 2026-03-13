@@ -165,6 +165,37 @@ def consume_password_reset_token(redis_client: Redis, token: str) -> dict:
     return json.loads(raw_payload)
 
 
+def _email_mfa_key(user_id: str, purpose: str) -> str:
+    return f"auth:mfa:{purpose}:{user_id}"
+
+
+def create_email_mfa_code(redis_client: Redis, user_id: str, email: str, purpose: str) -> str:
+    code = f"{secrets.randbelow(900000) + 100000}"
+    ttl_seconds = settings.mfa_email_code_ttl_minutes * 60
+    payload = {
+        "user_id": user_id,
+        "email": email,
+        "code_hash": hashlib.sha256(code.encode("utf-8")).hexdigest(),
+        "purpose": purpose,
+        "issued_at": datetime.now(timezone.utc).isoformat(),
+    }
+    redis_client.setex(_email_mfa_key(user_id, purpose), ttl_seconds, json.dumps(payload))
+    return code
+
+
+def consume_email_mfa_code(redis_client: Redis, user_id: str, code: str, purpose: str) -> bool:
+    raw_payload = redis_client.get(_email_mfa_key(user_id, purpose))
+    if not raw_payload:
+        return False
+    payload = json.loads(raw_payload)
+    normalized_code = re.sub(r"\D", "", code or "")
+    candidate_hash = hashlib.sha256(normalized_code.encode("utf-8")).hexdigest()
+    if payload.get("code_hash") != candidate_hash:
+        return False
+    redis_client.delete(_email_mfa_key(user_id, purpose))
+    return True
+
+
 def generate_totp_secret() -> str:
     return pyotp.random_base32()
 

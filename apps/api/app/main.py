@@ -18,9 +18,11 @@ from sqlalchemy.orm import Session
 from .agents import build_agent_bundle
 from .auth import (
     build_totp_uri,
+    consume_email_mfa_code,
     consume_password_reset_token,
     consume_recovery_code,
     create_access_token,
+    create_email_mfa_code,
     create_password_reset_token,
     create_refresh_token,
     decode_access_token,
@@ -38,7 +40,7 @@ from .auth import (
 from .coinbase_connector import sync_coinbase_read_only
 from .config import settings
 from .database import Base, SessionLocal, engine, get_db
-from .emailing import send_password_reset_email
+from .emailing import send_mfa_email_code, send_password_reset_email
 from .models import AgentDecision, AuditLog, BrokerConnection, IntegrationPosition, IntegrationSyncEvent, KillSwitchEvent, MfaDevice, OAuthIdentity, Portfolio, TradeProposal, User
 from .schemas import (
     BankIntegrationToggleRequest,
@@ -52,6 +54,7 @@ from .schemas import (
     IntegrationSyncResponse,
     KillSwitchRequest,
     LoginRequest,
+    MfaSetupRequest,
     LogoutRequest,
     MfaSetupResponse,
     MfaVerifyRequest,
@@ -201,11 +204,52 @@ def to_user_profile(user: User) -> UserProfileResponse:
     )
 
 
+def normalize_client_context(raw_context) -> dict[str, str]:
+    if raw_context is None:
+        return {}
+    locale = (raw_context.locale or "").strip()
+    time_zone = (raw_context.time_zone or "").strip()
+    country = (raw_context.country or "").strip()
+    context: dict[str, str] = {}
+    if locale:
+        context["locale"] = locale
+    if time_zone:
+        context["time_zone"] = time_zone
+    if country:
+        context["country"] = country
+    return context
+
+
+def merge_client_context_settings(existing: dict | None, client_context: dict[str, str]) -> dict:
+    merged = dict(existing or {})
+    if not client_context:
+        return merged
+    if client_context.get("country"):
+        merged.setdefault("country", client_context["country"])
+        merged["last_seen_country"] = client_context["country"]
+    if client_context.get("locale"):
+        merged.setdefault("initial_locale", client_context["locale"])
+        merged["last_seen_locale"] = client_context["locale"]
+    if client_context.get("time_zone"):
+        merged.setdefault("initial_time_zone", client_context["time_zone"])
+        merged["last_seen_time_zone"] = client_context["time_zone"]
+    return merged
+
+
+def issue_email_mfa_code(user: User, purpose: str) -> tuple[str | None, str | None]:
+    code = create_email_mfa_code(redis_client, user.id, user.email, purpose)
+    delivered = send_mfa_email_code(user.email, code, purpose)
+    if delivered:
+        return "Code envoye sur votre email principal.", None
+    return "Email indisponible sur cette instance. Utilisez le code de previsualisation pour continuer.", code
+
+
 def ensure_runtime_schema(db: Session) -> None:
     statements = [
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number VARCHAR(32)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_roles JSON DEFAULT '[]'::json",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS personal_settings JSON DEFAULT '{}'::json",
+        "ALTER TABLE mfa_devices ADD COLUMN IF NOT EXISTS method VARCHAR(24) DEFAULT 'totp'",
         "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS severity VARCHAR(16) DEFAULT 'info'",
         "ALTER TABLE broker_connections ADD COLUMN IF NOT EXISTS api_key_encrypted TEXT",
         "ALTER TABLE broker_connections ADD COLUMN IF NOT EXISTS api_secret_encrypted TEXT",
@@ -542,6 +586,7 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
+    client_context = normalize_client_context(payload.client_context)
     user = User(
         email=email,
         full_name=payload.full_name.strip(),
@@ -549,7 +594,7 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
         password_hash=hash_password(payload.password),
         role="user",
         assigned_roles=["user"],
-        personal_settings=payload.personal_settings or {
+        personal_settings=merge_client_context_settings(payload.personal_settings or {
             "dashboard_density": "comfortable",
             "currency": "EUR",
             "theme": "family",
@@ -558,14 +603,15 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
             "weekly_digest": True,
             "market_alerts": True,
             "communication_frequency": "important_only",
-        },
+            "preferred_mfa_method": "email",
+        }, client_context),
     )
     db.add(user)
     db.commit()
     db.refresh(user)
     db.add(Portfolio(owner_id=user.id, total_value=Decimal("0")))
     db.commit()
-    write_audit_log(db, user.id, "auth.registered", {"email": user.email, "assigned_roles": user.assigned_roles}, ip_address=request.client.host if request.client else None)
+    write_audit_log(db, user.id, "auth.registered", {"email": user.email, "assigned_roles": user.assigned_roles, "client_context": client_context}, ip_address=request.client.host if request.client else None)
     return to_user_profile(user)
 
 
@@ -574,6 +620,7 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
     email = normalize_email(payload.email)
     user = db.scalar(select(User).where(User.email == email))
     request_ip = request.client.host if request.client else None
+    client_context = normalize_client_context(payload.client_context)
 
     if not user or not verify_password(user.password_hash, payload.password):
         if user:
@@ -594,33 +641,53 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
         if not device or not device.is_verified:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="MFA device unavailable")
 
-        secret = decrypt_secret(device.secret_encrypted)
-        if payload.mfa_code and verify_totp(secret, payload.mfa_code):
-            device.last_used_at = datetime.utcnow()
-            db.add(device)
-            db.commit()
-            mfa_verified = True
+        if device.method == "email":
+            if payload.mfa_code and consume_email_mfa_code(redis_client, user.id, payload.mfa_code, "login"):
+                device.last_used_at = datetime.utcnow()
+                db.add(device)
+                db.commit()
+                mfa_verified = True
+            else:
+                remaining_codes = consume_recovery_code(device.recovery_codes, payload.recovery_code)
+                if remaining_codes is None:
+                    if payload.mfa_code or payload.recovery_code:
+                        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid MFA code")
+                    delivery_hint, preview_code = issue_email_mfa_code(user, "login")
+                    return TokenResponse(mfa_required=True, user=to_user_profile(user), mfa_method="email", mfa_delivery_hint=delivery_hint, mfa_preview_code=preview_code)
+                device.recovery_codes = remaining_codes
+                device.last_used_at = datetime.utcnow()
+                db.add(device)
+                db.commit()
+                mfa_verified = True
         else:
-            remaining_codes = consume_recovery_code(device.recovery_codes, payload.recovery_code)
-            if remaining_codes is None:
-                if payload.mfa_code or payload.recovery_code:
-                    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid MFA code")
-                return TokenResponse(mfa_required=True, user=to_user_profile(user))
-            device.recovery_codes = remaining_codes
-            device.last_used_at = datetime.utcnow()
-            db.add(device)
-            db.commit()
-            mfa_verified = True
+            secret = decrypt_secret(device.secret_encrypted)
+            if payload.mfa_code and verify_totp(secret, payload.mfa_code):
+                device.last_used_at = datetime.utcnow()
+                db.add(device)
+                db.commit()
+                mfa_verified = True
+            else:
+                remaining_codes = consume_recovery_code(device.recovery_codes, payload.recovery_code)
+                if remaining_codes is None:
+                    if payload.mfa_code or payload.recovery_code:
+                        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid MFA code")
+                    return TokenResponse(mfa_required=True, user=to_user_profile(user), mfa_method="totp", mfa_delivery_hint="Code requis depuis votre appareil ou vos codes de recuperation.")
+                device.recovery_codes = remaining_codes
+                device.last_used_at = datetime.utcnow()
+                db.add(device)
+                db.commit()
+                mfa_verified = True
 
     user.failed_login_attempts = 0
     user.locked_until = None
     user.last_login_at = datetime.utcnow()
+    user.personal_settings = merge_client_context_settings(user.personal_settings, client_context)
     db.add(user)
     db.commit()
 
     access_token, expires_in = create_access_token(user.id, user.email, user.role, mfa_verified)
     refresh_token = create_refresh_token(redis_client, user.id, user.email, user.role, mfa_verified)
-    write_audit_log(db, user.id, "auth.login_succeeded", {"mfa_verified": mfa_verified}, ip_address=request_ip)
+    write_audit_log(db, user.id, "auth.login_succeeded", {"mfa_verified": mfa_verified, "client_context": client_context}, ip_address=request_ip)
     return TokenResponse(
         access_token=access_token,
         refresh_token=refresh_token,
@@ -890,7 +957,7 @@ def update_me_settings(payload: UserSettingsUpdateRequest, current_user: User = 
     current_user.phone_number = payload.phone_number.strip() if payload.phone_number else None
     merged_settings = dict(current_user.personal_settings or {})
     merged_settings.update(payload.personal_settings)
-    current_user.personal_settings = merged_settings
+    current_user.personal_settings = merge_client_context_settings(merged_settings, normalize_client_context(payload.client_context))
     db.add(current_user)
     db.commit()
     db.refresh(current_user)
@@ -899,24 +966,52 @@ def update_me_settings(payload: UserSettingsUpdateRequest, current_user: User = 
 
 
 @app.post("/auth/mfa/setup", response_model=MfaSetupResponse)
-def setup_mfa(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> MfaSetupResponse:
-    secret = generate_totp_secret()
+def setup_mfa(payload: MfaSetupRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> MfaSetupResponse:
     device = primary_mfa_device(db, current_user.id)
-    if device:
-        device.secret_encrypted = encrypt_secret(secret)
-        device.is_verified = False
-        device.recovery_codes = None
+    if payload.method == "email":
+        secret = generate_totp_secret()
+        if device:
+            device.method = "email"
+            device.secret_encrypted = encrypt_secret(secret)
+            device.is_verified = False
+            device.recovery_codes = None
+        else:
+            device = MfaDevice(
+                user_id=current_user.id,
+                method="email",
+                secret_encrypted=encrypt_secret(secret),
+                is_primary=True,
+                is_verified=False,
+            )
+        delivery_hint, preview_code = issue_email_mfa_code(current_user, "setup")
+        settings_payload = dict(current_user.personal_settings or {})
+        settings_payload["preferred_mfa_method"] = "email"
+        current_user.personal_settings = settings_payload
     else:
-        device = MfaDevice(
-            user_id=current_user.id,
-            secret_encrypted=encrypt_secret(secret),
-            is_primary=True,
-            is_verified=False,
-        )
+        secret = generate_totp_secret()
+        if device:
+            device.method = "totp"
+            device.secret_encrypted = encrypt_secret(secret)
+            device.is_verified = False
+            device.recovery_codes = None
+        else:
+            device = MfaDevice(
+                user_id=current_user.id,
+                method="totp",
+                secret_encrypted=encrypt_secret(secret),
+                is_primary=True,
+                is_verified=False,
+            )
+        delivery_hint = "QR code genere ci-dessous. Vous pouvez aussi copier le secret brut."
+        preview_code = None
+        settings_payload = dict(current_user.personal_settings or {})
+        settings_payload["preferred_mfa_method"] = "totp"
+        current_user.personal_settings = settings_payload
     db.add(device)
+    db.add(current_user)
     db.commit()
-    write_audit_log(db, current_user.id, "auth.mfa_setup_requested", {})
-    return MfaSetupResponse(secret=secret, otpauth_uri=build_totp_uri(current_user.email, secret))
+    write_audit_log(db, current_user.id, "auth.mfa_setup_requested", {"method": payload.method})
+    return MfaSetupResponse(method=payload.method, secret=secret if payload.method == "totp" else None, otpauth_uri=build_totp_uri(current_user.email, secret) if payload.method == "totp" else None, delivery_hint=delivery_hint, preview_code=preview_code)
 
 
 @app.post("/auth/mfa/verify", response_model=MfaVerifyResponse)
@@ -924,9 +1019,13 @@ def verify_mfa_setup(payload: MfaVerifyRequest, current_user: User = Depends(get
     device = primary_mfa_device(db, current_user.id)
     if not device:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="MFA device not found")
-    secret = decrypt_secret(device.secret_encrypted)
-    if not verify_totp(secret, payload.code):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid MFA code")
+    if device.method == "email":
+        if not consume_email_mfa_code(redis_client, current_user.id, payload.code, "setup"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid MFA code")
+    else:
+        secret = decrypt_secret(device.secret_encrypted)
+        if not verify_totp(secret, payload.code):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid MFA code")
 
     recovery_codes, hashed_codes = generate_recovery_codes()
     device.is_verified = True

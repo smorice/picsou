@@ -51,7 +51,25 @@ type TokenResponse = {
   refresh_token?: string;
   expires_in?: number;
   mfa_required: boolean;
+  mfa_method?: string | null;
+  mfa_delivery_hint?: string | null;
+  mfa_preview_code?: string | null;
   user?: UserProfile;
+  detail?: unknown;
+};
+
+type ClientContext = {
+  locale: string;
+  time_zone: string;
+  country: string;
+};
+
+type MfaSetupPayload = {
+  method: 'email' | 'totp';
+  secret?: string | null;
+  otpauth_uri?: string | null;
+  delivery_hint?: string | null;
+  preview_code?: string | null;
   detail?: unknown;
 };
 
@@ -192,6 +210,7 @@ function defaultSettingsFromUser(user: UserProfile | null) {
     theme: String(user?.personal_settings.theme ?? 'family'),
     dashboardDensity: String(user?.personal_settings.dashboard_density ?? 'comfortable'),
     onboardingStyle: String(user?.personal_settings.onboarding_style ?? 'coach'),
+    country: String(user?.personal_settings.country ?? ''),
     notifyEmail: readBooleanSetting(user?.personal_settings.notify_email, true),
     notifySms: readBooleanSetting(user?.personal_settings.notify_sms, false),
     notifyWhatsapp: readBooleanSetting(user?.personal_settings.notify_whatsapp, false),
@@ -208,6 +227,33 @@ function matchesSearch(value: string, search: string) {
 
 function normalizeOtpInput(value: string) {
   return value.replace(/\D/g, '').slice(0, 8);
+}
+
+function inferCountryFromLocale(locale: string) {
+  const match = locale.match(/[-_]([A-Za-z]{2})\b/);
+  if (!match) {
+    return '';
+  }
+  const region = match[1].toUpperCase();
+  try {
+    const displayNames = new Intl.DisplayNames([locale], { type: 'region' });
+    return displayNames.of(region) ?? region;
+  } catch {
+    return region;
+  }
+}
+
+function resolveClientContext(): ClientContext {
+  if (typeof window === 'undefined') {
+    return { locale: 'fr-FR', time_zone: 'Europe/Paris', country: 'France' };
+  }
+  const locale = navigator.languages?.[0] ?? navigator.language ?? 'fr-FR';
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Paris';
+  return {
+    locale,
+    time_zone: timeZone,
+    country: inferCountryFromLocale(locale),
+  };
 }
 
 function statusBadgeClass(status: string) {
@@ -253,7 +299,7 @@ function statusLabel(status: string) {
 }
 
 export default function PicsouApp() {
-  const [authMode, setAuthMode] = useState<'login' | 'register' | 'reset'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [appView, setAppView] = useState<'dashboard' | 'settings' | 'admin'>('dashboard');
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState<string | null>(null);
@@ -278,16 +324,22 @@ export default function PicsouApp() {
   const [resetToken, setResetToken] = useState('');
   const [resetNewPassword, setResetNewPassword] = useState('');
   const [resetMessage, setResetMessage] = useState<string | null>(null);
+  const [resetPanelOpen, setResetPanelOpen] = useState(false);
   const [mfaSecret, setMfaSecret] = useState<string | null>(null);
   const [mfaUri, setMfaUri] = useState<string | null>(null);
   const [mfaQrDataUrl, setMfaQrDataUrl] = useState<string | null>(null);
   const [mfaCode, setMfaCode] = useState('');
+  const [mfaSetupMethod, setMfaSetupMethod] = useState<'email' | 'totp'>('email');
+  const [loginMfaMethod, setLoginMfaMethod] = useState<'email' | 'totp'>('totp');
+  const [mfaDeliveryHint, setMfaDeliveryHint] = useState<string | null>(null);
+  const [mfaPreviewCode, setMfaPreviewCode] = useState<string | null>(null);
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([]);
   const [adminConnections, setAdminConnections] = useState<Record<string, Array<{ provider_name: string; provider_code: string; status: string; account_label?: string | null }>>>({});
   const [providerLabels, setProviderLabels] = useState<Record<string, string>>({});
   const [integrationConnections, setIntegrationConnections] = useState<IntegrationConnection[]>([]);
   const [providerKeys, setProviderKeys] = useState<Record<string, { apiKey: string; apiSecret: string; portfolioId: string }>>({});
+  const [clientContext] = useState<ClientContext>(resolveClientContext);
 
   useEffect(() => {
     const storedAccess = sessionStorage.getItem(ACCESS_TOKEN_KEY);
@@ -318,10 +370,11 @@ export default function PicsouApp() {
     }
 
     if (mode === 'reset') {
-      setAuthMode('reset');
+      setResetPanelOpen(true);
     }
     if (token) {
       setResetToken(token);
+      setResetPanelOpen(true);
     }
     if (!storedAccess || !storedRefresh) {
       setLoading(false);
@@ -623,11 +676,13 @@ export default function PicsouApp() {
         body: JSON.stringify({
           full_name: settingsForm.fullName,
           phone_number: settingsForm.phoneNumber || null,
+          client_context: clientContext,
           personal_settings: {
             currency: settingsForm.currency,
             theme: settingsForm.theme,
             dashboard_density: settingsForm.dashboardDensity,
             onboarding_style: settingsForm.onboardingStyle,
+            country: settingsForm.country,
             notify_email: settingsForm.notifyEmail,
             notify_sms: settingsForm.notifySms,
             notify_whatsapp: settingsForm.notifyWhatsapp,
@@ -666,11 +721,14 @@ export default function PicsouApp() {
           email: registerForm.email,
           full_name: registerForm.fullName,
           password: registerForm.password,
+          client_context: clientContext,
           personal_settings: {
             currency: 'EUR',
             theme: 'family',
             dashboard_density: 'comfortable',
             onboarding_style: 'coach',
+            country: clientContext.country,
+            preferred_mfa_method: 'email',
           },
         }),
       });
@@ -702,6 +760,7 @@ export default function PicsouApp() {
           password: loginForm.password,
           mfa_code: loginForm.mfaCode || null,
           recovery_code: loginForm.recoveryCode || null,
+          client_context: clientContext,
         }),
       });
       const payload = await readJsonResponse<TokenResponse>(response);
@@ -713,7 +772,10 @@ export default function PicsouApp() {
       }
       if (payload.mfa_required) {
         setMfaRequired(true);
-        setError('Code MFA requis. Entrez votre code d application ou un code de recuperation.');
+        setLoginMfaMethod(payload.mfa_method === 'email' ? 'email' : 'totp');
+        setMfaDeliveryHint(payload.mfa_delivery_hint ?? null);
+        setMfaPreviewCode(payload.mfa_preview_code ?? null);
+        setError(payload.mfa_method === 'email' ? 'Code MFA envoye. Saisissez le code recu par email.' : 'Code MFA requis. Entrez votre code d application ou un code de recuperation.');
         return;
       }
       if (!payload.access_token || !payload.refresh_token) {
@@ -724,6 +786,8 @@ export default function PicsouApp() {
       setRefreshToken(payload.refresh_token);
       setUser(payload.user ?? null);
       setMfaRequired(false);
+      setMfaDeliveryHint(null);
+      setMfaPreviewCode(null);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Connexion impossible');
@@ -779,6 +843,7 @@ export default function PicsouApp() {
       }
       setResetMessage(payload.message);
       setAuthMode('login');
+      setResetPanelOpen(true);
       setLoginForm((state) => ({ ...state, password: resetNewPassword }));
       setResetNewPassword('');
     } catch (err) {
@@ -901,7 +966,7 @@ export default function PicsouApp() {
     await submitSettingsUpdate();
   }
 
-  async function startMfaSetup() {
+  async function startMfaSetup(method: 'email' | 'totp') {
     if (!accessToken) {
       return;
     }
@@ -909,20 +974,29 @@ export default function PicsouApp() {
     setError(null);
     setRecoveryCodes([]);
     setMfaCode('');
+    setMfaSetupMethod(method);
+    setMfaDeliveryHint(null);
+    setMfaPreviewCode(null);
     try {
       const response = await fetch(apiUrl('/auth/mfa/setup'), {
         method: 'POST',
-        headers: { Authorization: `Bearer ${accessToken}` },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ method }),
       });
-      const payload = await readJsonResponse<{ secret?: string; otpauth_uri?: string; detail?: unknown }>(response);
+      const payload = await readJsonResponse<MfaSetupPayload>(response);
       if (!response.ok) {
         throw new Error(extractErrorMessage(payload, 'Initialisation MFA impossible'));
       }
-      if (!payload?.secret || !payload?.otpauth_uri) {
+      if (!payload) {
         throw new Error('Initialisation MFA impossible');
       }
-      setMfaSecret(payload.secret);
-      setMfaUri(payload.otpauth_uri);
+      setMfaSecret(payload.secret ?? null);
+      setMfaUri(payload.otpauth_uri ?? null);
+      setMfaDeliveryHint(payload.delivery_hint ?? null);
+      setMfaPreviewCode(payload.preview_code ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Initialisation MFA impossible');
     } finally {
@@ -953,9 +1027,9 @@ export default function PicsouApp() {
       setRecoveryCodes(payload?.recovery_codes ?? []);
       setMfaCode('');
       if (user) {
-        setUser({ ...user, mfa_enabled: true });
+        setUser({ ...user, mfa_enabled: true, personal_settings: { ...user.personal_settings, preferred_mfa_method: mfaSetupMethod } });
       }
-      setError('MFA activee. Les comptes admin devront se reconnecter avec leur code MFA pour administrer la plateforme.');
+      setError(mfaSetupMethod === 'email' ? 'MFA email activee. Les prochains codes seront envoyes sur votre email principal.' : 'MFA activee. Les comptes admin devront se reconnecter avec leur code MFA pour administrer la plateforme.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Verification MFA impossible');
     } finally {
@@ -1107,9 +1181,6 @@ export default function PicsouApp() {
               <button className={authMode === 'register' ? 'toggleButton active' : 'toggleButton'} onClick={() => setAuthMode('register')} type="button">
                 Nouveau profil
               </button>
-              <button className={authMode === 'reset' ? 'toggleButton active' : 'toggleButton'} onClick={() => setAuthMode('reset')} type="button">
-                Reset password
-              </button>
             </div>
 
             {authMode === 'login' ? (
@@ -1126,18 +1197,53 @@ export default function PicsouApp() {
                 {mfaRequired ? (
                   <>
                     <label>
-                      Code MFA
+                      {loginMfaMethod === 'email' ? 'Code recu par email' : 'Code MFA'}
                       <input value={loginForm.mfaCode} onChange={(event) => setLoginForm((state) => ({ ...state, mfaCode: normalizeOtpInput(event.target.value) }))} type="text" inputMode="numeric" autoComplete="one-time-code" />
                     </label>
-                    <label>
-                      Ou code de recuperation
-                      <input value={loginForm.recoveryCode} onChange={(event) => setLoginForm((state) => ({ ...state, recoveryCode: event.target.value }))} type="text" />
-                    </label>
+                    {loginMfaMethod === 'totp' ? (
+                      <label>
+                        Ou code de recuperation
+                        <input value={loginForm.recoveryCode} onChange={(event) => setLoginForm((state) => ({ ...state, recoveryCode: event.target.value }))} type="text" />
+                      </label>
+                    ) : null}
+                    {mfaDeliveryHint ? <p className="helperText">{mfaDeliveryHint}</p> : null}
+                    {mfaPreviewCode ? <p className="helperText">Code de previsualisation: <strong>{mfaPreviewCode}</strong></p> : null}
                   </>
                 ) : null}
                 <button className="primaryButton" disabled={submitting} type="submit">
                   {submitting ? 'Connexion en cours...' : 'Ouvrir mon cockpit'}
                 </button>
+                <button className="textLinkButton" onClick={() => setResetPanelOpen((state) => !state)} type="button">
+                  {resetPanelOpen ? 'Masquer le service de reinitialisation' : 'Mot de passe oublie ?'}
+                </button>
+                {resetPanelOpen ? (
+                  <div className="inlineServicePanel">
+                    <form className="authForm" onSubmit={handlePasswordResetRequest}>
+                      <label>
+                        Email du compte
+                        <input value={resetRequestEmail} onChange={(event) => setResetRequestEmail(event.target.value)} type="email" required />
+                      </label>
+                      <button className="secondaryButton" disabled={submitting} type="submit">
+                        {submitting ? 'Generation du code...' : 'Demander un code de reset'}
+                      </button>
+                    </form>
+                    <form className="authForm resetConfirmCard" onSubmit={handlePasswordResetConfirm}>
+                      <label>
+                        Code temporaire
+                        <input value={resetToken} onChange={(event) => setResetToken(event.target.value)} type="text" required />
+                      </label>
+                      <label>
+                        Nouveau mot de passe
+                        <input value={resetNewPassword} onChange={(event) => setResetNewPassword(event.target.value)} type="password" required />
+                      </label>
+                      <button className="secondaryButton" disabled={submitting} type="submit">
+                        Valider le nouveau mot de passe
+                      </button>
+                      <p className="helperText">Si l email n est pas configure, un code temporaire sera affiche ici pour continuer.</p>
+                      {resetMessage ? <p className="helperText">{resetMessage}</p> : null}
+                    </form>
+                  </div>
+                ) : null}
                 {oauthProviders.length > 0 ? (
                   <div className="oauthDivider">
                     <span>ou continuer avec</span>
@@ -1195,36 +1301,6 @@ export default function PicsouApp() {
               </form>
             ) : null}
 
-            {authMode === 'reset' ? (
-              <div className="authFormStack">
-                <form className="authForm" onSubmit={handlePasswordResetRequest}>
-                  <h2>Mot de passe oublie</h2>
-                  <label>
-                    Email du compte
-                    <input value={resetRequestEmail} onChange={(event) => setResetRequestEmail(event.target.value)} type="email" required />
-                  </label>
-                  <button className="primaryButton" disabled={submitting} type="submit">
-                    {submitting ? 'Generation du code...' : 'Demander un code de reset'}
-                  </button>
-                  <p className="helperText">Si l email est configure, vous recevrez un lien direct. Sinon, un code temporaire restera affiche ici.</p>
-                </form>
-
-                <form className="authForm resetConfirmCard" onSubmit={handlePasswordResetConfirm}>
-                  <label>
-                    Code temporaire
-                    <input value={resetToken} onChange={(event) => setResetToken(event.target.value)} type="text" required />
-                  </label>
-                  <label>
-                    Nouveau mot de passe
-                    <input value={resetNewPassword} onChange={(event) => setResetNewPassword(event.target.value)} type="password" required />
-                  </label>
-                  <button className="secondaryButton" disabled={submitting} type="submit">
-                    Valider le nouveau mot de passe
-                  </button>
-                  {resetMessage ? <p className="helperText">{resetMessage}</p> : null}
-                </form>
-              </div>
-            ) : null}
           </article>
         </section>
       ) : (
@@ -1425,6 +1501,11 @@ export default function PicsouApp() {
                     Numero de telephone
                     <input value={settingsForm.phoneNumber} onChange={(event) => setSettingsForm((state) => ({ ...state, phoneNumber: event.target.value }))} type="tel" placeholder="+33 6 12 34 56 78" />
                   </label>
+                  <label>
+                    Pays de reference
+                    <input value={settingsForm.country} onChange={(event) => setSettingsForm((state) => ({ ...state, country: event.target.value }))} type="text" placeholder={clientContext.country || 'France'} />
+                  </label>
+                  <p className="helperText">Prefill navigateur: {clientContext.country || clientContext.locale} · {clientContext.time_zone}</p>
                   <button className="secondaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
                     {submitting ? 'Enregistrement...' : 'Sauvegarder mes coordonnees'}
                   </button>
@@ -1593,43 +1674,56 @@ export default function PicsouApp() {
                 {user.mfa_enabled && !mfaSecret ? (
                   <div className="infoPanel">
                     <strong>MFA active ✓</strong>
-                    <p>Votre compte est protege par une authentification a deux facteurs. Les actions sensibles requierent votre code TOTP.</p>
-                    <button className="secondaryButton" disabled={submitting} onClick={startMfaSetup} style={{marginTop:'10px'}} type="button">
-                      {submitting ? 'Generation...' : 'Regenerer QR MFA'}
-                    </button>
+                    <p>Votre compte est protege par une authentification a deux facteurs. Mode actif: {String(user.personal_settings.preferred_mfa_method ?? 'email')}.</p>
+                    <div className="providerActions fullWidth" style={{ marginTop: '10px' }}>
+                      <button className="secondaryButton" disabled={submitting} onClick={() => void startMfaSetup('email')} type="button">
+                        {submitting && mfaSetupMethod === 'email' ? 'Envoi...' : 'Reconfigurer par email'}
+                      </button>
+                      <button className="ghostButton" disabled={submitting} onClick={() => void startMfaSetup('totp')} type="button">
+                        {submitting && mfaSetupMethod === 'totp' ? 'Generation...' : 'Regenerer QR MFA'}
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <div className="mfaSteps">
                     <div className="mfaStep">
                       <div className="mfaStepNum">1</div>
                       <div className="mfaStepBody">
-                        <strong>Preparer une application d authentification</strong>
-                        <p>{user.mfa_enabled ? 'Votre MFA est active. Vous pouvez regenerer le QR pour reconfigurer une application.' : 'Installez Google Authenticator, Authy ou 1Password sur votre telephone.'}</p>
-                        {!mfaSecret ? (
-                          <button className="secondaryButton" disabled={submitting} onClick={startMfaSetup} style={{marginTop:'10px'}} type="button">
-                            {submitting ? 'Generation...' : (user.mfa_enabled ? 'Regenerer mon QR MFA' : 'Generer mon secret MFA')}
+                        <strong>Choisir votre second facteur</strong>
+                        <p>Le mode recommande est le code email integre, sans application tierce. Le QR code reste disponible si vous preferez un gestionnaire d authentification.</p>
+                        <div className="providerActions fullWidth" style={{ marginTop: '10px' }}>
+                          <button className="secondaryButton" disabled={submitting} onClick={() => void startMfaSetup('email')} type="button">
+                            {submitting && mfaSetupMethod === 'email' ? 'Envoi...' : 'Utiliser un code email'}
                           </button>
-                        ) : null}
+                          <button className="ghostButton" disabled={submitting} onClick={() => void startMfaSetup('totp')} type="button">
+                            {submitting && mfaSetupMethod === 'totp' ? 'Generation...' : 'Afficher un QR code'}
+                          </button>
+                        </div>
+                        {mfaDeliveryHint ? <p className="helperText" style={{ marginTop: '8px' }}>{mfaDeliveryHint}</p> : null}
+                        {mfaPreviewCode ? <div className="mfaSecret">{mfaPreviewCode}</div> : null}
                       </div>
                     </div>
 
-                    {mfaSecret ? (
+                    {mfaSetupMethod === 'totp' && mfaSecret ? (
                       <>
                         <div className="mfaStep">
                           <div className="mfaStepNum">2</div>
                           <div className="mfaStepBody">
-                            <strong>Scanner ou saisir le secret</strong>
-                            <p>Copiez ce code dans votre app ou scannez ce QR code :</p>
+                            <strong>Scanner ou ouvrir le QR code</strong>
+                            <p>Le QR est affiche ci-dessous avec le secret brut et l URI complete pour rester accessible.</p>
                             {mfaUri ? (
                               <div className="mfaQrWrap">
                                 {mfaQrDataUrl ? (
-                                  <img
-                                    alt="QR code MFA"
-                                    className="mfaQrImage"
-                                    height={180}
-                                    src={mfaQrDataUrl}
-                                    width={180}
-                                  />
+                                  <>
+                                    <img
+                                      alt="QR code MFA"
+                                      className="mfaQrImage"
+                                      height={180}
+                                      src={mfaQrDataUrl}
+                                      width={180}
+                                    />
+                                    <a className="textLinkButton" href={mfaQrDataUrl} target="_blank" rel="noreferrer">Ouvrir le QR code en plein ecran</a>
+                                  </>
                                 ) : (
                                   <p className="helperText">Generation du QR code en cours...</p>
                                 )}
@@ -1643,7 +1737,7 @@ export default function PicsouApp() {
                         <div className="mfaStep">
                           <div className="mfaStepNum">3</div>
                           <div className="mfaStepBody">
-                            <strong>Confirmer avec le code a 6 chiffres</strong>
+                            <strong>Confirmer l activation</strong>
                             <p>Entrez uniquement les chiffres du code affiche dans votre application (sans espace). Le code change toutes les 30 secondes.</p>
                             <form className="authForm" onSubmit={verifyMfa} style={{marginTop:'10px'}}>
                               <input
@@ -1661,6 +1755,27 @@ export default function PicsouApp() {
                           </div>
                         </div>
                       </>
+                    ) : mfaSetupMethod === 'email' && (mfaDeliveryHint || mfaPreviewCode) ? (
+                      <div className="mfaStep">
+                        <div className="mfaStepNum">2</div>
+                        <div className="mfaStepBody">
+                          <strong>Valider le code email</strong>
+                          <p>Le code est envoye sur votre email principal pour l activation.</p>
+                          <form className="authForm" onSubmit={verifyMfa} style={{marginTop:'10px'}}>
+                            <input
+                              value={mfaCode}
+                              onChange={(event) => setMfaCode(normalizeOtpInput(event.target.value))}
+                              type="text" inputMode="numeric" placeholder="123 456"
+                              style={{letterSpacing:'.2em',textAlign:'center',fontSize:'1.2rem'}}
+                              autoComplete="one-time-code"
+                              required
+                            />
+                            <button className="primaryButton" disabled={submitting} type="submit">
+                              {submitting ? 'Verification...' : 'Activer MFA email'}
+                            </button>
+                          </form>
+                        </div>
+                      </div>
                     ) : null}
                   </div>
                 )}

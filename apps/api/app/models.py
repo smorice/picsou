@@ -34,6 +34,7 @@ class MfaDevice(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
     label: Mapped[str] = mapped_column(String(120), default="primary")
+    method: Mapped[str] = mapped_column(String(24), default="totp")
     secret_encrypted: Mapped[str] = mapped_column(Text)
     recovery_codes: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     is_primary: Mapped[bool] = mapped_column(Boolean, default=True)
