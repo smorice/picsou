@@ -462,6 +462,7 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
   align-items:center;
   gap:8px;
   min-width:340px;
+  flex-wrap:wrap;
 }
 .providerLabelInput {
   flex:1;
@@ -500,6 +501,31 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
 .infoPanel.warn { border-color:var(--warn-border); background:var(--warn-soft); }
 .infoPanel.warn strong { color:#92400e; }
 .infoPanel.warn p { color:#78350f; }
+.mutedPanel { border-color:var(--border); background:var(--surface-2); }
+.mutedPanel strong { color:var(--text); }
+.mutedPanel p { color:var(--muted); }
+
+.preferenceGroup {
+  display:grid;
+  gap:12px;
+}
+.checkRow {
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:12px 14px;
+  border-radius:12px;
+  border:1px solid var(--border);
+  background:var(--surface-2);
+  color:var(--text-2);
+  font-size:.84rem;
+  font-weight:500;
+}
+.checkRow input {
+  width:16px;
+  height:16px;
+  accent-color:var(--brand);
+}
 
 /* ---- MFA-specific ---- */
 .mfaSteps { display:grid; gap:16px; counter-reset:step; }
@@ -622,6 +648,7 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
   .navButton { flex:1; text-align:center; padding:8px 8px; font-size:.8rem; }
   .landingStoryCard { padding:28px 22px; }
   .recoveryGrid { grid-template-columns:1fr; }
+  .providerActions { min-width:0; }
 }
 @media(max-width:480px){
   h1 { font-size:1.75rem; }

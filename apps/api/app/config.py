@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     public_base_url: str = "http://localhost"
     bootstrap_admin_email: str | None = None
     bootstrap_admin_password: str | None = None
-    smtp_host: str | None = None
+    smtp_host: str | None = "ssl0.ovh.net"
     smtp_port: int = 587
     smtp_username: str | None = None
     smtp_password: str | None = None

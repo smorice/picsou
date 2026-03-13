@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -8,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 import pyotp
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError, VerificationError
+from argon2.exceptions import InvalidHashError, VerifyMismatchError, VerificationError
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from redis import Redis
 
@@ -32,7 +33,7 @@ def hash_password(password: str) -> str:
 def verify_password(password_hash: str, password: str) -> bool:
     try:
         return pwd_hasher.verify(password_hash, password)
-    except (VerifyMismatchError, VerificationError):
+    except (InvalidHashError, VerifyMismatchError, VerificationError):
         return False
 
 
@@ -173,7 +174,10 @@ def build_totp_uri(email: str, secret: str) -> str:
 
 
 def verify_totp(secret: str, code: str) -> bool:
-    return pyotp.TOTP(secret).verify(code, valid_window=1)
+    normalized_code = re.sub(r"\D", "", code or "")
+    if not normalized_code:
+        return False
+    return pyotp.TOTP(secret).verify(normalized_code, valid_window=1)
 
 
 def generate_recovery_codes() -> tuple[list[str], list[str]]:

@@ -49,6 +49,38 @@ docker-compose.yml
 - Si SMTP n est pas configure, l API conserve un fallback en renvoyant un code temporaire dans la reponse pour les environnements de test et d administration.
 - Variables utiles: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME`, `SMTP_STARTTLS`, `SMTP_USE_SSL`.
 
+### Configuration OVHcloud (DNS + SMTP)
+
+1. Configurer les enregistrements MX de votre domaine OVH:
+	- priorite 1: `mx1.mail.ovh.net`
+	- priorite 5: `mx2.mail.ovh.net`
+	- priorite 100: `mx3.mail.ovh.net`
+2. Configurer l envoi SMTP de l API avec la boite OVH:
+	- `SMTP_HOST=ssl0.ovh.net`
+	- `SMTP_PORT=587`
+	- `SMTP_STARTTLS=true`
+	- `SMTP_USE_SSL=false`
+	- `SMTP_USERNAME=<votre-adresse-email-ovh>`
+	- `SMTP_PASSWORD=<mot-de-passe-ou-mot-de-passe-app-ovh>`
+	- `SMTP_FROM_EMAIL=<votre-adresse-email-ovh>`
+3. Redemarrer la stack: `docker compose up -d --build api`
+
+## Connexion Google
+
+- Le frontend affiche automatiquement le bouton Google si `GOOGLE_CLIENT_ID` et `GOOGLE_CLIENT_SECRET` sont renseignes.
+- Renseigner dans `.env`:
+	- `GOOGLE_CLIENT_ID=<client-id-google>`
+	- `GOOGLE_CLIENT_SECRET=<client-secret-google>`
+	- `PUBLIC_BASE_URL=https://votre-domaine-ou-ip`
+- Dans Google Cloud Console, ajouter l URI de redirection autorisee:
+	- `https://votre-domaine-ou-ip/auth/oauth/google/callback`
+- Redemarrer la stack apres modification de `.env`: `docker compose up -d --build api web`
+
+## MFA et connexion
+
+- Une fois MFA activee, la connexion par mot de passe demande un code TOTP ou un code de recuperation.
+- Si un code MFA est saisi mais incorrect, l API renvoie maintenant explicitement `Invalid MFA code` au lieu de rester sur un etat ambigu.
+
 ## Deploiement VPS
 
 1. Copier `.env.example` vers `.env`.

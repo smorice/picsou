@@ -5,12 +5,13 @@ import { FormEvent, useEffect, useState } from 'react';
 type UserProfile = {
   id: string;
   email: string;
+  phone_number?: string | null;
   full_name: string;
   role: string;
   assigned_roles: string[];
   is_active: boolean;
   mfa_enabled: boolean;
-  personal_settings: Record<string, string>;
+  personal_settings: Record<string, unknown>;
 };
 
 type BankProvider = {
@@ -27,13 +28,13 @@ type BankProvider = {
 type DashboardData = {
   portfolio_id: string;
   portfolio_name: string;
-  total_value: string;
-  cash_balance: string;
-  pnl_realized: string;
-  pnl_unrealized: string;
-  annualized_return: number;
-  rolling_volatility: number;
-  max_drawdown: number;
+  total_value: string | null;
+  cash_balance: string | null;
+  pnl_realized: string | null;
+  pnl_unrealized: string | null;
+  annualized_return: number | null;
+  rolling_volatility: number | null;
+  max_drawdown: number | null;
   is_empty: boolean;
   key_indicators: Array<{ label: string; value: string; trend: string }>;
   sector_heatmap: Array<{ sector: string; weight: number; pnl: number }>;
@@ -41,7 +42,7 @@ type DashboardData = {
   recent_flows: Array<{ date: string; type: string; amount: number }>;
   suggestions: Array<{ title: string; score: number; justification: string }>;
   bank_connectors: BankProvider[];
-  connected_accounts: Array<{ provider_name: string; status: string; account_label?: string | null }>;
+  connected_accounts: Array<{ provider_code: string; provider_name: string; status: string; account_label?: string | null }>;
   next_steps: string[];
 };
 
@@ -75,6 +76,32 @@ type OAuthProvider = {
   enabled: boolean;
 };
 
+type IntegrationConnection = {
+  connection_id: string;
+  provider_code: string;
+  provider_name: string;
+  status: string;
+  account_label?: string | null;
+  has_credentials: boolean;
+  supports_read: boolean;
+  supports_trade: boolean;
+  last_sync_status?: string | null;
+  last_sync_error?: string | null;
+  last_sync_at?: string | null;
+  last_snapshot_total_value?: string | null;
+  positions_count: number;
+};
+
+type IntegrationSyncResponse = {
+  provider_code: string;
+  status: string;
+  positions_synced: number;
+  total_value?: string | null;
+  synced_at?: string | null;
+  message: string;
+  detail?: unknown;
+};
+
 const ACCESS_TOKEN_KEY = 'picsou_access_token';
 const REFRESH_TOKEN_KEY = 'picsou_refresh_token';
 const SESSION_LAST_ACTIVITY_AT_KEY = 'picsou_session_last_activity_at';
@@ -93,6 +120,24 @@ function formatCurrency(value: string) {
     currency: 'EUR',
     maximumFractionDigits: 0,
   }).format(Number(value));
+}
+
+function formatNullableCurrency(value: string | null) {
+  return value === null ? 'null' : formatCurrency(value);
+}
+
+function formatNullablePercent(value: number | null) {
+  return value === null ? 'null' : `${(value * 100).toFixed(1)}%`;
+}
+
+function readBooleanSetting(value: unknown, fallback = false) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    return value === 'true';
+  }
+  return fallback;
 }
 
 function extractErrorMessage(payload: unknown, fallback: string) {
@@ -142,15 +187,69 @@ function hasAdminRole(user: UserProfile | null) {
 function defaultSettingsFromUser(user: UserProfile | null) {
   return {
     fullName: user?.full_name ?? '',
-    currency: user?.personal_settings.currency ?? 'EUR',
-    theme: user?.personal_settings.theme ?? 'family',
-    dashboardDensity: user?.personal_settings.dashboard_density ?? 'comfortable',
-    onboardingStyle: user?.personal_settings.onboarding_style ?? 'coach',
+    phoneNumber: user?.phone_number ?? '',
+    currency: String(user?.personal_settings.currency ?? 'EUR'),
+    theme: String(user?.personal_settings.theme ?? 'family'),
+    dashboardDensity: String(user?.personal_settings.dashboard_density ?? 'comfortable'),
+    onboardingStyle: String(user?.personal_settings.onboarding_style ?? 'coach'),
+    notifyEmail: readBooleanSetting(user?.personal_settings.notify_email, true),
+    notifySms: readBooleanSetting(user?.personal_settings.notify_sms, false),
+    notifyWhatsapp: readBooleanSetting(user?.personal_settings.notify_whatsapp, false),
+    notifyPush: readBooleanSetting(user?.personal_settings.notify_push, false),
+    weeklyDigest: readBooleanSetting(user?.personal_settings.weekly_digest, true),
+    marketAlerts: readBooleanSetting(user?.personal_settings.market_alerts, true),
+    communicationFrequency: String(user?.personal_settings.communication_frequency ?? 'important_only'),
   };
 }
 
 function matchesSearch(value: string, search: string) {
   return value.toLowerCase().includes(search.trim().toLowerCase());
+}
+
+function normalizeOtpInput(value: string) {
+  return value.replace(/\D/g, '').slice(0, 8);
+}
+
+function statusBadgeClass(status: string) {
+  if (status === 'active') {
+    return 'statusBadge ok';
+  }
+  if (status === 'disabled') {
+    return 'statusBadge idle';
+  }
+  if (status === 'pending_user_consent') {
+    return 'statusBadge warn';
+  }
+  if (status === 'available') {
+    return 'statusBadge idle';
+  }
+  return 'statusBadge warn';
+}
+
+function statusDotClass(status: string) {
+  if (status === 'active') {
+    return 'statusDot ok';
+  }
+  if (status === 'disabled' || status === 'available') {
+    return 'statusDot idle';
+  }
+  return 'statusDot warn';
+}
+
+function statusLabel(status: string) {
+  if (status === 'active') {
+    return 'Actif';
+  }
+  if (status === 'disabled') {
+    return 'Desactive';
+  }
+  if (status === 'pending_user_consent') {
+    return 'En attente';
+  }
+  if (status === 'available') {
+    return 'Disponible';
+  }
+  return status;
 }
 
 export default function PicsouApp() {
@@ -187,6 +286,8 @@ export default function PicsouApp() {
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([]);
   const [adminConnections, setAdminConnections] = useState<Record<string, Array<{ provider_name: string; provider_code: string; status: string; account_label?: string | null }>>>({});
   const [providerLabels, setProviderLabels] = useState<Record<string, string>>({});
+  const [integrationConnections, setIntegrationConnections] = useState<IntegrationConnection[]>([]);
+  const [providerKeys, setProviderKeys] = useState<Record<string, { apiKey: string; apiSecret: string; portfolioId: string }>>({});
 
   useEffect(() => {
     const storedAccess = sessionStorage.getItem(ACCESS_TOKEN_KEY);
@@ -248,6 +349,17 @@ export default function PicsouApp() {
   }, [user]);
 
   useEffect(() => {
+    if (!dashboard) {
+      return;
+    }
+    const nextLabels: Record<string, string> = {};
+    for (const account of dashboard.connected_accounts) {
+      nextLabels[account.provider_code] = account.account_label ?? '';
+    }
+    setProviderLabels((state) => ({ ...state, ...nextLabels }));
+  }, [dashboard]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function buildMfaQr() {
@@ -306,12 +418,21 @@ export default function PicsouApp() {
         if (!me) {
           throw new Error('Session invalide');
         }
-        const dashboardResponse = await fetch(apiUrl('/api/v1/dashboard/primary'), {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
+        const [dashboardResponse, integrationsResponse] = await Promise.all([
+          fetch(apiUrl('/api/v1/dashboard/primary'), {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          }),
+          fetch(apiUrl('/api/v1/integrations'), {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          }),
+        ]);
         const dashboardPayload = await readJsonResponse<DashboardData | { detail?: unknown }>(dashboardResponse);
         if (!dashboardResponse.ok) {
           throw new Error(extractErrorMessage(dashboardPayload, 'Dashboard indisponible'));
+        }
+        const integrationsPayload = await readJsonResponse<IntegrationConnection[] | { detail?: unknown }>(integrationsResponse);
+        if (!integrationsResponse.ok) {
+          throw new Error(extractErrorMessage(integrationsPayload, 'Integrations indisponibles'));
         }
         const dashboardData = dashboardPayload as DashboardData | null;
         if (!dashboardData) {
@@ -320,6 +441,7 @@ export default function PicsouApp() {
         if (!cancelled) {
           setUser(me);
           setDashboard(dashboardData);
+          setIntegrationConnections((integrationsPayload as IntegrationConnection[] | null) ?? []);
           setError(null);
         }
       } catch (err) {
@@ -464,6 +586,71 @@ export default function PicsouApp() {
         byUser[c.user_id].push({ provider_name: c.provider_name, provider_code: c.provider_code, status: c.status, account_label: c.account_label });
       }
       setAdminConnections(byUser);
+    }
+  }
+
+  async function refreshWorkspaceData(token: string) {
+    const [dashboardResponse, integrationsResponse] = await Promise.all([
+      fetch(apiUrl('/api/v1/dashboard/primary'), {
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      fetch(apiUrl('/api/v1/integrations'), {
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    ]);
+
+    if (dashboardResponse.ok) {
+      setDashboard((await readJsonResponse<DashboardData>(dashboardResponse)) ?? null);
+    }
+    if (integrationsResponse.ok) {
+      setIntegrationConnections((await readJsonResponse<IntegrationConnection[]>(integrationsResponse)) ?? []);
+    }
+  }
+
+  async function submitSettingsUpdate() {
+    if (!accessToken) {
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const response = await fetch(apiUrl('/auth/me/settings'), {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          full_name: settingsForm.fullName,
+          phone_number: settingsForm.phoneNumber || null,
+          personal_settings: {
+            currency: settingsForm.currency,
+            theme: settingsForm.theme,
+            dashboard_density: settingsForm.dashboardDensity,
+            onboarding_style: settingsForm.onboardingStyle,
+            notify_email: settingsForm.notifyEmail,
+            notify_sms: settingsForm.notifySms,
+            notify_whatsapp: settingsForm.notifyWhatsapp,
+            notify_push: settingsForm.notifyPush,
+            weekly_digest: settingsForm.weeklyDigest,
+            market_alerts: settingsForm.marketAlerts,
+            communication_frequency: settingsForm.communicationFrequency,
+          },
+        }),
+      });
+      const payload = await readJsonResponse<UserProfile>(response);
+      if (!response.ok) {
+        throw new Error(extractErrorMessage(payload, 'Mise a jour impossible'));
+      }
+      if (!payload) {
+        throw new Error('Mise a jour impossible');
+      }
+      setUser(payload);
+      setError('Preferences et coordonnees mises a jour.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Mise a jour impossible');
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -618,34 +805,92 @@ export default function PicsouApp() {
     }
   }
 
-  async function requestConnection(providerCode: string, accountLabel?: string) {
+  async function toggleIntegration(providerCode: string, enabled: boolean, accountLabel?: string) {
     if (!accessToken) {
       return;
     }
     setSubmitting(true);
     setError(null);
     try {
-      const response = await fetch(apiUrl('/api/v1/broker-connections/request'), {
+      const response = await fetch(apiUrl('/api/v1/broker-connections/toggle'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${accessToken}`,
         },
-        body: JSON.stringify({ provider_code: providerCode, account_label: accountLabel?.trim() || null }),
+        body: JSON.stringify({
+          provider_code: providerCode,
+          enabled,
+          account_label: accountLabel?.trim() || null,
+        }),
       });
       const payload = await readJsonResponse<Record<string, unknown>>(response);
       if (!response.ok) {
-        throw new Error(extractErrorMessage(payload, 'Demande de connexion impossible'));
+        throw new Error(extractErrorMessage(payload, 'Mise a jour du suivi impossible'));
       }
-      const dashboardResponse = await fetch(apiUrl('/api/v1/dashboard/primary'), {
+      await refreshWorkspaceData(accessToken);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Mise a jour du suivi impossible');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function saveIntegrationCredentials(providerCode: string) {
+    if (!accessToken) {
+      return;
+    }
+    const providerKeyState = providerKeys[providerCode] ?? { apiKey: '', apiSecret: '', portfolioId: '' };
+    setSubmitting(true);
+    setError(null);
+    try {
+      const response = await fetch(apiUrl('/api/v1/integrations/credentials'), {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          provider_code: providerCode,
+          account_label: providerLabels[providerCode] || null,
+          api_key: providerKeyState.apiKey || null,
+          api_secret: providerKeyState.apiSecret || null,
+          external_portfolio_id: providerKeyState.portfolioId || null,
+        }),
+      });
+      const payload = await readJsonResponse<IntegrationConnection | { detail?: unknown }>(response);
+      if (!response.ok) {
+        throw new Error(extractErrorMessage(payload, 'Enregistrement des credentials impossible'));
+      }
+      await refreshWorkspaceData(accessToken);
+      setProviderKeys((state) => ({ ...state, [providerCode]: { apiKey: '', apiSecret: '', portfolioId: '' } }));
+      setError('Credentials integration enregistres cote serveur.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Enregistrement des credentials impossible');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function syncIntegration(providerCode: string) {
+    if (!accessToken) {
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const response = await fetch(apiUrl(`/api/v1/integrations/${providerCode}/sync`), {
+        method: 'POST',
         headers: { Authorization: `Bearer ${accessToken}` },
       });
-      if (dashboardResponse.ok) {
-        setDashboard((await readJsonResponse<DashboardData>(dashboardResponse)) ?? null);
+      const payload = await readJsonResponse<IntegrationSyncResponse>(response);
+      if (!response.ok) {
+        throw new Error(extractErrorMessage(payload, 'Synchronisation impossible'));
       }
-      setProviderLabels((state) => ({ ...state, [providerCode]: '' }));
+      await refreshWorkspaceData(accessToken);
+      setError(payload?.message ?? 'Synchronisation terminee.');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Connexion bancaire impossible');
+      setError(err instanceof Error ? err.message : 'Synchronisation impossible');
     } finally {
       setSubmitting(false);
     }
@@ -653,42 +898,7 @@ export default function PicsouApp() {
 
   async function saveSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!accessToken) {
-      return;
-    }
-    setSubmitting(true);
-    setError(null);
-    try {
-      const response = await fetch(apiUrl('/auth/me/settings'), {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({
-          full_name: settingsForm.fullName,
-          personal_settings: {
-            currency: settingsForm.currency,
-            theme: settingsForm.theme,
-            dashboard_density: settingsForm.dashboardDensity,
-            onboarding_style: settingsForm.onboardingStyle,
-          },
-        }),
-      });
-      const payload = await readJsonResponse<UserProfile>(response);
-      if (!response.ok) {
-        throw new Error(extractErrorMessage(payload, 'Mise a jour impossible'));
-      }
-      if (!payload) {
-        throw new Error('Mise a jour impossible');
-      }
-      setUser(payload);
-      setError('Preferences mises a jour.');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Mise a jour impossible');
-    } finally {
-      setSubmitting(false);
-    }
+    await submitSettingsUpdate();
   }
 
   async function startMfaSetup() {
@@ -802,13 +1012,23 @@ export default function PicsouApp() {
     const matchesSeverity = auditSeverityFilter === 'all' || entry.severity === auditSeverityFilter;
     return matchesText && matchesSeverity;
   });
+  const findIntegration = (providerCode: string) => integrationConnections.find((item) => item.provider_code === providerCode);
 
   return (
     <main className="investShell">
       <header className="heroTopbar">
         <div className="brandCluster">
           <div className="brandBadge" aria-hidden="true">
-            <span>P</span>
+            <svg width="30" height="30" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M14 26c0-10 8-18 18-18s18 8 18 18v12c0 6-4 10-10 10H24c-6 0-10-4-10-10V26Z" fill="#F6C453"/>
+              <path d="M17 23 10 17l2-7 9 5M47 23l7-6-2-7-9 5" fill="#D89B2B"/>
+              <path d="M20 23c-4-2-7-6-7-11 0-1 0-2 1-3 4 2 8 5 11 9M44 23c4-2 7-6 7-11 0-1 0-2-1-3-4 2-8 5-11 9" fill="#E8AA34"/>
+              <circle cx="25" cy="29" r="3" fill="#2D2216"/>
+              <circle cx="39" cy="29" r="3" fill="#2D2216"/>
+              <path d="M29 36c2 2 4 2 6 0" stroke="#2D2216" strokeWidth="3" strokeLinecap="round"/>
+              <path d="M24 40c2 4 14 4 16 0" stroke="#9B5C1F" strokeWidth="3" strokeLinecap="round"/>
+              <path d="M18 47c4 6 10 9 14 9s10-3 14-9" stroke="#B87424" strokeWidth="4" strokeLinecap="round"/>
+            </svg>
           </div>
           <div>
             <strong>Picsou IA</strong>
@@ -907,7 +1127,7 @@ export default function PicsouApp() {
                   <>
                     <label>
                       Code MFA
-                      <input value={loginForm.mfaCode} onChange={(event) => setLoginForm((state) => ({ ...state, mfaCode: event.target.value }))} type="text" inputMode="numeric" />
+                      <input value={loginForm.mfaCode} onChange={(event) => setLoginForm((state) => ({ ...state, mfaCode: normalizeOtpInput(event.target.value) }))} type="text" inputMode="numeric" autoComplete="one-time-code" />
                     </label>
                     <label>
                       Ou code de recuperation
@@ -1036,17 +1256,17 @@ export default function PicsouApp() {
                   <div className="profileMeta">
                     <span className="metaPill">Profil: {user.role}</span>
                     <span className="metaPill">Acces: {user.assigned_roles.join(', ')}</span>
-                    <span className="metaPill">Theme: {user.personal_settings.theme ?? 'family'}</span>
+                    <span className="metaPill">Theme: {String(user.personal_settings.theme ?? 'family')}</span>
                   </div>
                 </div>
                 <div className="summaryValue heroValueCard">
                   <span>Valeur totale</span>
-                  <strong>{dashboard ? formatCurrency(dashboard.total_value) : '...'}</strong>
+                  <strong>{dashboard ? formatNullableCurrency(dashboard.total_value) : '...'}</strong>
                   <small>
                     {dashboard
                       ? dashboard.is_empty
-                        ? 'Portefeuille pret a etre alimente et pilote'
-                        : `Liquidites disponibles: ${formatCurrency(dashboard.cash_balance)}`
+                        ? 'Aucune valeur consolidee tant qu aucune integration n est active'
+                        : `Liquidites disponibles: ${formatNullableCurrency(dashboard.cash_balance)}`
                       : 'Chargement des liquidites'}
                   </small>
                 </div>
@@ -1073,11 +1293,11 @@ export default function PicsouApp() {
                         <span>Actions et crypto</span>
                       </div>
                       <div className="compactList">
-                        <div className="compactRow"><span>PnL realise</span><strong>{formatCurrency(dashboard.pnl_realized)}</strong></div>
-                        <div className="compactRow"><span>PnL latent</span><strong>{formatCurrency(dashboard.pnl_unrealized)}</strong></div>
-                        <div className="compactRow"><span>Rendement annualise</span><strong>{(dashboard.annualized_return * 100).toFixed(1)}%</strong></div>
-                        <div className="compactRow"><span>Volatilite glissante</span><strong>{(dashboard.rolling_volatility * 100).toFixed(1)}%</strong></div>
-                        <div className="compactRow"><span>Drawdown max</span><strong>{(dashboard.max_drawdown * 100).toFixed(1)}%</strong></div>
+                        <div className="compactRow"><span>PnL realise</span><strong>{formatNullableCurrency(dashboard.pnl_realized)}</strong></div>
+                        <div className="compactRow"><span>PnL latent</span><strong>{formatNullableCurrency(dashboard.pnl_unrealized)}</strong></div>
+                        <div className="compactRow"><span>Rendement annualise</span><strong>{formatNullablePercent(dashboard.annualized_return)}</strong></div>
+                        <div className="compactRow"><span>Volatilite glissante</span><strong>{formatNullablePercent(dashboard.rolling_volatility)}</strong></div>
+                        <div className="compactRow"><span>Drawdown max</span><strong>{formatNullablePercent(dashboard.max_drawdown)}</strong></div>
                       </div>
                     </article>
 
@@ -1118,31 +1338,25 @@ export default function PicsouApp() {
 
                     <article className="featureCard">
                       <div className="cardHeader">
-                        <h2>{dashboard.is_empty ? 'Connecter une banque ou un broker' : 'Integrations actives'}</h2>
-                        <span>Execution sous controle</span>
+                        <h2>{dashboard.is_empty ? 'Sources en attente' : 'Integrations actives'}</h2>
+                        <span>Lecture seule</span>
                       </div>
                       {dashboard.connected_accounts.length > 0 ? (
                         <div className="taskList">
                           {dashboard.connected_accounts.map((account) => (
                             <div className="compactRow" key={`${account.provider_name}-${account.account_label ?? 'default'}`}>
-                              <span>{account.provider_name}</span>
-                              <strong>{account.status}</strong>
+                              <span>{account.provider_name}{account.account_label ? ` · ${account.account_label}` : ''}</span>
+                              <span className={statusBadgeClass(account.status)}>
+                                <span className={statusDotClass(account.status)} />
+                                {statusLabel(account.status)}
+                              </span>
                             </div>
                           ))}
                         </div>
                       ) : (
-                        <div className="providerGrid">
-                          {dashboard.bank_connectors.map((provider) => (
-                            <div className="providerCard" key={provider.code}>
-                              <div>
-                                <strong>{provider.name}</strong>
-                                <p>{provider.onboarding_hint}</p>
-                              </div>
-                              <button className="secondaryButton" disabled={submitting || provider.status !== 'available'} onClick={() => requestConnection(provider.code)} type="button">
-                                {provider.status === 'available' ? 'Connecter' : provider.status}
-                              </button>
-                            </div>
-                          ))}
+                        <div className="infoPanel mutedPanel">
+                          <strong>Aucune source active</strong>
+                          <p>Le tableau de bord reste a null tant qu aucune integration de suivi n est activee dans Mon espace.</p>
                         </div>
                       )}
                     </article>
@@ -1192,13 +1406,39 @@ export default function PicsouApp() {
                     </select>
                   </label>
                   <button className="primaryButton" disabled={submitting} type="submit">
-                    Sauvegarder mes preferences
+                    Sauvegarder le profil investisseur
                   </button>
                 </form>
+              </article>
 
-                <div className="cardHeader" style={{ marginTop: '22px' }}>
-                  <h2>Configuration des fournisseurs</h2>
-                  <span>Revolut, Boursorama et autres integrations</span>
+              <article className="featureCard">
+                <div className="cardHeader">
+                  <h2>Coordonnees de contact</h2>
+                  <span>Email, telephone et canaux de rappel</span>
+                </div>
+                <div className="preferenceGroup">
+                  <label>
+                    Email principal
+                    <input type="email" value={user.email} disabled />
+                  </label>
+                  <label>
+                    Numero de telephone
+                    <input value={settingsForm.phoneNumber} onChange={(event) => setSettingsForm((state) => ({ ...state, phoneNumber: event.target.value }))} type="tel" placeholder="+33 6 12 34 56 78" />
+                  </label>
+                  <button className="secondaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
+                    {submitting ? 'Enregistrement...' : 'Sauvegarder mes coordonnees'}
+                  </button>
+                </div>
+              </article>
+
+              <article className="featureCard">
+                <div className="cardHeader">
+                  <h2>Sources du tableau de bord</h2>
+                  <span>Tile dediee aux integrations declarees</span>
+                </div>
+                <div className="infoPanel mutedPanel" style={{ marginBottom: '14px' }}>
+                  <strong>Sources utilisateur et connecteurs reels</strong>
+                  <p>Vous pouvez activer un suivi declaratif pour tous les fournisseurs. Pour Coinbase, vous pouvez aussi enregistrer des credentials API chiffrés côté serveur puis lancer une synchronisation lecture seule.</p>
                 </div>
 
                 {dashboard ? (
@@ -1208,47 +1448,137 @@ export default function PicsouApp() {
                         {dashboard.connected_accounts.map((account) => (
                           <div className="compactRow" key={`${account.provider_name}-${account.account_label ?? 'default'}`}>
                             <span>{account.provider_name}{account.account_label ? ` · ${account.account_label}` : ''}</span>
-                            <strong>{account.status}</strong>
+                            <span className={statusBadgeClass(account.status)}>
+                              <span className={statusDotClass(account.status)} />
+                              {statusLabel(account.status)}
+                            </span>
                           </div>
                         ))}
                       </div>
                     ) : (
                       <p className="helperText" style={{ marginBottom: '14px' }}>
-                        Aucune integration active. Configurez un fournisseur ci-dessous pour demarrer l alimentation du portefeuille.
+                        Aucune integration active. Activez une ou plusieurs sources de suivi ci-dessous pour initialiser le dashboard.
                       </p>
                     )}
 
                     <div className="providerGrid">
-                      {dashboard.bank_connectors.map((provider) => (
-                        <div className="providerCard" key={provider.code}>
-                          <div>
+                      {dashboard.bank_connectors.map((provider) => {
+                        const providerConnection = findIntegration(provider.code);
+                        const providerKeyState = providerKeys[provider.code] ?? { apiKey: '', apiSecret: '', portfolioId: '' };
+                        return (
+                        <div className="providerCard stacked" key={provider.code}>
+                          <div className="providerCardBody">
                             <strong>{provider.name}</strong>
-                            <p>{provider.onboarding_hint}</p>
+                            <p>{provider.code === 'coinbase' ? 'Connecteur reel disponible en lecture seule via API Coinbase Advanced Trade. Les secrets restent chiffrés côté serveur.' : 'Source declaree pour alimenter le dashboard. Les autres connecteurs restent pour l instant en mode declaratif.'}</p>
+                            <div style={{ marginTop: '8px' }}>
+                              <span className={statusBadgeClass(provider.status)}>
+                                <span className={statusDotClass(provider.status)} />
+                                {statusLabel(provider.status)}
+                              </span>
+                            </div>
+                            {providerConnection ? (
+                              <div className="providerMetaList">
+                                <span className="metaPill">Credentials: {providerConnection.has_credentials ? 'serveur' : 'absents'}</span>
+                                <span className="metaPill">Lecture: {providerConnection.supports_read ? 'oui' : 'non'}</span>
+                                <span className="metaPill">Ordres: {providerConnection.supports_trade ? 'pret' : 'sous validation'}</span>
+                                <span className="metaPill">Derniere sync: {providerConnection.last_sync_at ? new Date(providerConnection.last_sync_at).toLocaleString('fr-FR') : 'jamais'}</span>
+                                <span className="metaPill">Positions: {providerConnection.positions_count}</span>
+                              </div>
+                            ) : null}
                           </div>
-                          <div className="providerActions">
+                          <div className="providerActions fullWidth">
                             <input
                               className="providerLabelInput"
                               onChange={(event) => setProviderLabels((state) => ({ ...state, [provider.code]: event.target.value }))}
-                              placeholder="Libelle compte (optionnel)"
+                              placeholder="Libelle visible dans le dashboard"
                               type="text"
                               value={providerLabels[provider.code] ?? ''}
                             />
                             <button
                               className="secondaryButton"
-                              disabled={submitting || provider.status !== 'available'}
-                              onClick={() => requestConnection(provider.code, providerLabels[provider.code])}
+                              disabled={submitting}
+                              onClick={() => toggleIntegration(provider.code, provider.status === 'available' || provider.status === 'disabled', providerLabels[provider.code])}
                               type="button"
                             >
-                              {provider.status === 'available' ? 'Connecter' : provider.status}
+                              {provider.status === 'available' || provider.status === 'disabled' ? 'Activer le suivi' : 'Retirer du suivi'}
                             </button>
                           </div>
+                          {provider.code === 'coinbase' ? (
+                            <div className="integrationCredentialBox">
+                              <label>
+                                API key Coinbase
+                                <input value={providerKeyState.apiKey} onChange={(event) => setProviderKeys((state) => ({ ...state, [provider.code]: { ...providerKeyState, apiKey: event.target.value } }))} type="text" placeholder="organizations/.../apiKeys/..." />
+                              </label>
+                              <label>
+                                API secret Coinbase
+                                <textarea value={providerKeyState.apiSecret} onChange={(event) => setProviderKeys((state) => ({ ...state, [provider.code]: { ...providerKeyState, apiSecret: event.target.value } }))} placeholder="-----BEGIN EC PRIVATE KEY-----" rows={5} />
+                              </label>
+                              <label>
+                                Portfolio ID Coinbase (optionnel)
+                                <input value={providerKeyState.portfolioId} onChange={(event) => setProviderKeys((state) => ({ ...state, [provider.code]: { ...providerKeyState, portfolioId: event.target.value } }))} type="text" placeholder="portfolio uuid" />
+                              </label>
+                              {providerConnection?.last_sync_error ? <p className="helperText">Derniere erreur: {providerConnection.last_sync_error}</p> : null}
+                              <div className="providerActions fullWidth">
+                                <button className="secondaryButton" disabled={submitting} onClick={() => void saveIntegrationCredentials(provider.code)} type="button">
+                                  {submitting ? 'Sauvegarde...' : 'Sauvegarder les credentials'}
+                                </button>
+                                <button className="ghostButton" disabled={submitting || !providerConnection?.has_credentials} onClick={() => void syncIntegration(provider.code)} type="button">
+                                  {submitting ? 'Synchronisation...' : 'Synchroniser Coinbase'}
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
                         </div>
-                      ))}
+                      )})}
                     </div>
                   </>
                 ) : (
                   <p className="helperText">Chargement des integrations...</p>
                 )}
+              </article>
+
+              <article className="featureCard">
+                <div className="cardHeader">
+                  <h2>Preferences de communication</h2>
+                  <span>Email et autres canaux</span>
+                </div>
+                <div className="preferenceGroup">
+                  <label className="checkRow">
+                    <input checked={settingsForm.notifyEmail} onChange={(event) => setSettingsForm((state) => ({ ...state, notifyEmail: event.target.checked }))} type="checkbox" />
+                    <span>Recevoir les notifications par email</span>
+                  </label>
+                  <label className="checkRow">
+                    <input checked={settingsForm.notifySms} onChange={(event) => setSettingsForm((state) => ({ ...state, notifySms: event.target.checked }))} type="checkbox" />
+                    <span>Recevoir les alertes critiques par SMS</span>
+                  </label>
+                  <label className="checkRow">
+                    <input checked={settingsForm.notifyWhatsapp} onChange={(event) => setSettingsForm((state) => ({ ...state, notifyWhatsapp: event.target.checked }))} type="checkbox" />
+                    <span>Recevoir un recap sur WhatsApp</span>
+                  </label>
+                  <label className="checkRow">
+                    <input checked={settingsForm.notifyPush} onChange={(event) => setSettingsForm((state) => ({ ...state, notifyPush: event.target.checked }))} type="checkbox" />
+                    <span>Recevoir des notifications push navigateur</span>
+                  </label>
+                  <label className="checkRow">
+                    <input checked={settingsForm.weeklyDigest} onChange={(event) => setSettingsForm((state) => ({ ...state, weeklyDigest: event.target.checked }))} type="checkbox" />
+                    <span>Recevoir le digest hebdomadaire</span>
+                  </label>
+                  <label className="checkRow">
+                    <input checked={settingsForm.marketAlerts} onChange={(event) => setSettingsForm((state) => ({ ...state, marketAlerts: event.target.checked }))} type="checkbox" />
+                    <span>Recevoir les alertes de marche importantes</span>
+                  </label>
+                  <label>
+                    Frequence preferee
+                    <select value={settingsForm.communicationFrequency} onChange={(event) => setSettingsForm((state) => ({ ...state, communicationFrequency: event.target.value }))}>
+                      <option value="important_only">Seulement l essentiel</option>
+                      <option value="daily">Quotidienne</option>
+                      <option value="weekly">Hebdomadaire</option>
+                    </select>
+                  </label>
+                  <button className="secondaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
+                    {submitting ? 'Enregistrement...' : 'Sauvegarder les preferences de communication'}
+                  </button>
+                </div>
               </article>
 
               <article className="featureCard accentCard">
@@ -1314,13 +1644,14 @@ export default function PicsouApp() {
                           <div className="mfaStepNum">3</div>
                           <div className="mfaStepBody">
                             <strong>Confirmer avec le code a 6 chiffres</strong>
-                            <p>Entrez le code affiche dans votre application pour valider la liaison.</p>
+                            <p>Entrez uniquement les chiffres du code affiche dans votre application (sans espace). Le code change toutes les 30 secondes.</p>
                             <form className="authForm" onSubmit={verifyMfa} style={{marginTop:'10px'}}>
                               <input
                                 value={mfaCode}
-                                onChange={(event) => setMfaCode(event.target.value)}
+                                onChange={(event) => setMfaCode(normalizeOtpInput(event.target.value))}
                                 type="text" inputMode="numeric" placeholder="123 456"
                                 style={{letterSpacing:'.2em',textAlign:'center',fontSize:'1.2rem'}}
+                                autoComplete="one-time-code"
                                 required
                               />
                               <button className="primaryButton" disabled={submitting} type="submit">

@@ -7,6 +7,7 @@ from pydantic import BaseModel, EmailStr, Field
 class UserProfileResponse(BaseModel):
     id: str
     email: EmailStr
+    phone_number: str | None = None
     full_name: str
     role: str
     assigned_roles: list[str]
@@ -96,9 +97,55 @@ class BankConnectionResponse(BaseModel):
     status: str
 
 
+class BankIntegrationToggleRequest(BaseModel):
+    provider_code: str
+    enabled: bool
+    account_label: str | None = Field(default=None, max_length=255)
+
+
+class BankIntegrationToggleResponse(BaseModel):
+    connection_id: str
+    provider_code: str
+    status: str
+
+
 class UserSettingsUpdateRequest(BaseModel):
     full_name: str | None = Field(default=None, min_length=2, max_length=255)
+    phone_number: str | None = Field(default=None, max_length=32)
     personal_settings: dict = Field(default_factory=dict)
+
+
+class IntegrationCredentialRequest(BaseModel):
+    provider_code: str
+    account_label: str | None = Field(default=None, max_length=255)
+    api_key: str | None = None
+    api_secret: str | None = None
+    external_portfolio_id: str | None = Field(default=None, max_length=128)
+
+
+class IntegrationConnectionResponse(BaseModel):
+    connection_id: str
+    provider_code: str
+    provider_name: str
+    status: str
+    account_label: str | None = None
+    has_credentials: bool
+    supports_read: bool
+    supports_trade: bool
+    last_sync_status: str | None = None
+    last_sync_error: str | None = None
+    last_sync_at: str | None = None
+    last_snapshot_total_value: Decimal | None = None
+    positions_count: int = 0
+
+
+class IntegrationSyncResponse(BaseModel):
+    provider_code: str
+    status: str
+    positions_synced: int
+    total_value: Decimal | None = None
+    synced_at: str | None = None
+    message: str
 
 
 class AdminUserUpdateRequest(BaseModel):
@@ -122,13 +169,13 @@ class AuditLogResponse(BaseModel):
 class DashboardResponse(BaseModel):
     portfolio_id: str
     portfolio_name: str
-    total_value: Decimal
-    cash_balance: Decimal
-    pnl_realized: Decimal
-    pnl_unrealized: Decimal
-    annualized_return: float
-    rolling_volatility: float
-    max_drawdown: float
+    total_value: Decimal | None
+    cash_balance: Decimal | None
+    pnl_realized: Decimal | None
+    pnl_unrealized: Decimal | None
+    annualized_return: float | None
+    rolling_volatility: float | None
+    max_drawdown: float | None
     is_empty: bool
     key_indicators: list[dict]
     sector_heatmap: list[dict]

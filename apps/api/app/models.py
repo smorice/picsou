@@ -13,6 +13,7 @@ class User(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    phone_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
     full_name: Mapped[str] = mapped_column(String(255))
     password_hash: Mapped[str] = mapped_column(Text)
     role: Mapped[str] = mapped_column(String(32), default="user")
@@ -51,8 +52,50 @@ class BrokerConnection(Base):
     status: Mapped[str] = mapped_column(String(32), default="pending_user_consent")
     account_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
     connection_mode: Mapped[str] = mapped_column(String(32), default="api")
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    permissions: Mapped[dict] = mapped_column(JSON, default=dict)
+    provider_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    external_portfolio_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    external_account_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    supports_read: Mapped[bool] = mapped_column(Boolean, default=True)
+    supports_trade: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_sync_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_snapshot_total_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class IntegrationPosition(Base):
+    __tablename__ = "integration_positions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    connection_id: Mapped[str] = mapped_column(String(36), ForeignKey("broker_connections.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(64), index=True)
+    asset_name: Mapped[str] = mapped_column(String(255))
+    asset_type: Mapped[str] = mapped_column(String(32), index=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), default=0)
+    market_value: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0)
+    cost_basis: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    currency: Mapped[str] = mapped_column(String(8), default="EUR")
+    position_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class IntegrationSyncEvent(Base):
+    __tablename__ = "integration_sync_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    connection_id: Mapped[str] = mapped_column(String(36), ForeignKey("broker_connections.id"), index=True)
+    provider_code: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    positions_synced: Mapped[int] = mapped_column(Integer, default=0)
+    total_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class Portfolio(Base):

@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from datetime import datetime, timedelta
 from decimal import Decimal
 import logging
@@ -15,6 +15,7 @@ from redis import Redis
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from .agents import build_agent_bundle
 from .auth import (
     build_totp_uri,
     consume_password_reset_token,
@@ -34,15 +35,21 @@ from .auth import (
     verify_password,
     verify_totp,
 )
+from .coinbase_connector import sync_coinbase_read_only
 from .config import settings
 from .database import Base, SessionLocal, engine, get_db
 from .emailing import send_password_reset_email
-from .models import AgentDecision, AuditLog, BrokerConnection, KillSwitchEvent, MfaDevice, OAuthIdentity, Portfolio, TradeProposal, User
+from .models import AgentDecision, AuditLog, BrokerConnection, IntegrationPosition, IntegrationSyncEvent, KillSwitchEvent, MfaDevice, OAuthIdentity, Portfolio, TradeProposal, User
 from .schemas import (
+    BankIntegrationToggleRequest,
+    BankIntegrationToggleResponse,
     BankConnectionRequest,
     BankConnectionResponse,
     BankProvider,
     DashboardResponse,
+    IntegrationConnectionResponse,
+    IntegrationCredentialRequest,
+    IntegrationSyncResponse,
     KillSwitchRequest,
     LoginRequest,
     LogoutRequest,
@@ -73,28 +80,6 @@ security = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class AgentBundle:
-    attractiveness_score: int
-    trend_regime: str
-    volatility_bucket: str
-    timing_commentary: str
-    fundamental_score: int
-    valuation_label: str
-    quality_score: int
-    long_term_conviction: int
-    sentiment_score: int
-    event_risk_level: str
-    headline_summary: str
-    portfolio_risk_score: int
-    stress_loss_estimate: float
-    rebalancing_actions: list[str]
-    risk_budget_usage: float
-    target_weights: dict[str, float]
-    expected_return: float
-    expected_volatility: float
-
-
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
@@ -118,12 +103,21 @@ SUPPORTED_BANK_PROVIDERS = [
     },
     {
         "code": "boursobank",
-        "name": "BoursoBank",
+        "name": "Boursorama",
         "category": "broker-bank",
         "supports_securities": True,
         "supports_crypto": False,
         "supports_cash": True,
         "onboarding_hint": "Compte titres et liquidites pilotables depuis un cockpit unique.",
+    },
+    {
+        "code": "coinbase",
+        "name": "Coinbase",
+        "category": "crypto-exchange",
+        "supports_securities": False,
+        "supports_crypto": True,
+        "supports_cash": True,
+        "onboarding_hint": "Suivi des positions crypto avec activation utilisateur depuis l espace securise.",
     },
     {
         "code": "trade_republic",
@@ -197,6 +191,7 @@ def to_user_profile(user: User) -> UserProfileResponse:
     return UserProfileResponse(
         id=user.id,
         email=user.email,
+        phone_number=user.phone_number,
         full_name=user.full_name,
         role=primary_role_from_roles(assigned_roles),
         assigned_roles=assigned_roles,
@@ -208,9 +203,22 @@ def to_user_profile(user: User) -> UserProfileResponse:
 
 def ensure_runtime_schema(db: Session) -> None:
     statements = [
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number VARCHAR(32)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_roles JSON DEFAULT '[]'::json",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS personal_settings JSON DEFAULT '{}'::json",
         "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS severity VARCHAR(16) DEFAULT 'info'",
+        "ALTER TABLE broker_connections ADD COLUMN IF NOT EXISTS api_key_encrypted TEXT",
+        "ALTER TABLE broker_connections ADD COLUMN IF NOT EXISTS api_secret_encrypted TEXT",
+        "ALTER TABLE broker_connections ADD COLUMN IF NOT EXISTS permissions JSON DEFAULT '{}'::json",
+        "ALTER TABLE broker_connections ADD COLUMN IF NOT EXISTS provider_metadata JSON DEFAULT '{}'::json",
+        "ALTER TABLE broker_connections ADD COLUMN IF NOT EXISTS external_portfolio_id VARCHAR(128)",
+        "ALTER TABLE broker_connections ADD COLUMN IF NOT EXISTS external_account_ids JSON DEFAULT '[]'::json",
+        "ALTER TABLE broker_connections ADD COLUMN IF NOT EXISTS supports_read BOOLEAN DEFAULT true",
+        "ALTER TABLE broker_connections ADD COLUMN IF NOT EXISTS supports_trade BOOLEAN DEFAULT false",
+        "ALTER TABLE broker_connections ADD COLUMN IF NOT EXISTS last_sync_status VARCHAR(32)",
+        "ALTER TABLE broker_connections ADD COLUMN IF NOT EXISTS last_sync_error TEXT",
+        "ALTER TABLE broker_connections ADD COLUMN IF NOT EXISTS last_sync_at TIMESTAMP",
+        "ALTER TABLE broker_connections ADD COLUMN IF NOT EXISTS last_snapshot_total_value NUMERIC(18,2)",
     ]
     for statement in statements:
         db.execute(text(statement))
@@ -233,10 +241,17 @@ def seed_security_data(db: Session) -> None:
                 admin_user = User(
                     email=normalize_email(settings.bootstrap_admin_email),
                     full_name="Platform Administrator",
+                    phone_number=None,
                     password_hash=hash_password(settings.bootstrap_admin_password),
                     role="admin",
                     assigned_roles=["admin", "user"],
-                    personal_settings={"dashboard_density": "comfortable", "currency": "EUR", "theme": "family"},
+                    personal_settings={
+                        "dashboard_density": "comfortable",
+                        "currency": "EUR",
+                        "theme": "family",
+                        "notify_email": True,
+                        "weekly_digest": True,
+                    },
                 )
                 db.add(admin_user)
                 db.commit()
@@ -248,64 +263,6 @@ def seed_security_data(db: Session) -> None:
         return
     db.add(Portfolio(owner_id=portfolio_owner_id, total_value=Decimal("125430.55")))
     db.commit()
-
-
-def compute_agents(payload: RecommendationRequest) -> AgentBundle:
-    prices = payload.prices or [100.0, 101.5, 102.2, 103.8, 102.9]
-    momentum = ((prices[-1] - prices[0]) / prices[0]) if len(prices) > 1 else 0.0
-    attractiveness_score = max(10, min(95, int(55 + momentum * 180 - payload.implied_volatility * 40)))
-    trend_regime = "bullish" if momentum > 0.03 else "neutral" if momentum > -0.03 else "bearish"
-    volatility_bucket = "high" if payload.implied_volatility > 0.30 else "medium" if payload.implied_volatility > 0.18 else "low"
-
-    fundamental_growth = float(payload.fundamentals.get("revenue_growth", 0.08))
-    leverage = float(payload.fundamentals.get("net_debt_to_ebitda", 1.2))
-    free_cash_flow = float(payload.fundamentals.get("free_cash_flow_margin", 0.12))
-    fundamental_score = max(15, min(95, int(50 + fundamental_growth * 200 + free_cash_flow * 100 - leverage * 8)))
-    valuation_label = "cheap" if fundamental_score > 70 and payload.rates < 0.035 else "fair" if fundamental_score > 45 else "expensive"
-    quality_score = max(20, min(95, int(45 + free_cash_flow * 180 - leverage * 5)))
-    long_term_conviction = int((fundamental_score + quality_score) / 2)
-
-    sentiment_score = max(0, min(100, int(50 + payload.sentiment_score * 35)))
-    event_risk_level = "high" if abs(payload.sentiment_score) > 0.8 else "medium" if abs(payload.sentiment_score) > 0.35 else "low"
-    headline_summary = "Macro sentiment constructive with controlled inflation pressure." if payload.sentiment_score >= 0 else "Headline flow remains cautious and supports tighter risk budgets."
-
-    portfolio_risk_score = max(10, min(95, int(35 + payload.implied_volatility * 120 + abs(payload.sentiment_score) * 15)))
-    stress_loss_estimate = round(0.06 + payload.implied_volatility * 0.9, 4)
-    rebalancing_actions = [
-        "Cap crypto exposure below 10%",
-        "Maintain 12 months of liquidity runway",
-    ]
-    risk_budget_usage = round(min(1.0, portfolio_risk_score / 100), 2)
-
-    target_weights = {
-        "equities": 0.55 if payload.risk_profile == "neutral" else 0.40 if payload.risk_profile == "prudent" else 0.70,
-        "etfs": 0.25,
-        "crypto": 0.05 if payload.risk_profile == "prudent" else 0.10,
-        "cash": 0.15 if payload.risk_profile != "offensive" else 0.05,
-    }
-    expected_return = round(0.04 + attractiveness_score / 1000 + long_term_conviction / 2500, 4)
-    expected_volatility = round(0.07 + portfolio_risk_score / 800, 4)
-
-    return AgentBundle(
-        attractiveness_score=attractiveness_score,
-        trend_regime=trend_regime,
-        volatility_bucket=volatility_bucket,
-        timing_commentary="Momentum remains positive but entries should stay phased.",
-        fundamental_score=fundamental_score,
-        valuation_label=valuation_label,
-        quality_score=quality_score,
-        long_term_conviction=long_term_conviction,
-        sentiment_score=sentiment_score,
-        event_risk_level=event_risk_level,
-        headline_summary=headline_summary,
-        portfolio_risk_score=portfolio_risk_score,
-        stress_loss_estimate=stress_loss_estimate,
-        rebalancing_actions=rebalancing_actions,
-        risk_budget_usage=risk_budget_usage,
-        target_weights=target_weights,
-        expected_return=expected_return,
-        expected_volatility=expected_volatility,
-    )
 
 
 def write_audit_log(db: Session, actor_id: str, event_type: str, payload: dict, device_fingerprint: str | None = None, ip_address: str | None = None, severity: str = "info") -> None:
@@ -394,6 +351,185 @@ def list_bank_providers_for_user(db: Session, user_id: str) -> list[BankProvider
     return providers
 
 
+def serialize_integration_connection(db: Session, connection: BrokerConnection) -> IntegrationConnectionResponse:
+    positions_count = len(db.scalars(select(IntegrationPosition).where(IntegrationPosition.connection_id == connection.id)).all())
+    return IntegrationConnectionResponse(
+        connection_id=connection.id,
+        provider_code=connection.provider_code,
+        provider_name=connection.provider_name,
+        status=connection.status,
+        account_label=connection.account_label,
+        has_credentials=bool(connection.api_key_encrypted and connection.api_secret_encrypted),
+        supports_read=connection.supports_read,
+        supports_trade=connection.supports_trade,
+        last_sync_status=connection.last_sync_status,
+        last_sync_error=connection.last_sync_error,
+        last_sync_at=connection.last_sync_at.isoformat() if connection.last_sync_at else None,
+        last_snapshot_total_value=connection.last_snapshot_total_value,
+        positions_count=positions_count,
+    )
+
+
+def build_dashboard_from_positions(portfolio: Portfolio, bank_connectors: list[BankProvider], connections: list[BrokerConnection], positions: list[IntegrationPosition]) -> DashboardResponse:
+    if not positions:
+        return DashboardResponse(
+            portfolio_id=portfolio.id,
+            portfolio_name=portfolio.name,
+            total_value=None,
+            cash_balance=None,
+            pnl_realized=None,
+            pnl_unrealized=None,
+            annualized_return=None,
+            rolling_volatility=None,
+            max_drawdown=None,
+            is_empty=True,
+            key_indicators=[
+                {"label": "Valeur totale", "value": "null", "trend": "Synchronisation requise"},
+                {"label": "Liquidites", "value": "null", "trend": "Synchronisation requise"},
+                {"label": "Transactions ce mois", "value": "null", "trend": "Synchronisation requise"},
+                {"label": "Risque actuel", "value": "null", "trend": "Sources insuffisantes"},
+            ],
+            sector_heatmap=[],
+            allocation=[],
+            recent_flows=[],
+            suggestions=[
+                {"title": "Synchroniser vos sources", "score": 96, "justification": "Les integrations actives doivent etre synchronisees pour alimenter le tableau de bord."},
+                {"title": "Definir votre profil familial", "score": 78, "justification": "Le niveau de risque et l horizon de placement guideront les prochaines propositions."},
+            ],
+            bank_connectors=bank_connectors,
+            connected_accounts=[
+                {
+                    "provider_code": connection.provider_code,
+                    "provider_name": connection.provider_name,
+                    "status": connection.status,
+                    "account_label": connection.account_label,
+                    "last_sync_status": connection.last_sync_status,
+                }
+                for connection in connections
+            ],
+            next_steps=[
+                "Configurer puis synchroniser au moins une integration reelle.",
+                "Definir votre horizon et votre tolerance au risque.",
+                "Activer la MFA avant toute proposition d ordre.",
+            ],
+        )
+
+    total_value = sum((position.market_value for position in positions), Decimal("0.00"))
+    cash_balance = sum((position.market_value for position in positions if position.asset_type == "cash"), Decimal("0.00"))
+    asset_groups: dict[str, Decimal] = {}
+    for position in positions:
+        asset_groups[position.asset_type] = asset_groups.get(position.asset_type, Decimal("0.00")) + position.market_value
+
+    allocation = [
+        {"class": asset_type.capitalize(), "weight": float((value / total_value) if total_value > 0 else Decimal("0"))}
+        for asset_type, value in sorted(asset_groups.items())
+    ]
+    sector_heatmap = [
+        {"sector": position.symbol, "weight": float((position.market_value / total_value) if total_value > 0 else Decimal("0")), "pnl": 0.0}
+        for position in sorted(positions, key=lambda item: item.market_value, reverse=True)[:6]
+    ]
+    return DashboardResponse(
+        portfolio_id=portfolio.id,
+        portfolio_name=portfolio.name,
+        total_value=total_value.quantize(Decimal("0.01")),
+        cash_balance=cash_balance.quantize(Decimal("0.01")),
+        pnl_realized=Decimal("0.00"),
+        pnl_unrealized=Decimal("0.00"),
+        annualized_return=0.0,
+        rolling_volatility=0.0,
+        max_drawdown=0.0,
+        is_empty=False,
+        key_indicators=[
+            {"label": "Valeur totale", "value": f"{total_value.quantize(Decimal('0.01'))} EUR", "trend": f"{len(positions)} positions"},
+            {"label": "Liquidites", "value": f"{cash_balance.quantize(Decimal('0.01'))} EUR", "trend": "Synchronise"},
+            {"label": "Sources", "value": str(len([connection for connection in connections if connection.status == 'active'])), "trend": "Actives"},
+            {"label": "Risque actuel", "value": "En calcul", "trend": "Base synchronisee"},
+        ],
+        sector_heatmap=sector_heatmap,
+        allocation=allocation,
+        recent_flows=[],
+        suggestions=[
+            {"title": "Verifier la diversification", "score": 77, "justification": "Les positions synchronisees permettent maintenant une premiere lecture de votre allocation."},
+            {"title": "Analyser le risque crypto", "score": 72, "justification": "Les poches crypto meritent une validation humaine avant toute execution."},
+        ],
+        bank_connectors=bank_connectors,
+        connected_accounts=[
+            {
+                "provider_code": connection.provider_code,
+                "provider_name": connection.provider_name,
+                "status": connection.status,
+                "account_label": connection.account_label,
+                "last_sync_status": connection.last_sync_status,
+            }
+            for connection in connections
+        ],
+        next_steps=[
+            "Verifier la coherence entre objectif d epargne et allocation synchronisee.",
+            "Lancer une recommandation multi-agents a partir des positions reelles.",
+        ],
+    )
+
+
+def run_provider_sync(db: Session, current_user: User, connection: BrokerConnection) -> IntegrationSyncResponse:
+    if connection.provider_code != "coinbase":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Read-only sync is currently implemented for Coinbase only")
+
+    result = sync_coinbase_read_only(connection)
+    db.query(IntegrationPosition).filter(IntegrationPosition.connection_id == connection.id).delete()
+    positions_to_store = []
+    for position in result.positions:
+        positions_to_store.append(
+            IntegrationPosition(
+                connection_id=connection.id,
+                symbol=position.symbol,
+                asset_name=position.asset_name,
+                asset_type=position.asset_type,
+                quantity=position.quantity,
+                market_value=position.market_value,
+                currency=position.currency,
+                position_metadata=position.metadata,
+            )
+        )
+    for position in positions_to_store:
+        db.add(position)
+
+    connection.permissions = result.permissions
+    connection.external_portfolio_id = result.external_portfolio_id
+    connection.external_account_ids = result.external_account_ids
+    connection.last_sync_at = datetime.utcnow()
+    connection.last_sync_status = "ok"
+    connection.last_sync_error = None
+    connection.last_snapshot_total_value = result.total_value
+    connection.supports_read = True
+    connection.supports_trade = bool(result.permissions.get("can_trade", False))
+    db.add(connection)
+    db.add(
+        IntegrationSyncEvent(
+            connection_id=connection.id,
+            provider_code=connection.provider_code,
+            status="ok",
+            positions_synced=len(result.positions),
+            total_value=result.total_value,
+            details={"external_account_ids": result.external_account_ids},
+        )
+    )
+    db.commit()
+    write_audit_log(
+        db,
+        current_user.id,
+        "integration.synced",
+        {"provider_code": connection.provider_code, "positions_synced": len(result.positions), "total_value": str(result.total_value)},
+    )
+    return IntegrationSyncResponse(
+        provider_code=connection.provider_code,
+        status="ok",
+        positions_synced=len(result.positions),
+        total_value=result.total_value,
+        synced_at=connection.last_sync_at.isoformat() if connection.last_sync_at else None,
+        message="Synchronisation Coinbase terminee.",
+    )
+
+
 @app.post("/auth/register", response_model=UserProfileResponse, status_code=status.HTTP_201_CREATED)
 def register(payload: RegisterRequest, request: Request, db: Session = Depends(get_db)) -> UserProfileResponse:
     email = normalize_email(payload.email)
@@ -409,10 +545,20 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
     user = User(
         email=email,
         full_name=payload.full_name.strip(),
+        phone_number=None,
         password_hash=hash_password(payload.password),
         role="user",
         assigned_roles=["user"],
-        personal_settings=payload.personal_settings or {"dashboard_density": "comfortable", "currency": "EUR", "theme": "family"},
+        personal_settings=payload.personal_settings or {
+            "dashboard_density": "comfortable",
+            "currency": "EUR",
+            "theme": "family",
+            "onboarding_style": "coach",
+            "notify_email": True,
+            "weekly_digest": True,
+            "market_alerts": True,
+            "communication_frequency": "important_only",
+        },
     )
     db.add(user)
     db.commit()
@@ -457,6 +603,8 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
         else:
             remaining_codes = consume_recovery_code(device.recovery_codes, payload.recovery_code)
             if remaining_codes is None:
+                if payload.mfa_code or payload.recovery_code:
+                    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid MFA code")
                 return TokenResponse(mfa_required=True, user=to_user_profile(user))
             device.recovery_codes = remaining_codes
             device.last_used_at = datetime.utcnow()
@@ -569,6 +717,14 @@ def confirm_password_reset(payload: PasswordResetConfirmRequest, request: Reques
 # ---------------------------------------------------------------------------
 # OAuth routes (Google, FranceConnect)
 # ---------------------------------------------------------------------------
+
+@app.get("/auth/oauth/providers")
+def list_oauth_providers():
+    """Returns which OAuth providers are configured and available."""
+    return [
+        {"provider": name, "enabled": cfg["enabled"]()}
+        for name, cfg in _OAUTH_PROVIDERS.items()
+    ]
 
 @app.get("/auth/oauth/{provider}")
 async def oauth_redirect(provider: str, request: Request) -> RedirectResponse:
@@ -710,7 +866,7 @@ async def oauth_callback(
 
     # Issue JWT tokens
     access_tok, expires_in = create_access_token(user.id, user.email, user.role, mfa_verified=False)
-    refresh_tok = create_refresh_token(user.id, redis_client)
+    refresh_tok = create_refresh_token(redis_client, user.id, user.email, user.role, mfa_verified=False)
 
     write_audit_log(
         db, user.id, "auth.oauth_login",
@@ -721,17 +877,6 @@ async def oauth_callback(
     import urllib.parse
     fragment = urllib.parse.urlencode({"oauth_access": access_tok, "oauth_refresh": refresh_tok})
     return RedirectResponse(f"{settings.public_base_url}/?{fragment}")
-
-
-@app.get("/auth/oauth/providers")
-def list_oauth_providers():
-    """Returns which OAuth providers are configured and available."""
-    return [
-        {"provider": name, "enabled": cfg["enabled"]()}
-        for name, cfg in _OAUTH_PROVIDERS.items()
-    ]
-
-
 @app.get("/auth/me", response_model=UserProfileResponse)
 def me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> UserProfileResponse:
     write_audit_log(db, current_user.id, "auth.me_viewed", {})
@@ -742,6 +887,7 @@ def me(current_user: User = Depends(get_current_user), db: Session = Depends(get
 def update_me_settings(payload: UserSettingsUpdateRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> UserProfileResponse:
     if payload.full_name:
         current_user.full_name = payload.full_name.strip()
+    current_user.phone_number = payload.phone_number.strip() if payload.phone_number else None
     merged_settings = dict(current_user.personal_settings or {})
     merged_settings.update(payload.personal_settings)
     current_user.personal_settings = merged_settings
@@ -883,117 +1029,28 @@ def dashboard(portfolio_id: str, current_user: User = Depends(get_current_user),
 
     write_audit_log(db, current_user.id, "dashboard.viewed", {"portfolio_id": portfolio.id})
 
-    is_empty = portfolio.total_value <= 0
     bank_connectors = list_bank_providers_for_user(db, current_user.id)
     connections = db.scalars(select(BrokerConnection).where(BrokerConnection.user_id == current_user.id)).all()
-    has_any_integration = len(connections) > 0
+    active_connections = [connection for connection in connections if connection.status == "active"]
+    if not active_connections:
+        return build_dashboard_from_positions(portfolio, bank_connectors, connections, [])
 
-    if is_empty or not has_any_integration:
-        return DashboardResponse(
-            portfolio_id=portfolio.id,
-            portfolio_name=portfolio.name,
-            total_value=Decimal("0"),
-            cash_balance=Decimal("0"),
-            pnl_realized=Decimal("0"),
-            pnl_unrealized=Decimal("0"),
-            annualized_return=0.0,
-            rolling_volatility=0.0,
-            max_drawdown=0.0,
-            is_empty=True,
-            key_indicators=[
-                {"label": "Valeur totale", "value": "0 EUR", "trend": "neutral"},
-                {"label": "Liquidites", "value": "0 EUR", "trend": "neutral"},
-                {"label": "Transactions ce mois", "value": "0", "trend": "neutral"},
-                {"label": "Risque actuel", "value": "Aucun", "trend": "neutral"},
-            ],
-            sector_heatmap=[],
-            allocation=[],
-            recent_flows=[],
-            suggestions=[
-                {"title": "Connecter une banque", "score": 95, "justification": "Commencez par relier un compte existant pour alimenter le portefeuille."},
-                {"title": "Definir votre profil familial", "score": 78, "justification": "Le niveau de risque et l'horizon de placement guideront les prochaines propositions."},
-            ],
-            bank_connectors=bank_connectors,
-            connected_accounts=[
-                {
-                    "provider_name": connection.provider_name,
-                    "status": connection.status,
-                    "account_label": connection.account_label,
-                }
-                for connection in connections
-            ],
-            next_steps=[
-                "Connecter un etablissement existant pour alimenter le portefeuille.",
-                "Definir une epargne de precaution et un horizon de placement.",
-                "Activer la MFA avant toute proposition d'ordre.",
-            ],
-        )
-
-    suggestions = [
-        {
-            "title": "Renforcer ETF monde",
-            "score": 78,
-            "justification": "Diversification améliorée avec volatilité contenue.",
-        },
-        {
-            "title": "Réduire surpoids crypto",
-            "score": 71,
-            "justification": "Budget de risque consommé trop vite dans le scénario prudent.",
-        },
-    ]
-    return DashboardResponse(
-        portfolio_id=portfolio.id,
-        portfolio_name=portfolio.name,
-        total_value=portfolio.total_value,
-        cash_balance=Decimal("19540.10"),
-        pnl_realized=Decimal("4120.50"),
-        pnl_unrealized=Decimal("7830.35"),
-        annualized_return=0.084,
-        rolling_volatility=0.118,
-        max_drawdown=-0.092,
-        is_empty=False,
-        key_indicators=[
-            {"label": "Valeur totale", "value": f"{portfolio.total_value} EUR", "trend": "+4.2%"},
-            {"label": "Liquidites", "value": "19 540 EUR", "trend": "stable"},
-            {"label": "Rendement annualise", "value": "8.4%", "trend": "+1.1 pt"},
-            {"label": "Budget de risque", "value": "61%", "trend": "sous controle"},
-        ],
-        sector_heatmap=[
-            {"sector": "Tech", "weight": 0.24, "pnl": 0.14},
-            {"sector": "Healthcare", "weight": 0.16, "pnl": 0.06},
-            {"sector": "Energy", "weight": 0.08, "pnl": -0.01},
-        ],
-        allocation=[
-            {"class": "Actions", "weight": 0.46},
-            {"class": "ETF", "weight": 0.29},
-            {"class": "Crypto", "weight": 0.09},
-            {"class": "Cash", "weight": 0.16},
-        ],
-        recent_flows=[
-            {"date": "2026-03-10", "type": "deposit", "amount": 1500},
-            {"date": "2026-03-08", "type": "buy", "amount": -850},
-        ],
-        suggestions=suggestions,
-        bank_connectors=bank_connectors,
-        connected_accounts=[
-            {
-                "provider_name": connection.provider_name,
-                "status": connection.status,
-                "account_label": connection.account_label,
-            }
-            for connection in connections
-        ],
-        next_steps=[
-            "Verifier la coherence entre objectif d'epargne et allocation actuelle.",
-            "Valider ou rejeter les propositions IA avant execution.",
-        ],
-    )
+    positions = db.scalars(
+        select(IntegrationPosition).where(IntegrationPosition.connection_id.in_([connection.id for connection in active_connections]))
+    ).all()
+    return build_dashboard_from_positions(portfolio, bank_connectors, connections, positions)
 
 
 @app.get("/api/v1/broker-connections/providers", response_model=list[BankProvider])
 def broker_connection_providers(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[BankProvider]:
     write_audit_log(db, current_user.id, "broker.providers_listed", {})
     return list_bank_providers_for_user(db, current_user.id)
+
+
+@app.get("/api/v1/integrations", response_model=list[IntegrationConnectionResponse])
+def list_integrations(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[IntegrationConnectionResponse]:
+    connections = db.scalars(select(BrokerConnection).where(BrokerConnection.user_id == current_user.id).order_by(BrokerConnection.created_at.desc())).all()
+    return [serialize_integration_connection(db, connection) for connection in connections]
 
 
 @app.post("/api/v1/broker-connections/request", response_model=BankConnectionResponse, status_code=status.HTTP_201_CREATED)
@@ -1009,6 +1066,12 @@ def request_broker_connection(payload: BankConnectionRequest, current_user: User
         )
     )
     if existing:
+        existing.status = "active"
+        if payload.account_label:
+            existing.account_label = payload.account_label
+        db.add(existing)
+        db.commit()
+        db.refresh(existing)
         write_audit_log(db, current_user.id, "broker.connection_reused", {"provider_code": existing.provider_code, "status": existing.status})
         return BankConnectionResponse(connection_id=existing.id, provider_code=existing.provider_code, status=existing.status)
 
@@ -1016,8 +1079,10 @@ def request_broker_connection(payload: BankConnectionRequest, current_user: User
         user_id=current_user.id,
         provider_code=provider["code"],
         provider_name=provider["name"],
-        status="pending_user_consent",
+        status="active",
         account_label=payload.account_label,
+        supports_read=True,
+        supports_trade=False,
     )
     db.add(connection)
     db.commit()
@@ -1026,12 +1091,128 @@ def request_broker_connection(payload: BankConnectionRequest, current_user: User
     return BankConnectionResponse(connection_id=connection.id, provider_code=connection.provider_code, status=connection.status)
 
 
+@app.post("/api/v1/broker-connections/toggle", response_model=BankIntegrationToggleResponse)
+def toggle_broker_connection(payload: BankIntegrationToggleRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> BankIntegrationToggleResponse:
+    provider = next((item for item in SUPPORTED_BANK_PROVIDERS if item["code"] == payload.provider_code), None)
+    if provider is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not supported")
+
+    connection = db.scalar(
+        select(BrokerConnection).where(
+            BrokerConnection.user_id == current_user.id,
+            BrokerConnection.provider_code == payload.provider_code,
+        )
+    )
+
+    target_status = "active" if payload.enabled else "disabled"
+    if connection is None:
+        connection = BrokerConnection(
+            user_id=current_user.id,
+            provider_code=provider["code"],
+            provider_name=provider["name"],
+            status=target_status,
+            account_label=payload.account_label,
+            supports_read=True,
+            supports_trade=False,
+        )
+    else:
+        connection.status = target_status
+        if payload.account_label:
+            connection.account_label = payload.account_label
+
+    db.add(connection)
+    db.commit()
+    db.refresh(connection)
+    write_audit_log(
+        db,
+        current_user.id,
+        "broker.connection_toggled",
+        {"provider_code": connection.provider_code, "enabled": payload.enabled, "status": connection.status},
+    )
+    return BankIntegrationToggleResponse(
+        connection_id=connection.id,
+        provider_code=connection.provider_code,
+        status=connection.status,
+    )
+
+
+@app.put("/api/v1/integrations/credentials", response_model=IntegrationConnectionResponse)
+def upsert_integration_credentials(payload: IntegrationCredentialRequest, current_user: User = Depends(require_mfa_for_sensitive_operation), db: Session = Depends(get_db)) -> IntegrationConnectionResponse:
+    provider = next((item for item in SUPPORTED_BANK_PROVIDERS if item["code"] == payload.provider_code), None)
+    if provider is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not supported")
+
+    connection = db.scalar(
+        select(BrokerConnection).where(
+            BrokerConnection.user_id == current_user.id,
+            BrokerConnection.provider_code == payload.provider_code,
+        )
+    )
+    if connection is None:
+        connection = BrokerConnection(
+            user_id=current_user.id,
+            provider_code=provider["code"],
+            provider_name=provider["name"],
+            status="active",
+            supports_read=True,
+            supports_trade=False,
+        )
+
+    if payload.account_label is not None:
+        connection.account_label = payload.account_label.strip() or None
+    if payload.api_key:
+        connection.api_key_encrypted = encrypt_secret(payload.api_key.strip())
+    if payload.api_secret:
+        connection.api_secret_encrypted = encrypt_secret(payload.api_secret.strip())
+    if payload.external_portfolio_id is not None:
+        connection.external_portfolio_id = payload.external_portfolio_id.strip() or None
+
+    db.add(connection)
+    db.commit()
+    db.refresh(connection)
+    write_audit_log(db, current_user.id, "integration.credentials_updated", {"provider_code": connection.provider_code})
+    return serialize_integration_connection(db, connection)
+
+
+@app.post("/api/v1/integrations/{provider_code}/sync", response_model=IntegrationSyncResponse)
+def sync_integration(provider_code: str, current_user: User = Depends(require_mfa_for_sensitive_operation), db: Session = Depends(get_db)) -> IntegrationSyncResponse:
+    connection = db.scalar(
+        select(BrokerConnection).where(
+            BrokerConnection.user_id == current_user.id,
+            BrokerConnection.provider_code == provider_code,
+        )
+    )
+    if connection is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Integration not configured")
+
+    try:
+        return run_provider_sync(db, current_user, connection)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        connection.last_sync_at = datetime.utcnow()
+        connection.last_sync_status = "error"
+        connection.last_sync_error = str(exc)
+        db.add(connection)
+        db.add(
+            IntegrationSyncEvent(
+                connection_id=connection.id,
+                provider_code=connection.provider_code,
+                status="error",
+                error_message=str(exc),
+            )
+        )
+        db.commit()
+        logger.exception("Integration sync failed")
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Integration sync failed: {exc}") from exc
+
+
 @app.post("/api/v1/recommendations", response_model=RecommendationResponse)
 def recommendations(payload: RecommendationRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> RecommendationResponse:
     if is_kill_switch_active(db):
         raise HTTPException(status_code=423, detail="Kill switch active")
 
-    agents = compute_agents(payload)
+    agents = build_agent_bundle(payload)
     action = "rebalance" if agents.portfolio_risk_score > 65 else "buy" if agents.attractiveness_score > 68 else "hold"
     confidence = int((agents.attractiveness_score + agents.fundamental_score + agents.sentiment_score) / 3)
     risk_level = "high" if agents.portfolio_risk_score > 72 else "medium" if agents.portfolio_risk_score > 45 else "low"
