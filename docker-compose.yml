@@ -1,0 +1,78 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-picsou}
+      POSTGRES_USER: ${POSTGRES_USER:-picsou}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-picsou-change-me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-picsou} -d ${POSTGRES_DB:-picsou}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./apps/api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      POSTGRES_DSN: postgresql+psycopg://${POSTGRES_USER:-picsou}:${POSTGRES_PASSWORD:-picsou-change-me}@postgres:5432/${POSTGRES_DB:-picsou}
+      REDIS_URL: redis://redis:6379/0
+      KILL_SWITCH_DEFAULT: ${KILL_SWITCH_DEFAULT:-false}
+    expose:
+      - "8000"
+
+  web:
+    build:
+      context: ./apps/web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      API_BASE_URL: http://api:8000
+      DEMO_PORTFOLIO_ID: ${DEMO_PORTFOLIO_ID:-demo}
+    expose:
+      - "3000"
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_started
+      api:
+        condition: service_started
+    ports:
+      - "80:80"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,19 @@
+:80 {
+  encode gzip zstd
+
+  @api path /api/* /health
+  handle @api {
+    reverse_proxy api:8000
+  }
+
+  handle {
+    reverse_proxy web:3000
+  }
+
+  header {
+    X-Frame-Options DENY
+    X-Content-Type-Options nosniff
+    Referrer-Policy strict-origin-when-cross-origin
+    Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; connect-src 'self' http: https:; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+  }
+}
