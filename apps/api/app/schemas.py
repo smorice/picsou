@@ -291,6 +291,107 @@ class RecommendationResponse(BaseModel):
     agents: dict
 
 
+class BettingOddsQuote(BaseModel):
+    bookmaker: str = Field(min_length=1, max_length=120)
+    odds: float = Field(gt=1.0)
+
+
+class BettingEventSnapshot(BaseModel):
+    event_id: str = Field(min_length=1, max_length=120)
+    event_label: str = Field(min_length=1, max_length=255)
+    sport: str = Field(min_length=1, max_length=64)
+    model_win_probability: float = Field(ge=0.0, le=1.0)
+    quotes: list[BettingOddsQuote] = Field(default_factory=list)
+
+
+class BettingRiskConfig(BaseModel):
+    bankroll_eur: float = Field(gt=0)
+    kelly_fraction: float = Field(default=0.35, gt=0, le=1.0)
+    min_edge: float = Field(default=0.01, ge=0.0, le=1.0)
+    max_stake_pct_per_bet: float = Field(default=0.03, gt=0.0, le=1.0)
+    max_stake_eur: float | None = Field(default=None, gt=0)
+
+
+class BettingValueScanRequest(BaseModel):
+    events: list[BettingEventSnapshot] = Field(default_factory=list)
+    risk: BettingRiskConfig
+
+
+class BettingValueOpportunity(BaseModel):
+    event_id: str
+    event_label: str
+    sport: str
+    bookmaker: str
+    best_odds: float
+    model_probability: float
+    implied_probability: float
+    edge_probability: float
+    value_score: float
+    stake_eur: float
+    stake_pct_bankroll: float
+    decision: Literal["bet", "skip"]
+
+
+class BettingValueScanResponse(BaseModel):
+    processed_events: int
+    bet_candidates: int
+    opportunities: list[BettingValueOpportunity]
+
+
+class BettingLiveOddsFetchRequest(BaseModel):
+    sport_key: str = Field(min_length=1, max_length=120)
+    regions: str = Field(default="eu", min_length=1, max_length=32)
+    markets: str = Field(default="h2h", min_length=1, max_length=64)
+
+
+class BettingLiveOddsSelection(BaseModel):
+    bookmaker: str
+    outcome: str
+    odds: float
+
+
+class BettingLiveOddsEvent(BaseModel):
+    event_id: str
+    sport_key: str
+    commence_time: str
+    home_team: str
+    away_team: str
+    selections: list[BettingLiveOddsSelection]
+
+
+class BettingLiveOddsFetchResponse(BaseModel):
+    source: str
+    fetched_events: int
+    events: list[BettingLiveOddsEvent]
+
+
+class BettingPoissonRequest(BaseModel):
+    home_team: str = Field(min_length=1, max_length=120)
+    away_team: str = Field(min_length=1, max_length=120)
+    expected_goals_home: float = Field(ge=0.0, le=8.0)
+    expected_goals_away: float = Field(ge=0.0, le=8.0)
+    max_goals: int = Field(default=8, ge=2, le=14)
+
+
+class BettingPoissonResponse(BaseModel):
+    home_team: str
+    away_team: str
+    expected_goals_home: float
+    expected_goals_away: float
+    home_win_probability: float
+    draw_probability: float
+    away_win_probability: float
+
+
+class BettingAnalyticsResponse(BaseModel):
+    roi_pct: float
+    yield_pct: float
+    variance: float
+    max_drawdown_pct: float
+    bets: int
+    win_rate_pct: float
+
+
 class TradeProposalRequest(BaseModel):
     portfolio_id: str
     asset_symbol: str

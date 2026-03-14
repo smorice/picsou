@@ -563,7 +563,7 @@ function buildAllPortfolios(
 
   const vp = dashboard.virtual_portfolio;
   const vpHistory = virtualSimulation?.history ?? vp.history_points;
-  const vpValue = virtualSimulation?.currentValue ?? parseFloat(vp.current_value) || 0;
+  const vpValue = virtualSimulation?.currentValue ?? (parseFloat(vp.current_value) || 0);
   const vpBudget = parseFloat(vp.budget_initial) || 100;
   const vpPnl = vpValue - vpBudget;
   const vpOps = virtualSimulation?.operations ?? vp.latest_actions.map((a, i) => ({
@@ -752,6 +752,9 @@ function hasAdminRole(user: UserProfile | null) {
 function defaultSettingsFromUser(user: UserProfile | null) {
   const rawGoal = user?.personal_settings.net_goal_after_tax;
   const goalConfig = rawGoal && typeof rawGoal === 'object' ? rawGoal as Record<string, unknown> : {};
+  const rawLossGuard = user?.personal_settings.loss_guard;
+  const lossGuardConfig = rawLossGuard && typeof rawLossGuard === 'object' ? rawLossGuard as Record<string, unknown> : {};
+  const lossGuardType = lossGuardConfig.type === 'amount' ? 'amount' : 'percent';
   return {
     fullName: user?.full_name ?? '',
     phoneNumber: user?.phone_number ?? '',
@@ -770,6 +773,10 @@ function defaultSettingsFromUser(user: UserProfile | null) {
     autoRefreshSeconds: String(user?.personal_settings.auto_refresh_seconds ?? '30'),
     objectiveNetGain: String(toPositiveNumber(goalConfig.target_eur, 250)),
     objectivePeriod: normalizeGoalPeriod(goalConfig.period),
+    riskProfile: normalizeUserRiskProfile(user?.personal_settings.risk_profile),
+    maxLossType: lossGuardType,
+    maxLossValue: String(toPositiveNumber(lossGuardConfig.value, lossGuardType === 'amount' ? 1000 : 30)),
+    maxLossDays: String(Math.max(1, Math.min(365, Number(lossGuardConfig.days) || 30))),
   };
 }
 
@@ -1164,7 +1171,7 @@ const VIRTUAL_RISK_PRESETS: Record<VirtualRiskProfile, {
 export default function RobinApp() {
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [activeApp, setActiveApp] = useState<'finance' | 'betting'>('finance');
-  const [appView, setAppView] = useState<'dashboard' | 'portfolios' | 'settings' | 'admin' | 'strategies'>('dashboard');
+  const [appView, setAppView] = useState<'dashboard' | 'portfolios' | 'settings' | 'admin' | 'strategies' | 'account'>('dashboard');
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState<string | null>(null);
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -1230,6 +1237,7 @@ export default function RobinApp() {
   const [agentConfigs, setAgentConfigs] = useState<Record<string, AgentQuotaConfig>>({});
   const [autopilotRunning, setAutopilotRunning] = useState(false);
   const [emergencyStopActive, setEmergencyStopActive] = useState(false);
+  const [adminDailyTransactionLimit, setAdminDailyTransactionLimit] = useState(1000);
   const [adminTransactionLog, setAdminTransactionLog] = useState<Array<{ id: string; user_id: string; user_name: string; portfolio_id: string; asset: string; side: string; amount: number; status: string; created_at: string }>>([]);
   const [marketSignalFilter, setMarketSignalFilter] = useState<'all' | 'crypto' | 'actions' | 'etf' | 'obligations'>('all');
   const [subscribeSignalId, setSubscribeSignalId] = useState<string | null>(null);
@@ -1366,6 +1374,9 @@ export default function RobinApp() {
       botToken: typeof telegram.bot_token === 'string' ? telegram.bot_token : '',
       chatId: typeof telegram.chat_id === 'string' ? telegram.chat_id : '',
     });
+
+    const adminLimitRaw = Number(user.personal_settings.admin_transaction_daily_limit);
+    setAdminDailyTransactionLimit(Math.max(1, Math.min(1000, Number.isFinite(adminLimitRaw) && adminLimitRaw > 0 ? adminLimitRaw : 1000)));
   }, [user]);
 
   useEffect(() => {
@@ -1693,6 +1704,13 @@ export default function RobinApp() {
         target_eur: toPositiveNumber(settingsForm.objectiveNetGain, 0),
         period: normalizeGoalPeriod(settingsForm.objectivePeriod),
       },
+      risk_profile: settingsForm.riskProfile,
+      loss_guard: {
+        type: settingsForm.maxLossType === 'amount' ? 'amount' : 'percent',
+        value: toPositiveNumber(settingsForm.maxLossValue, settingsForm.maxLossType === 'amount' ? 1000 : 30),
+        days: Math.max(1, Math.min(365, Number(settingsForm.maxLossDays) || 30)),
+      },
+      admin_transaction_daily_limit: Math.max(1, Math.min(1000, Number(adminDailyTransactionLimit) || 1000)),
       portfolio_visibility: visibilityState,
       portfolio_activation: portfolioActivation,
       decision_resolutions: decisionState,
@@ -1833,7 +1851,7 @@ export default function RobinApp() {
         ...(patch.domain_policy ?? {}),
       },
       max_amount: Math.max(1, Number((patch.max_amount ?? current.max_amount) || defaultAgentConfig.max_amount)),
-      max_transactions_per_day: Math.max(1, Number((patch.max_transactions_per_day ?? current.max_transactions_per_day) || defaultAgentConfig.max_transactions_per_day)),
+      max_transactions_per_day: Math.max(1, Math.min(1000, Number((patch.max_transactions_per_day ?? current.max_transactions_per_day) || defaultAgentConfig.max_transactions_per_day))),
     };
     const nextConfigs = { ...agentConfigs, [portfolioId]: nextConfig };
     setAgentConfigs(nextConfigs);
@@ -1866,6 +1884,45 @@ export default function RobinApp() {
       }
     } catch {
       // Keep local settings even if persistence fails.
+    }
+  }
+
+  async function saveAdminDailyTransactionLimit() {
+    if (!accessToken || !hasAdminRole(user)) {
+      return;
+    }
+    const normalizedLimit = Math.max(1, Math.min(1000, Number(adminDailyTransactionLimit) || 1000));
+    setAdminDailyTransactionLimit(normalizedLimit);
+    setSubmitting(true);
+    setAdminFeedback(null);
+    try {
+      const response = await fetch(apiUrl('/auth/me/settings'), {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeader(accessToken),
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          full_name: settingsForm.fullName,
+          phone_number: settingsForm.phoneNumber || null,
+          client_context: clientContext,
+          personal_settings: {
+            ...buildPersonalSettingsPayload(),
+            admin_transaction_daily_limit: normalizedLimit,
+          },
+        }),
+      });
+      const payload = await readJsonResponse<UserProfile>(response);
+      if (!response.ok || !payload) {
+        throw new Error(extractErrorMessage(payload, 'Mise a jour de la limite impossible'));
+      }
+      setUser(payload);
+      setAdminFeedback(`Limite quotidienne globale mise à jour: ${normalizedLimit} transaction(s)/jour.`);
+    } catch (err) {
+      setAdminFeedback(err instanceof Error ? err.message : 'Mise a jour de la limite impossible');
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -2589,11 +2646,21 @@ export default function RobinApp() {
   const estimatedNetGainPeriod = grossGainPeriod > 0 ? grossGainPeriod * (1 - ESTIMATED_TAX_RATE) : grossGainPeriod;
   const goalProgress = goalTargetNet > 0 ? Math.max(0, Math.min(1, estimatedNetGainPeriod / goalTargetNet)) : 0;
   const goalReached = goalTargetNet > 0 && estimatedNetGainPeriod >= goalTargetNet;
+  const goalWindowMs = goalPeriodDays * 24 * 60 * 60 * 1000;
+  const goalNowTs = goalNowPoint?.ts ?? Date.now();
+  const goalBaseTs = goalBasePoint?.ts ?? (goalNowTs - goalWindowMs);
+  const elapsedRatio = goalWindowMs > 0 ? Math.max(0, Math.min(1, (goalNowTs - goalBaseTs) / goalWindowMs)) : 0;
+  const goalTrajectoryGap = goalProgress - elapsedRatio;
+  const goalTrajectoryTone = goalReached
+    ? 'up'
+    : goalTargetNet > 0
+      ? goalTrajectoryGap >= -0.03 ? 'up' : 'down'
+      : 'neutral';
   const goalProgressText = goalTargetNet > 0
     ? `${estimatedNetGainPeriod >= 0 ? '+' : ''}${estimatedNetGainPeriod.toFixed(0)}€ / ${goalTargetNet.toFixed(0)}€`
     : 'Objectif non défini';
-  const trendArrowSpeed = evolution24h.tone === 'up' ? 1.9 : evolution24h.tone === 'down' ? 3.2 : 2.5;
-  const trendArrowScale = evolution24h.tone === 'up' ? 1.08 : evolution24h.tone === 'down' ? 0.88 : 0.96;
+  const trendArrowSpeed = goalTrajectoryTone === 'up' ? 1.9 : goalTrajectoryTone === 'down' ? 3.2 : 2.5;
+  const trendArrowScale = goalTrajectoryTone === 'up' ? 1.08 : goalTrajectoryTone === 'down' ? 0.88 : 0.96;
   const portfolioEvolutionRows = visiblePortfolios.map((portfolio) => ({
     id: portfolio.id,
     label: portfolio.label,
@@ -2718,6 +2785,22 @@ export default function RobinApp() {
     }).length;
   }
 
+  function countTodayOperationsAll() {
+    const now = new Date();
+    return allPortfolios.reduce((sum, portfolio) => (
+      sum + portfolio.operations.filter((op) => {
+        const date = new Date(op.date);
+        return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+      }).length
+    ), 0);
+  }
+
+  function getEffectiveDailyTransactionLimit(portfolioId: string) {
+    const cfg = getAgentConfig(portfolioId);
+    const adminCap = Math.max(1, Math.min(1000, Number(adminDailyTransactionLimit) || 1000));
+    return Math.min(Math.max(1, cfg.max_transactions_per_day), adminCap);
+  }
+
   function isDecisionAllowedByAgentPolicy(insight: InsightItem, portfolioId: string) {
     const cfg = getAgentConfig(portfolioId);
     const asset = inferDecisionAsset(insight);
@@ -2725,8 +2808,12 @@ export default function RobinApp() {
     if (cfg.domain_policy[domain] === 'reject') {
       return { allowed: false, reason: `Domaine ${domain} rejeté par votre quota agent.` };
     }
-    if (countTodayOperations(portfolioId) >= cfg.max_transactions_per_day) {
-      return { allowed: false, reason: 'Quota quotidien de transactions atteint.' };
+    const effectiveLimit = getEffectiveDailyTransactionLimit(portfolioId);
+    if (countTodayOperationsAll() >= Math.max(1, Math.min(1000, Number(adminDailyTransactionLimit) || 1000))) {
+      return { allowed: false, reason: `Limite globale quotidienne atteinte (${Math.max(1, Math.min(1000, Number(adminDailyTransactionLimit) || 1000))}).` };
+    }
+    if (countTodayOperations(portfolioId) >= effectiveLimit) {
+      return { allowed: false, reason: `Quota quotidien atteint (${effectiveLimit} transaction(s)).` };
     }
     return { allowed: true, reason: '' };
   }
@@ -2931,7 +3018,11 @@ export default function RobinApp() {
         const d = new Date(op.date);
         return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
       }).length;
-      if (todayCount >= cfg.max_transactions_per_day) {
+      const effectiveLimit = getEffectiveDailyTransactionLimit(virtualPortfolioId);
+      if (countTodayOperationsAll() >= Math.max(1, Math.min(1000, Number(adminDailyTransactionLimit) || 1000))) {
+        return prev;
+      }
+      if (todayCount >= effectiveLimit) {
         return prev;
       }
 
@@ -3090,7 +3181,7 @@ export default function RobinApp() {
       ],
       recentBets: [],
     });
-    setBettingAlert('Portefeuille virtuel Paris Sportifs réinitialisé à 100 € (historique simulé supprimé).');
+    setBettingAlert('Portefeuille virtuel Paris en ligne réinitialisé à 100 € (historique simulé supprimé).');
   }
 
   useEffect(() => {
@@ -3178,10 +3269,10 @@ export default function RobinApp() {
           <div className="brandInfo">
             <strong>
               <span className="robinWord">ROBIN</span>
-              {user ? ` ${activeApp === 'betting' ? '• Paris Sportifs' : '• Finance'}` : ''}
+              {user ? ` ${activeApp === 'betting' ? '• Paris en ligne' : '• Finance'}` : ''}
             </strong>
             <div
-              className={`trendArrowTrack ${evolution24h.tone} ${goalReached ? 'achieved' : ''}`}
+              className={`trendArrowTrack ${goalTrajectoryTone} ${goalReached ? 'achieved' : ''}`}
               aria-hidden="true"
               style={{
                 ['--trend-speed' as string]: `${trendArrowSpeed}s`,
@@ -3473,48 +3564,183 @@ export default function RobinApp() {
         <section className="workspaceShell">
           {/* App switcher */}
           <div className="appSwitcher">
-            <button
-              className={activeApp === 'finance' ? 'appSwitchBtn finance active' : 'appSwitchBtn finance'}
-              onClick={() => { setActiveApp('finance'); setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-              type="button"
-            >
-              🏦 Finance
-            </button>
-            <button
-              className={activeApp === 'betting' ? 'appSwitchBtn betting active' : 'appSwitchBtn betting'}
-              onClick={() => { setActiveApp('betting'); setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-              type="button"
-            >
-              ⚽ Paris Sportifs
-            </button>
-            {canAccessAdmin ? (
+            <div className="appSwitcherSide left">
               <button
-                className={appView === 'admin' ? 'appSwitchBtn admin active' : 'appSwitchBtn admin'}
-                onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('admin'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                className={activeApp === 'finance' && appView !== 'account' && appView !== 'admin' ? 'appSwitchBtn finance active' : 'appSwitchBtn finance'}
+                onClick={() => { setActiveApp('finance'); setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
                 type="button"
               >
-                🛡️ Admin
+                🏦 Finance
               </button>
-            ) : null}
+              <button
+                className={activeApp === 'betting' && appView !== 'account' && appView !== 'admin' ? 'appSwitchBtn betting active' : 'appSwitchBtn betting'}
+                onClick={() => { setActiveApp('betting'); setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                type="button"
+              >
+                ⚽ Paris en ligne
+              </button>
+            </div>
+            <div className="appSwitcherSide right">
+              {canAccessAdmin ? (
+                <button
+                  className={appView === 'admin' ? 'appSwitchBtn admin active' : 'appSwitchBtn admin'}
+                  onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('admin'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                  type="button"
+                >
+                  🛡️ Admin
+                </button>
+              ) : null}
+              <button
+                className={appView === 'account' ? 'appSwitchBtn account active' : 'appSwitchBtn account'}
+                onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('account'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                type="button"
+              >
+                👤 Mon compte
+              </button>
+            </div>
           </div>
 
-          <nav className="workspaceNav">
-            <button className={appView === 'dashboard' && !portfolioDetailOpen && !strategyDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-              Tableau de bord
-            </button>
-            {activeApp === 'finance' ? (
-              <button className={appView === 'portfolios' && !portfolioDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                Portefeuilles
+          {(appView !== 'admin' && appView !== 'account') ? (
+            <nav className="workspaceNav">
+              <button className={appView === 'dashboard' && !portfolioDetailOpen && !strategyDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                Tableau de bord
               </button>
-            ) : (
-              <button className={appView === 'strategies' && !strategyDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('strategies'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                Portefeuilles
+              {activeApp === 'finance' ? (
+                <button className={appView === 'portfolios' && !portfolioDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                  Portefeuilles
+                </button>
+              ) : (
+                <button className={appView === 'strategies' && !strategyDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('strategies'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                  Portefeuilles
+                </button>
+              )}
+              <button className={appView === 'settings' && !portfolioDetailOpen && !strategyDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                Configuration
               </button>
-            )}
-            <button className={appView === 'settings' && !portfolioDetailOpen && !strategyDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-              Configuration
-            </button>
-          </nav>
+            </nav>
+          ) : null}
+
+          {appView === 'account' ? (
+            <section className="workspaceGrid settingsGrid">
+              <article className="featureCard settingsIntroCard">
+                <div className="cardHeader">
+                  <h2>Mon compte</h2>
+                  <span>Informations, accès, communication et risque</span>
+                </div>
+                <p style={{ fontSize: '.85rem', color: 'var(--muted)', margin: 0 }}>Centralisez ici vos informations personnelles, vos moyens de connexion, vos préférences de communication, votre profil de risque et vos limites IA.</p>
+              </article>
+
+              <article className="featureCard settingsCard">
+                <div className="cardHeader">
+                  <h2>Informations personnelles & connexion</h2>
+                  <span>Identité, contact et sécurité</span>
+                </div>
+                <form className="authForm" onSubmit={saveSettings}>
+                  <label>
+                    Nom affiché
+                    <input value={settingsForm.fullName} onChange={(event) => setSettingsForm((state) => ({ ...state, fullName: event.target.value }))} type="text" required />
+                  </label>
+                  <label>
+                    Email principal
+                    <input type="email" value={user.email} disabled />
+                  </label>
+                  <label>
+                    Numéro de téléphone
+                    <input value={settingsForm.phoneNumber} onChange={(event) => setSettingsForm((state) => ({ ...state, phoneNumber: event.target.value }))} type="tel" placeholder="+33 6 12 34 56 78" />
+                  </label>
+                  <label>
+                    Pays de référence
+                    <input value={settingsForm.country} onChange={(event) => setSettingsForm((state) => ({ ...state, country: event.target.value }))} type="text" placeholder={clientContext.country || 'France'} />
+                  </label>
+                  <div className="infoPanel mutedPanel" style={{ marginTop: 4 }}>
+                    <strong>Accès du compte</strong>
+                    <p>MFA: {user.mfa_enabled ? 'activé' : 'non activé'} · Méthode privilégiée: {String(user.personal_settings.preferred_mfa_method ?? 'email')}.</p>
+                    <button className="secondaryButton" onClick={() => { setActiveApp('finance'); setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Configurer MFA</button>
+                  </div>
+                  <button className="primaryButton" disabled={submitting} type="submit">
+                    {submitting ? 'Enregistrement...' : 'Sauvegarder mes informations'}
+                  </button>
+                </form>
+              </article>
+
+              <article className="featureCard settingsCard">
+                <div className="cardHeader">
+                  <h2>Communication, risque et objectif IA</h2>
+                  <span>Préférences de suivi et garde-fous</span>
+                </div>
+                <div style={{ display: 'grid', gap: 12 }}>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                    <label className="checkRow" style={{ margin: 0, padding: '6px 10px' }}>
+                      <input type="checkbox" checked={settingsForm.notifyEmail} onChange={(e) => setSettingsForm((s) => ({ ...s, notifyEmail: e.target.checked }))} />
+                      <span style={{ fontSize: '.78rem' }}>Email</span>
+                    </label>
+                    <label className="checkRow" style={{ margin: 0, padding: '6px 10px' }}>
+                      <input type="checkbox" checked={settingsForm.notifyWhatsapp} onChange={(e) => setSettingsForm((s) => ({ ...s, notifyWhatsapp: e.target.checked }))} />
+                      <span style={{ fontSize: '.78rem' }}>WhatsApp</span>
+                    </label>
+                    <label className="checkRow" style={{ margin: 0, padding: '6px 10px' }}>
+                      <input type="checkbox" checked={settingsForm.notifySms} onChange={(e) => setSettingsForm((s) => ({ ...s, notifySms: e.target.checked }))} />
+                      <span style={{ fontSize: '.78rem' }}>SMS</span>
+                    </label>
+                    <label className="checkRow" style={{ margin: 0, padding: '6px 10px' }}>
+                      <input type="checkbox" checked={settingsForm.notifyPush} onChange={(e) => setSettingsForm((s) => ({ ...s, notifyPush: e.target.checked }))} />
+                      <span style={{ fontSize: '.78rem' }}>Push</span>
+                    </label>
+                  </div>
+                  <label>
+                    Fréquence de communication
+                    <select value={settingsForm.communicationFrequency} onChange={(event) => setSettingsForm((state) => ({ ...state, communicationFrequency: event.target.value }))}>
+                      <option value="important_only">Important uniquement</option>
+                      <option value="daily">Digest quotidien</option>
+                      <option value="weekly">Digest hebdo</option>
+                    </select>
+                  </label>
+                  <label>
+                    Profil de risque
+                    <select value={settingsForm.riskProfile} onChange={(event) => setSettingsForm((state) => ({ ...state, riskProfile: normalizeUserRiskProfile(event.target.value) }))}>
+                      <option value="low">Prudent</option>
+                      <option value="medium">Équilibré</option>
+                      <option value="high">Dynamique</option>
+                    </select>
+                  </label>
+                  <label>
+                    Objectif IA net (après taxes) en €
+                    <input value={settingsForm.objectiveNetGain} onChange={(event) => setSettingsForm((state) => ({ ...state, objectiveNetGain: event.target.value }))} type="number" min={0} step="10" />
+                  </label>
+                  <label>
+                    Période de l objectif
+                    <select value={settingsForm.objectivePeriod} onChange={(event) => setSettingsForm((state) => ({ ...state, objectivePeriod: normalizeGoalPeriod(event.target.value) }))}>
+                      <option value="7d">7 jours</option>
+                      <option value="1m">1 mois</option>
+                      <option value="3m">3 mois</option>
+                      <option value="1y">1 an</option>
+                    </select>
+                  </label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <label>
+                      Type de perte maximale
+                      <select value={settingsForm.maxLossType} onChange={(event) => setSettingsForm((state) => ({ ...state, maxLossType: event.target.value === 'amount' ? 'amount' : 'percent' }))}>
+                        <option value="percent">Pourcentage (%)</option>
+                        <option value="amount">Montant (€)</option>
+                      </select>
+                    </label>
+                    <label>
+                      Perte maximale autorisée
+                      <input value={settingsForm.maxLossValue} onChange={(event) => setSettingsForm((state) => ({ ...state, maxLossValue: event.target.value }))} type="number" min={0} step={settingsForm.maxLossType === 'amount' ? '10' : '1'} />
+                    </label>
+                  </div>
+                  <label>
+                    Horizon de contrôle de perte (jours)
+                    <input value={settingsForm.maxLossDays} onChange={(event) => setSettingsForm((state) => ({ ...state, maxLossDays: event.target.value }))} type="number" min={1} max={365} step={1} />
+                  </label>
+                  <p className="helperText">Flèche verte: vous êtes en avance sur la trajectoire attendue. Flèche rouge: vous êtes en retard sur la trajectoire attendue.</p>
+                  <button className="primaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
+                    {submitting ? 'Sauvegarde...' : 'Enregistrer Mon compte'}
+                  </button>
+                </div>
+              </article>
+            </section>
+          ) : null}
 
           {activeApp === 'finance' && !portfolioDetailOpen && appView === 'dashboard' ? (
             <section className="selectedPortfolioStrip">
@@ -5324,7 +5550,7 @@ export default function RobinApp() {
                       <button className={`smallPill ${virtualRiskProfile === 'high' ? 'selectedPortfolioPill selected' : ''}`} onClick={() => { setVirtualRiskProfile('high'); updateBettingStrategy(selectedStrategy.id, { risk_profile: 'high' }); }} type="button">Risque fort · perte max 70%</button>
                     </div>
                     <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                      <button className="secondaryButton" onClick={simulateVirtualBetCycle} type="button">Simuler un cycle</button>
+                      <button className="secondaryButton" onClick={() => simulateVirtualBetCycle()} type="button">Simuler un cycle</button>
                       <button className="ghostButton" onClick={resetVirtualBettingPortfolio} type="button">Reset virtuel à 100 €</button>
                     </div>
                   </div>
@@ -5363,7 +5589,7 @@ export default function RobinApp() {
             <section style={{ display: 'grid', gap: 22 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
                 <div>
-                  <p className="sectionTag" style={{ marginBottom: 4 }}>Paris Sportifs</p>
+                  <p className="sectionTag" style={{ marginBottom: 4 }}>Paris en ligne</p>
                   <h1 style={{ fontSize: '1.5rem', margin: 0 }}>Portefeuilles &amp; stratégies</h1>
                 </div>
                 <button className="primaryButton" onClick={() => setBettingAlert('Création de stratégie — fonctionnalité bientôt disponible.')} type="button">+ Nouvelle stratégie</button>
@@ -5418,7 +5644,7 @@ export default function RobinApp() {
             <section className="workspaceGrid settingsGrid">
               <article className="featureCard settingsIntroCard">
                 <div className="cardHeader">
-                  <h2>Configuration Paris Sportifs</h2>
+                  <h2>Configuration Paris en ligne</h2>
                   <span>Compte, bookmakers et alertes</span>
                 </div>
                 <p style={{ fontSize: '.85rem', color: 'var(--muted)', margin: 0 }}>Gérez votre profil, vos connexions aux bookmakers, vos limites de jeu responsable et vos préférences de notification.</p>
@@ -5536,6 +5762,24 @@ export default function RobinApp() {
                       {emergencyStopActive ? '✅ Reprendre les transactions' : '🛑 Activer l\'arrêt d\'urgence'}
                     </button>
                     <p className="killSafetyNote">🔒 Action auditée · MFA recommandée</p>
+                  </div>
+                  <div className="infoPanel mutedPanel" style={{ marginTop: 12 }}>
+                    <strong>Limite globale de transactions / jour</strong>
+                    <p>Plafond administrateur appliqué à chaque utilisateur (maximum 1000).</p>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <input
+                        type="number"
+                        min={1}
+                        max={1000}
+                        value={adminDailyTransactionLimit}
+                        onChange={(event) => setAdminDailyTransactionLimit(Math.max(1, Math.min(1000, Number(event.target.value) || 1)))}
+                        style={{ width: 120 }}
+                      />
+                      <button className="secondaryButton" disabled={submitting} onClick={() => void saveAdminDailyTransactionLimit()} type="button">
+                        {submitting ? 'Sauvegarde...' : 'Appliquer la limite'}
+                      </button>
+                      <span className="metaPill">Plafond actuel: {Math.max(1, Math.min(1000, Number(adminDailyTransactionLimit) || 1000))}/jour</span>
+                    </div>
                   </div>
                   {emergencyStopActive ? (
                     <div className="infoPanel" style={{ background: 'rgba(239,68,68,.08)', border: '1px solid rgba(239,68,68,.2)', padding: '10px 14px' }}>

@@ -3,6 +3,7 @@ from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 import logging
+import math
 import random
 import secrets
 
@@ -39,6 +40,9 @@ from .auth import (
     verify_totp,
 )
 from .coinbase_connector import sync_coinbase_read_only
+from .betting_engine import EventInput, OddsQuote, RiskInput, decimal_round, scan_value_opportunities
+from .odds_provider import OddsProviderError, fetch_the_odds_api_events
+from .poisson_model import FootballPoissonInput, football_outcome_probabilities
 from .config import settings
 from .database import Base, SessionLocal, engine, get_db
 from .emailing import send_account_verification_email, send_mfa_email_code, send_password_reset_email
@@ -71,6 +75,16 @@ from .schemas import (
     PasswordResetResponse,
     RecommendationRequest,
     RecommendationResponse,
+    BettingLiveOddsFetchRequest,
+    BettingLiveOddsFetchResponse,
+    BettingLiveOddsEvent,
+    BettingLiveOddsSelection,
+    BettingPoissonRequest,
+    BettingPoissonResponse,
+    BettingAnalyticsResponse,
+    BettingValueScanRequest,
+    BettingValueScanResponse,
+    BettingValueOpportunity,
     RefreshRequest,
     RegisterRequest,
     AdminUserUpdateRequest,
@@ -1912,6 +1926,221 @@ def recommendations(payload: RecommendationRequest, current_user: User = Depends
         agents=asdict(agents),
     )
     write_audit_log(db, current_user.id, "recommendation.generated", response.model_dump())
+    return response
+
+
+@app.post("/api/v1/betting/value-scan", response_model=BettingValueScanResponse)
+def betting_value_scan(payload: BettingValueScanRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> BettingValueScanResponse:
+    require_app_access(current_user, "betting")
+
+    events = [
+        EventInput(
+            event_id=event.event_id,
+            event_label=event.event_label,
+            sport=event.sport,
+            model_win_probability=event.model_win_probability,
+            quotes=[OddsQuote(bookmaker=quote.bookmaker, odds=quote.odds) for quote in event.quotes],
+        )
+        for event in payload.events
+    ]
+    risk = RiskInput(
+        bankroll_eur=payload.risk.bankroll_eur,
+        kelly_fraction=payload.risk.kelly_fraction,
+        min_edge=payload.risk.min_edge,
+        max_stake_pct_per_bet=payload.risk.max_stake_pct_per_bet,
+        max_stake_eur=payload.risk.max_stake_eur,
+    )
+
+    decisions = scan_value_opportunities(events, risk)
+    opportunities = [
+        BettingValueOpportunity(
+            event_id=row.event_id,
+            event_label=row.event_label,
+            sport=row.sport,
+            bookmaker=row.bookmaker,
+            best_odds=decimal_round(row.best_odds, "0.0001"),
+            model_probability=decimal_round(row.model_probability, "0.0001"),
+            implied_probability=decimal_round(row.implied_probability, "0.0001"),
+            edge_probability=decimal_round(row.edge_probability, "0.0001"),
+            value_score=decimal_round(row.value_score, "0.0001"),
+            stake_eur=decimal_round(row.stake_eur, "0.01"),
+            stake_pct_bankroll=decimal_round(row.stake_pct_bankroll, "0.0001"),
+            decision="bet" if row.decision == "bet" else "skip",
+        )
+        for row in decisions
+    ]
+    response = BettingValueScanResponse(
+        processed_events=len(events),
+        bet_candidates=len([item for item in opportunities if item.decision == "bet"]),
+        opportunities=opportunities,
+    )
+    write_audit_log(
+        db,
+        current_user.id,
+        "betting.value_scan",
+        {
+            "processed_events": response.processed_events,
+            "bet_candidates": response.bet_candidates,
+        },
+    )
+    return response
+
+
+@app.post("/api/v1/betting/odds/fetch", response_model=BettingLiveOddsFetchResponse)
+async def betting_live_odds_fetch(payload: BettingLiveOddsFetchRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> BettingLiveOddsFetchResponse:
+    require_app_access(current_user, "betting")
+    if not settings.the_odds_api_key:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="THE_ODDS_API_KEY not configured")
+
+    try:
+        events = await fetch_the_odds_api_events(
+            api_key=settings.the_odds_api_key,
+            sport_key=payload.sport_key,
+            base_url=settings.the_odds_api_base_url,
+            regions=payload.regions,
+            markets=payload.markets,
+        )
+    except OddsProviderError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    response = BettingLiveOddsFetchResponse(
+        source="the-odds-api",
+        fetched_events=len(events),
+        events=[
+            BettingLiveOddsEvent(
+                event_id=event.event_id,
+                sport_key=event.sport_key,
+                commence_time=event.commence_time,
+                home_team=event.home_team,
+                away_team=event.away_team,
+                selections=[
+                    BettingLiveOddsSelection(bookmaker=selection.bookmaker, outcome=selection.outcome, odds=selection.price)
+                    for selection in event.selections
+                ],
+            )
+            for event in events
+        ],
+    )
+    write_audit_log(
+        db,
+        current_user.id,
+        "betting.odds.fetch",
+        {
+            "sport_key": payload.sport_key,
+            "regions": payload.regions,
+            "markets": payload.markets,
+            "fetched_events": response.fetched_events,
+        },
+    )
+    return response
+
+
+@app.post("/api/v1/betting/model/poisson", response_model=BettingPoissonResponse)
+def betting_poisson_model(payload: BettingPoissonRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> BettingPoissonResponse:
+    require_app_access(current_user, "betting")
+    result = football_outcome_probabilities(
+        FootballPoissonInput(
+            expected_goals_home=payload.expected_goals_home,
+            expected_goals_away=payload.expected_goals_away,
+            max_goals=payload.max_goals,
+        )
+    )
+    response = BettingPoissonResponse(
+        home_team=payload.home_team,
+        away_team=payload.away_team,
+        expected_goals_home=decimal_round(payload.expected_goals_home, "0.0001"),
+        expected_goals_away=decimal_round(payload.expected_goals_away, "0.0001"),
+        home_win_probability=decimal_round(result.home_win_probability, "0.0001"),
+        draw_probability=decimal_round(result.draw_probability, "0.0001"),
+        away_win_probability=decimal_round(result.away_win_probability, "0.0001"),
+    )
+    write_audit_log(
+        db,
+        current_user.id,
+        "betting.model.poisson",
+        {
+            "home_team": payload.home_team,
+            "away_team": payload.away_team,
+            "home_win_probability": response.home_win_probability,
+            "draw_probability": response.draw_probability,
+            "away_win_probability": response.away_win_probability,
+        },
+    )
+    return response
+
+
+@app.get("/api/v1/betting/analytics/summary", response_model=BettingAnalyticsResponse)
+def betting_analytics_summary(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> BettingAnalyticsResponse:
+    require_app_access(current_user, "betting")
+
+    rows = db.scalars(
+        select(VirtualTransaction)
+        .where(VirtualTransaction.user_id == current_user.id, VirtualTransaction.domain == "betting")
+        .order_by(VirtualTransaction.created_at.asc())
+    ).all()
+
+    if not rows:
+        return BettingAnalyticsResponse(
+            roi_pct=0.0,
+            yield_pct=0.0,
+            variance=0.0,
+            max_drawdown_pct=0.0,
+            bets=0,
+            win_rate_pct=0.0,
+        )
+
+    bankroll_start = float(rows[0].value_after) - float(rows[0].amount)
+    if bankroll_start <= 0:
+        bankroll_start = 100.0
+
+    pnl_series: list[float] = []
+    prev_value = bankroll_start
+    total_stake = 0.0
+    peak = bankroll_start
+    max_drawdown = 0.0
+    wins = 0
+
+    for tx in rows:
+        current_value = float(tx.value_after)
+        stake = float(tx.amount)
+        pnl = current_value - prev_value
+        pnl_series.append(pnl)
+        total_stake += max(0.0, stake)
+        if pnl > 0:
+            wins += 1
+        peak = max(peak, current_value)
+        if peak > 0:
+            dd = (peak - current_value) / peak
+            max_drawdown = max(max_drawdown, dd)
+        prev_value = current_value
+
+    final_value = float(rows[-1].value_after)
+    net_profit = final_value - bankroll_start
+    roi = (net_profit / bankroll_start) if bankroll_start > 0 else 0.0
+    yld = (net_profit / total_stake) if total_stake > 0 else 0.0
+    mean = (sum(pnl_series) / len(pnl_series)) if pnl_series else 0.0
+    variance = (sum((x - mean) ** 2 for x in pnl_series) / len(pnl_series)) if pnl_series else 0.0
+
+    response = BettingAnalyticsResponse(
+        roi_pct=decimal_round(roi * 100.0, "0.01"),
+        yield_pct=decimal_round(yld * 100.0, "0.01"),
+        variance=decimal_round(variance, "0.0001"),
+        max_drawdown_pct=decimal_round(max_drawdown * 100.0, "0.01"),
+        bets=len(rows),
+        win_rate_pct=decimal_round((wins / len(rows)) * 100.0, "0.01"),
+    )
+
+    write_audit_log(
+        db,
+        current_user.id,
+        "betting.analytics.summary",
+        {
+            "bets": response.bets,
+            "roi_pct": response.roi_pct,
+            "yield_pct": response.yield_pct,
+            "max_drawdown_pct": response.max_drawdown_pct,
+        },
+    )
     return response
 
 

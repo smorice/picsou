@@ -29,6 +29,10 @@ docker-compose.yml
 - `GET /health`
 - `GET /api/v1/dashboard/{portfolio_id}`
 - `POST /api/v1/recommendations`
+- `POST /api/v1/betting/value-scan`
+- `POST /api/v1/betting/odds/fetch`
+- `POST /api/v1/betting/model/poisson`
+- `GET /api/v1/betting/analytics/summary`
 - `POST /api/v1/orders/propose`
 - `POST /api/v1/orders/approve`
 - `POST /api/v1/kill-switch/activate`
@@ -101,6 +105,72 @@ Le script:
 - Le moteur de recommandation est un socle deterministe, pas encore un vrai systeme multi-agents branche a des flux marche temps reel.
 - L'execution broker Revolut n'est pas cablee dans ce socle afin de conserver le controle humain strict et d'eviter d'inventer une integration non testee.
 - Le deploiement distant depend d'un acces SSH non interactif valide depuis cette machine.
+
+## Agent IA Paris En Ligne (socle implemente)
+
+Le backend inclut un premier moteur de decision paris en ligne base sur:
+
+- comparaison multi-bookmakers (selection de la meilleure cote),
+- calcul de probabilite implicite,
+- calcul de value bet (`value = p_modele * cote - 1`),
+- sizing bankroll via Kelly fractionne,
+- cap de mise par pari en pourcentage de bankroll.
+
+### Endpoint de scan value bet
+
+- `POST /api/v1/betting/value-scan`
+- Entree:
+	- liste d evenements (`event_id`, `event_label`, `sport`, `model_win_probability`)
+	- cotes par bookmaker
+	- configuration risque (`bankroll_eur`, `kelly_fraction`, `min_edge`, `max_stake_pct_per_bet`, `max_stake_eur`)
+- Sortie:
+	- opportunites triees par value decroissante
+	- decision `bet` / `skip`
+	- bookmaker retenu, edge, value, stake en EUR et en % bankroll
+
+### Endpoint odds live (The Odds API)
+
+- `POST /api/v1/betting/odds/fetch`
+- Parametres: `sport_key`, `regions`, `markets`
+- Variables env:
+	- `THE_ODDS_API_KEY`
+	- `THE_ODDS_API_BASE_URL` (defaut: `https://api.the-odds-api.com/v4`)
+
+### Endpoint modele Poisson football
+
+- `POST /api/v1/betting/model/poisson`
+- Entree:
+	- `expected_goals_home`
+	- `expected_goals_away`
+	- `max_goals`
+- Sortie:
+	- probabilites `home_win`, `draw`, `away_win`
+
+### Endpoint analytics betting
+
+- `GET /api/v1/betting/analytics/summary`
+- KPI retournes:
+	- ROI
+	- yield
+	- variance
+	- max drawdown
+	- win rate
+	- nombre de paris
+
+Exemple logique:
+
+- modèle: `p = 0.62`
+- meilleure cote: `2.05`
+- value: `0.62 * 2.05 - 1 = 0.271`
+- si edge et contraintes risque valides, le moteur propose un stake Kelly fractionne.
+
+### Extensions naturelles pour production
+
+- ingestion temps reel des cotes (Sportradar / The Odds API / Stats Perform),
+- pipeline stream (Kafka + ETL),
+- modeles probabilistes sport-specifiques (Elo, Poisson foot, XGBoost),
+- execution bookmaker API (Pinnacle/Betfair) puis fallback automation navigateur (Playwright),
+- analytics avancees (ROI, yield, variance, drawdown, performance par ligue).
 
 ## Prochaines extensions naturelles
 

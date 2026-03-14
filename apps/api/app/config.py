@@ -37,5 +37,9 @@ class Settings(BaseSettings):
     franceconnect_client_secret: str | None = None
     oauth_state_ttl_seconds: int = 300
 
+    # Betting data providers
+    the_odds_api_key: str | None = None
+    the_odds_api_base_url: str = "https://api.the-odds-api.com/v4"
+
 
 settings = Settings()
