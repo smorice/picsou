@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from decimal import Decimal
 import logging
+from typing import Any
 
 from coinbase.rest import RESTClient
 
@@ -40,6 +41,43 @@ def _safe_decimal(value: object, fallback: str = "0") -> Decimal:
     return Decimal(str(raw))
 
 
+def _as_dict(payload: Any) -> dict:
+    if payload is None:
+        return {}
+    if isinstance(payload, dict):
+        return payload
+    if hasattr(payload, "to_dict"):
+        try:
+            converted = payload.to_dict()
+            return converted if isinstance(converted, dict) else {}
+        except Exception:
+            return {}
+    if hasattr(payload, "__dict__") and isinstance(payload.__dict__, dict):
+        return payload.__dict__
+    return {}
+
+
+def _extract_accounts(accounts_response: Any) -> list[dict]:
+    payload = _as_dict(accounts_response)
+    if isinstance(payload.get("accounts"), list):
+        return [item for item in payload.get("accounts", []) if isinstance(item, dict)]
+    if isinstance(payload.get("data"), list):
+        return [item for item in payload.get("data", []) if isinstance(item, dict)]
+
+    raw_accounts = getattr(accounts_response, "accounts", None)
+    if isinstance(raw_accounts, list):
+        normalized: list[dict] = []
+        for item in raw_accounts:
+            if isinstance(item, dict):
+                normalized.append(item)
+            else:
+                item_dict = _as_dict(item)
+                if item_dict:
+                    normalized.append(item_dict)
+        return normalized
+    return []
+
+
 def _extract_price(client: RESTClient, currency: str) -> Decimal:
     currency = currency.upper()
     if currency == "EUR":
@@ -72,15 +110,25 @@ def sync_coinbase_read_only(connection: BrokerConnection) -> CoinbaseSyncResult:
 
     api_key = decrypt_secret(connection.api_key_encrypted)
     api_secret = decrypt_secret(connection.api_secret_encrypted)
+    # Coinbase secrets are often stored with escaped newlines.
+    if "\\n" in api_secret and "-----BEGIN" in api_secret:
+        api_secret = api_secret.replace("\\n", "\n")
     client = RESTClient(api_key=api_key, api_secret=api_secret, timeout=15)
 
     permissions_response = client.get_api_key_permissions()
-    permissions = permissions_response.to_dict() if hasattr(permissions_response, "to_dict") else permissions_response.__dict__
-    portfolio_id = permissions.get("portfolio_uuid")
+    permissions = _as_dict(permissions_response)
+    portfolio_id = (
+        permissions.get("portfolio_uuid")
+        or permissions.get("retail_portfolio_id")
+        or permissions.get("portfolio_id")
+    )
 
-    accounts_response = client.get_accounts(limit=250, retail_portfolio_id=portfolio_id)
-    accounts_payload = accounts_response.to_dict() if hasattr(accounts_response, "to_dict") else accounts_response.__dict__
-    accounts = accounts_payload.get("accounts", [])
+    try:
+        accounts_response = client.get_accounts(limit=250, retail_portfolio_id=portfolio_id) if portfolio_id else client.get_accounts(limit=250)
+    except TypeError:
+        # Older/newer SDK variants may not accept retail_portfolio_id.
+        accounts_response = client.get_accounts(limit=250)
+    accounts = _extract_accounts(accounts_response)
 
     positions: list[CoinbasePosition] = []
     total_value = Decimal("0")

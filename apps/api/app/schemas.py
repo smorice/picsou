@@ -51,11 +51,11 @@ class TokenResponse(BaseModel):
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    refresh_token: str | None = None
 
 
 class LogoutRequest(BaseModel):
-    refresh_token: str
+    refresh_token: str | None = None
 
 
 class PasswordResetRequest(BaseModel):
@@ -73,11 +73,11 @@ class PasswordResetConfirmRequest(BaseModel):
 
 
 class MfaSetupRequest(BaseModel):
-    method: Literal["email", "totp"] = "email"
+    method: Literal["email", "totp", "sms", "whatsapp", "google_chat"] = "email"
 
 
 class MfaSetupResponse(BaseModel):
-    method: Literal["email", "totp"]
+    method: Literal["email", "totp", "sms", "whatsapp", "google_chat"]
     secret: str | None = None
     otpauth_uri: str | None = None
     delivery_hint: str | None = None
@@ -98,7 +98,7 @@ class MfaChallengeRequest(BaseModel):
 
 
 class MfaChallengeResponse(BaseModel):
-    method: Literal["email", "totp"]
+    method: Literal["email", "totp", "sms", "whatsapp", "google_chat"]
     delivery_hint: str
     preview_code: str | None = None
 
@@ -145,6 +145,20 @@ class UserSettingsUpdateRequest(BaseModel):
     personal_settings: dict = Field(default_factory=dict)
 
 
+class CommunicationTestRequest(BaseModel):
+    channel: Literal["email", "sms", "whatsapp", "google_chat", "telegram", "push"]
+    phone_number: str | None = Field(default=None, max_length=32)
+    google_chat_webhook: str | None = None
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+
+
+class CommunicationTestResponse(BaseModel):
+    channel: Literal["email", "sms", "whatsapp", "google_chat", "telegram", "push"]
+    status: Literal["ok", "error"]
+    message: str
+
+
 class IntegrationCredentialRequest(BaseModel):
     provider_code: str
     account_label: str | None = Field(default=None, max_length=255)
@@ -184,6 +198,13 @@ class IntegrationSyncRequest(BaseModel):
     mfa_code: str | None = Field(default=None, min_length=6, max_length=8)
 
 
+class IntegrationBulkSyncResponse(BaseModel):
+    synced: int
+    skipped: int
+    failed: int
+    summaries: list[dict]
+
+
 class VirtualPortfolioResponse(BaseModel):
     portfolio_id: str
     label: str
@@ -191,6 +212,7 @@ class VirtualPortfolioResponse(BaseModel):
     current_value: Decimal
     pnl: Decimal
     roi: float
+    history_points: list[dict]
     strategy_mix: list[dict]
     latest_actions: list[dict]
     agent_name: str

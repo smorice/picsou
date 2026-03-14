@@ -90,6 +90,9 @@ h1,h2,h3,p { margin:0; }
 @keyframes spin     { to{ transform:rotate(360deg) } }
 @keyframes pulseDot { 0%,100%{ transform:scale(1) } 50%{ transform:scale(1.5); opacity:.6 } }
 @keyframes shimmer  { 0%{ background-position:-600px 0 } 100%{ background-position:600px 0 } }
+@keyframes duckSwim { 0%{ transform:translateX(-8px) rotate(-2deg) } 50%{ transform:translateX(8px) rotate(2deg) } 100%{ transform:translateX(-8px) rotate(-2deg) } }
+@keyframes rippleFlow { 0%{ transform:translateX(-10px) } 50%{ transform:translateX(10px) } 100%{ transform:translateX(-10px) } }
+@keyframes billFloat { 0%{ transform:translateY(0) rotate(-6deg); opacity:.65 } 50%{ transform:translateY(-5px) rotate(4deg); opacity:1 } 100%{ transform:translateY(0) rotate(-6deg); opacity:.65 } }
 
 /* ============================================================ SHELL */
 .investShell { max-width:1320px; margin:0 auto; padding:0 24px 80px; }
@@ -121,7 +124,48 @@ h1,h2,h3,p { margin:0; }
   display:block; font-size:.82rem; font-weight:800;
   letter-spacing:.1em; text-transform:uppercase; color:var(--text);
 }
+.brandInfo { display:grid; gap:5px; }
 .brandCluster p { font-size:.72rem; color:var(--muted); margin-top:1px; max-width:40ch; }
+.duckPool {
+  position:relative;
+  width:170px;
+  height:22px;
+  border-radius:999px;
+  overflow:hidden;
+  background:linear-gradient(90deg,#dbeafe,#bfdbfe,#dbeafe);
+  border:1px solid rgba(59,130,246,.18);
+}
+.duckPoolWater {
+  position:absolute;
+  inset:0;
+  background:radial-gradient(circle at 20% 50%,rgba(255,255,255,.7),transparent 45%), radial-gradient(circle at 80% 50%,rgba(255,255,255,.6),transparent 48%);
+  animation:rippleFlow 4.2s ease-in-out infinite;
+}
+.duckPoolDuck {
+  position:absolute;
+  left:10px;
+  top:1px;
+  font-size:16px;
+  line-height:1;
+  animation:duckSwim var(--duck-speed, 3.8s) ease-in-out infinite;
+}
+.duckPoolDuck.sad {
+  transform:scaleX(-1);
+  filter:grayscale(.5);
+}
+.duckPoolBill {
+  position:absolute;
+  right:20px;
+  top:3px;
+  font-size:11px;
+  color:#2563eb;
+  animation:billFloat 3.1s ease-in-out infinite;
+}
+.duckPoolBill:last-child { right:38px; animation-delay:.9s; }
+.topbarKpis { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.topbarKpis .smallPill.up { color:var(--ok); border-color:var(--ok-border); background:var(--ok-soft); }
+.topbarKpis .smallPill.down { color:var(--danger); border-color:var(--danger-border); background:var(--danger-soft); }
+.topbarKpis .smallPill.neutral { color:var(--muted); }
 .headerActions { display:flex; align-items:center; gap:8px; }
 .adminIdentityPill {
   display:inline-flex; align-items:center; gap:8px;
@@ -382,6 +426,38 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
 .navButton.active { background:var(--brand); color:#fff; box-shadow:0 3px 12px rgba(91,94,245,.3); }
 .navButton:hover:not(.active) { background:var(--surface-3); color:var(--text); }
 
+.selectedPortfolioStrip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: -8px;
+}
+
+.selectedPortfolioStrip > span {
+  font-size: .78rem;
+  color: var(--muted);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+.selectedPortfolioList {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.selectedPortfolioPill {
+  cursor: pointer;
+}
+
+.selectedPortfolioPill.selected {
+  border-color: var(--brand-border);
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+
 /* ============================================================ PORTFOLIO HERO */
 .portfolioHero {
   display:grid; grid-template-columns:1.5fr 1fr; gap:20px; align-items:start;
@@ -405,6 +481,162 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
 }
 .summaryValue small { font-size:.8rem; color:var(--muted); }
 
+.portfolioEvolutionCard {
+  display: grid;
+  gap: 10px;
+}
+
+.activePortfolioSplit {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.activePortfolioChip {
+  border-radius: 12px;
+  padding: 9px 10px;
+  border: 1px solid var(--teal-border);
+  background: rgba(255,255,255,.74);
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+}
+
+.activePortfolioChip strong {
+  font-family: var(--font-mono), monospace;
+  font-size: 1rem;
+  color: var(--text);
+}
+
+.activePortfolioChip small {
+  font-size: .68rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.activePortfolioChip.virtual {
+  border-color: var(--brand-border);
+  background: var(--brand-soft);
+}
+
+.activePortfolioChip.real {
+  border-color: var(--teal-border);
+  background: var(--teal-soft);
+}
+
+.evolutionKpiBars {
+  display: grid;
+  gap: 6px;
+}
+
+.evolutionBarRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(11,201,176,.18);
+  padding-bottom: 6px;
+}
+
+.evolutionBarRow:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.evolutionBarRow span {
+  font-size: .74rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  font-weight: 700;
+}
+
+.evolutionBarRow strong {
+  font-family: var(--font-mono), monospace;
+  font-size: .86rem;
+}
+
+.evolutionBarRow strong.up { color: var(--ok); }
+.evolutionBarRow strong.down { color: var(--danger); }
+.evolutionBarRow strong.neutral { color: var(--muted); }
+
+.historyCompareGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.historyCompareGrid > div {
+  border: 1px solid rgba(11,201,176,.16);
+  border-radius: 10px;
+  padding: 8px;
+  background: rgba(255,255,255,.78);
+}
+
+.historyCompareGrid small {
+  display: block;
+  font-size: .68rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--muted);
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.evolutionHeadRow,
+.evolutionRow {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.3fr) repeat(5, minmax(46px, 1fr));
+  gap: 8px;
+  align-items: center;
+}
+
+.evolutionHeadRow {
+  font-size: .68rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  font-weight: 800;
+  color: var(--muted);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--teal-border);
+}
+
+.evolutionRows {
+  display: grid;
+  gap: 6px;
+}
+
+.evolutionRow {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.4fr) minmax(82px, 1fr) minmax(60px, .8fr) minmax(60px, .8fr);
+  gap: 8px;
+  align-items: center;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(11,201,176,.16);
+}
+
+.evolutionRow:last-child {
+  border-bottom: 0;
+}
+
+.evolutionRow strong {
+  font-size: .78rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.evolutionRow span {
+  font-family: var(--font-mono), monospace;
+  font-size: .76rem;
+  font-weight: 700;
+  color: var(--text-2);
+}
+
+.evolutionRow span.up { color: var(--ok); }
+.evolutionRow span.down { color: var(--danger); }
+.evolutionRow span.neutral { color: var(--muted); }
+
 /* ============================================================ KPI DECK */
 .indicatorDeck {
   display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px;
@@ -412,7 +644,9 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
 .signalCard {
   padding:18px; border-radius:var(--card-radius-sm); border:var(--card-border);
   background:var(--surface); box-shadow:var(--shadow-xs);
-  display:flex; flex-direction:column; gap:4px; cursor:default;
+  display:flex; flex-direction:column; gap:4px; cursor:pointer;
+  text-align:left;
+  width:100%;
   transition:all var(--dur) var(--ease);
   animation:fadeUp var(--dur-md) var(--ease-out) both;
 }
@@ -456,6 +690,19 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
   display:flex; align-items:center; justify-content:space-between;
   gap:10px; padding:11px 0; border-bottom:1px solid var(--border);
 }
+.compactRowButton {
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.compactRowButton:hover {
+  background: var(--surface-2);
+  border-radius: 10px;
+  padding-left: 8px;
+  padding-right: 8px;
+}
 .compactRow:last-child, .compactRow.noBorder { border-bottom:0; }
 .compactRow span { font-size:.84rem; color:var(--muted); }
 .compactRow strong { font-size:.87rem; font-weight:700; color:var(--text); font-family:var(--font-mono),monospace; }
@@ -467,6 +714,9 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
 .taskRow {
   display:flex; align-items:flex-start; gap:11px; padding:11px 14px;
   border-radius:var(--card-radius-sm); background:var(--surface-2); border:var(--card-border);
+  width:100%;
+  text-align:left;
+  cursor:pointer;
   transition:all var(--dur) var(--ease);
 }
 .taskRow:hover { background:var(--brand-soft); border-color:var(--brand-border); }
@@ -481,6 +731,9 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
 .suggestionCard {
   padding:14px 16px; border-radius:var(--card-radius-sm); border:var(--card-border);
   background:var(--surface-2); transition:all var(--dur) var(--ease);
+  width:100%;
+  text-align:left;
+  cursor:pointer;
 }
 .suggestionCard:hover { background:var(--surface); box-shadow:var(--shadow-xs); transform:translateY(-1px); }
 .suggestionCard p { font-size:.8rem; color:var(--muted); line-height:1.5; margin-top:5px; }
@@ -490,6 +743,10 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
   font-size:.75rem; font-weight:700; color:var(--brand);
   background:var(--brand-soft); border:1px solid var(--brand-border);
   padding:2px 8px; border-radius:999px; font-family:var(--font-mono),monospace;
+}
+
+.indicatorFocusCard {
+  margin-bottom: 14px;
 }
 
 /* ============================================================ PROVIDERS */
@@ -569,6 +826,20 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
 .connStatus.idle  { color:var(--muted); }
 
 /* ============================================================ SETTINGS */
+.settingsGrid {
+  align-items: stretch;
+}
+
+.settingsIntroCard {
+  grid-column: 1 / -1;
+  background: linear-gradient(135deg, var(--surface) 0%, var(--brand-soft) 100%);
+  border-color: var(--brand-border);
+}
+
+.settingsCard {
+  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+}
+
 .settingsStack { display:grid; gap:14px; }
 .infoPanel {
   padding:14px 16px; border-radius:var(--card-radius-sm);
@@ -713,6 +984,154 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
 .auditEntry p      { font-size:.78rem; color:var(--muted); margin-top:2px; line-height:1.4; }
 
 /* ============================================================ RESPONSIVE */
+/* ============================================================ PORTFOLIO DECK */
+.portfolioDeck {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+.portfolioCard {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 18px;
+  border-radius: var(--card-radius);
+  border: var(--card-border);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+  text-align: left;
+  transition: all var(--dur) var(--ease);
+  width: 100%;
+}
+.portfolioCard:hover { border-color: var(--border-md); box-shadow: var(--shadow-sm); transform: translateY(-2px); }
+.portfolioCard.virtualCard { background: linear-gradient(135deg, var(--brand-soft) 0%, #fff 60%); border-color: var(--brand-border); }
+.pCardHeader { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pCardLabel { font-size: .92rem; font-weight: 700; color: var(--text); }
+.pCardValue { font-family: var(--font-mono), monospace; font-size: 1.4rem; font-weight: 800; color: var(--text); letter-spacing: -.02em; }
+.pCardPnl { font-size: .8rem; font-weight: 700; }
+.pCardPnl.up { color: var(--ok); }
+.pCardPnl.down { color: var(--danger); }
+.pCardSparkline { margin: 2px 0; border-radius: 8px; overflow: hidden; }
+.pCardAdvice { font-size: .74rem; color: var(--muted); line-height: 1.5; border-top: 1px solid var(--border); padding-top: 8px; margin: 0; }
+.pCardFooter { font-size: .74rem; font-weight: 700; color: var(--brand); text-align: right; }
+
+/* AGENT BADGE */
+.agentBadge {
+  display: inline-flex; align-items: center;
+  padding: 3px 9px; border-radius: 999px;
+  font-size: .65rem; font-weight: 800; text-transform: uppercase; letter-spacing: .08em;
+  background: var(--indigo-soft); border: 1px solid var(--indigo-border); color: var(--indigo);
+}
+.agentBadge.virtual { background: var(--brand-soft); border-color: var(--brand-border); color: var(--brand); }
+
+.dashboardPortfolioControls {
+  display: grid;
+  gap: 10px;
+}
+
+.dashboardPortfolioControl {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: var(--card-radius-sm);
+  border: var(--card-border);
+  background: var(--surface-2);
+}
+
+.dashboardPortfolioControl strong {
+  display: block;
+  font-size: .86rem;
+  font-weight: 700;
+}
+
+.dashboardPortfolioControl p {
+  margin-top: 3px;
+  font-size: .76rem;
+  color: var(--muted);
+}
+
+.dashboardPortfolioActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.compactCheckRow {
+  margin: 0;
+  padding: 6px 10px;
+  width: max-content;
+}
+
+/* PORTFOLIO DETAIL */
+.portfolioDetailHeader {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; flex-wrap: wrap;
+}
+
+/* ALLOCATION BAR */
+.allocBar {
+  height: 8px; background: var(--surface-3); border-radius: 999px; overflow: hidden;
+}
+.allocFill {
+  height: 100%; background: linear-gradient(90deg, var(--brand) 0%, var(--teal) 100%);
+  border-radius: 999px; transition: width .4s var(--ease-out);
+}
+
+/* AI ADVICE ROWS */
+.adviceRow {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 10px 12px; border-radius: var(--card-radius-sm);
+  border: 1px solid var(--border); background: var(--surface-2);
+}
+.adviceRow.buy { border-color: var(--ok-border); background: var(--ok-soft); }
+.adviceRow.sell { border-color: var(--danger-border); background: var(--danger-soft); }
+.adviceRow.hold { border-color: var(--gold-border); background: var(--gold-soft); }
+.adviceRow p { font-size: .82rem; color: var(--text-2); line-height: 1.5; flex: 1; margin: 0; }
+.adviceBadge {
+  font-size: .64rem; font-weight: 800; text-transform: uppercase; letter-spacing: .08em;
+  padding: 2px 7px; border-radius: 999px; white-space: nowrap; flex-shrink: 0;
+}
+.adviceRow.buy .adviceBadge { background: var(--ok); color: #fff; }
+.adviceRow.sell .adviceBadge { background: var(--danger); color: #fff; }
+.adviceRow.hold .adviceBadge { background: var(--gold); color: #fff; }
+.adviceRow.info .adviceBadge { background: var(--indigo); color: #fff; }
+
+/* OPERATION LEDGER */
+.operationLedgerWrap {
+  overflow: auto;
+}
+
+.operationLedger {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 760px;
+}
+
+.operationLedger th,
+.operationLedger td {
+  text-align: left;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: .8rem;
+  color: var(--text-2);
+  vertical-align: middle;
+}
+
+.operationLedger th {
+  font-size: .69rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+/* SMALL UP/DOWN LABELS */
+small.up { color: var(--ok); font-weight: 700; }
+small.down { color: var(--danger); font-weight: 700; }
+small.neutral { color: var(--muted); font-weight: 700; }
+
 @media(max-width:1060px){
   .landingCanvas { grid-template-columns:1fr; }
   .authExperienceCard { position:static; }
@@ -722,10 +1141,16 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
 @media(max-width:768px){
   .investShell { padding:0 14px 80px; }
   .heroTopbar { margin:0 -14px 28px; padding:12px 14px; }
+  .duckPool { width:150px; }
+  .topbarKpis .smallPill { font-size:.64rem; }
   .workspaceGrid,.marketPulseGrid,.providerGrid,.suggestionGrid,.adminToolbar { grid-template-columns:1fr; }
   .indicatorDeck { grid-template-columns:repeat(2,1fr); }
   .workspaceNav { width:100%; }
   .navButton { flex:1; text-align:center; padding:8px 8px; font-size:.8rem; }
+  .selectedPortfolioStrip { align-items:flex-start; }
+  .selectedPortfolioStrip > span { width:100%; }
+  .activePortfolioSplit { grid-template-columns: 1fr; }
+  .historyCompareGrid { grid-template-columns: 1fr; }
   .landingStoryCard { padding:28px 22px; }
   .recoveryGrid { grid-template-columns:1fr; }
   .providerActions { min-width:0; }

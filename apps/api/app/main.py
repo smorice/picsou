@@ -2,13 +2,14 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from decimal import Decimal
+import math
 import logging
 import secrets
 
 import orjson
 import httpx
 import jwt
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import ORJSONResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from redis import Redis
@@ -48,8 +49,11 @@ from .schemas import (
     BankConnectionRequest,
     BankConnectionResponse,
     BankProvider,
+    CommunicationTestRequest,
+    CommunicationTestResponse,
     DashboardResponse,
     IntegrationConnectionResponse,
+    IntegrationBulkSyncResponse,
     IntegrationCredentialRequest,
     IntegrationSyncRequest,
     IntegrationSyncResponse,
@@ -85,6 +89,8 @@ from .schemas import (
 redis_client = Redis.from_url(settings.redis_url, decode_responses=True)
 security = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
+ACCESS_COOKIE_NAME = "picsou_access"
+REFRESH_COOKIE_NAME = "picsou_refresh"
 
 
 @asynccontextmanager
@@ -100,24 +106,6 @@ app = FastAPI(title=settings.app_name, default_response_class=ORJSONResponse, li
 
 SUPPORTED_BANK_PROVIDERS = [
     {
-        "code": "revolut",
-        "name": "Revolut",
-        "category": "neobank",
-        "supports_securities": True,
-        "supports_crypto": True,
-        "supports_cash": True,
-        "onboarding_hint": "Connexion API pour alimenter le portefeuille et proposer des transactions sous validation.",
-    },
-    {
-        "code": "boursobank",
-        "name": "Boursorama",
-        "category": "broker-bank",
-        "supports_securities": True,
-        "supports_crypto": False,
-        "supports_cash": True,
-        "onboarding_hint": "Compte titres et liquidites pilotables depuis un cockpit unique.",
-    },
-    {
         "code": "coinbase",
         "name": "Coinbase",
         "category": "crypto-exchange",
@@ -125,6 +113,15 @@ SUPPORTED_BANK_PROVIDERS = [
         "supports_crypto": True,
         "supports_cash": True,
         "onboarding_hint": "Suivi des positions crypto avec activation utilisateur depuis l espace securise.",
+    },
+    {
+        "code": "interactive_brokers",
+        "name": "Interactive Brokers",
+        "category": "broker",
+        "supports_securities": True,
+        "supports_crypto": False,
+        "supports_cash": True,
+        "onboarding_hint": "Portefeuille titres multi-marches avec suivi consolide et validations MFA avant actions sensibles.",
     },
     {
         "code": "trade_republic",
@@ -248,6 +245,56 @@ def issue_email_mfa_code(user: User, purpose: str) -> tuple[str | None, str | No
     return "Email indisponible sur cette instance. Utilisez le code de previsualisation pour continuer.", code
 
 
+def enforce_rate_limit(key: str, max_attempts: int, window_seconds: int, detail: str) -> None:
+    try:
+        current = redis_client.incr(key)
+        if current == 1:
+            redis_client.expire(key, window_seconds)
+        if current > max_attempts:
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=detail)
+    except HTTPException:
+        raise
+    except Exception:
+        # Fail open to avoid blocking users if Redis is degraded.
+        return
+
+
+def post_json_with_retry(url: str, payload: dict, timeout_seconds: float = 6.0, max_attempts: int = 2) -> tuple[bool, str]:
+    last_error = "Unknown error"
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with httpx.Client(timeout=timeout_seconds) as client:
+                response = client.post(url, json=payload)
+            if 200 <= response.status_code < 300:
+                return True, "ok"
+            body_preview = response.text[:180].replace("\n", " ").strip()
+            last_error = f"HTTP {response.status_code}: {body_preview or 'empty response'}"
+        except httpx.TimeoutException:
+            last_error = f"Timeout after {timeout_seconds:.0f}s"
+        except httpx.HTTPError as exc:
+            last_error = str(exc)
+        if attempt < max_attempts:
+            continue
+    return False, last_error
+
+
+def send_google_chat_test_message(webhook_url: str, user: User) -> tuple[bool, str]:
+    message = {
+        "text": f"[Picsou IA] Test Google Chat valide pour {user.full_name} ({user.email})"
+    }
+    return post_json_with_retry(webhook_url, message, timeout_seconds=6.0, max_attempts=2)
+
+
+def send_telegram_test_message(bot_token: str, chat_id: str, user: User) -> tuple[bool, str]:
+    endpoint = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    message = {
+        "chat_id": chat_id,
+        "text": f"[Picsou IA] Test Telegram valide pour {user.full_name} ({user.email})",
+        "disable_notification": True,
+    }
+    return post_json_with_retry(endpoint, message, timeout_seconds=6.0, max_attempts=2)
+
+
 def ensure_runtime_schema(db: Session) -> None:
     statements = [
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number VARCHAR(32)",
@@ -334,11 +381,45 @@ def is_kill_switch_active(db: Session) -> bool:
     return last_event.activated
 
 
-def get_current_user(credentials: HTTPAuthorizationCredentials | None = Depends(security), db: Session = Depends(get_db)) -> User:
-    if credentials is None:
+def request_is_secure(request: Request) -> bool:
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
+    return request.url.scheme == "https" or forwarded_proto == "https"
+
+
+def set_auth_cookies(response: Response, request: Request, access_token: str, refresh_token: str, access_expires_seconds: int) -> None:
+    secure_flag = request_is_secure(request)
+    response.set_cookie(
+        ACCESS_COOKIE_NAME,
+        access_token,
+        max_age=access_expires_seconds,
+        httponly=True,
+        secure=secure_flag,
+        samesite="lax",
+        path="/",
+    )
+    response.set_cookie(
+        REFRESH_COOKIE_NAME,
+        refresh_token,
+        max_age=settings.refresh_token_ttl_days * 24 * 60 * 60,
+        httponly=True,
+        secure=secure_flag,
+        samesite="lax",
+        path="/",
+    )
+
+
+def clear_auth_cookies(response: Response, request: Request) -> None:
+    secure_flag = request_is_secure(request)
+    response.delete_cookie(ACCESS_COOKIE_NAME, path="/", secure=secure_flag, samesite="lax")
+    response.delete_cookie(REFRESH_COOKIE_NAME, path="/", secure=secure_flag, samesite="lax")
+
+
+def get_current_user(request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(security), db: Session = Depends(get_db)) -> User:
+    token = credentials.credentials if credentials is not None else request.cookies.get(ACCESS_COOKIE_NAME)
+    if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
     try:
-        principal = decode_access_token(credentials.credentials)
+        principal = decode_access_token(token)
     except jwt.InvalidTokenError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
 
@@ -351,11 +432,12 @@ def get_current_user(credentials: HTTPAuthorizationCredentials | None = Depends(
     return user
 
 
-def require_mfa_for_sensitive_operation(credentials: HTTPAuthorizationCredentials | None = Depends(security), db: Session = Depends(get_db)) -> User:
-    if credentials is None:
+def require_mfa_for_sensitive_operation(request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(security), db: Session = Depends(get_db)) -> User:
+    token = credentials.credentials if credentials is not None else request.cookies.get(ACCESS_COOKIE_NAME)
+    if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
     try:
-        principal = decode_access_token(credentials.credentials)
+        principal = decode_access_token(token)
     except jwt.InvalidTokenError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
 
@@ -422,8 +504,7 @@ def serialize_integration_connection(db: Session, connection: BrokerConnection) 
 def resolve_agent_name(provider_code: str) -> str:
     mapping = {
         "coinbase": "Agent Crypto Momentum",
-        "revolut": "Agent Allocation Multi-Actifs",
-        "boursobank": "Agent Actions Europe",
+        "interactive_brokers": "Agent Multi-Marches Pro",
         "trade_republic": "Agent ETP Rendement",
         "virtual_alpha": "Robot Alpha Simulation",
     }
@@ -434,12 +515,57 @@ def build_virtual_portfolio(current_user: User) -> VirtualPortfolioResponse:
     start_value = Decimal("100.00")
     base_seed = sum(ord(char) for char in current_user.id) % 100
     day = datetime.utcnow().timetuple().tm_yday
-    drift = Decimal((day % 37) - 18) / Decimal("100")
-    edge = Decimal((base_seed % 13) - 6) / Decimal("100")
-    growth = Decimal("1") + (drift + edge) / Decimal("10")
+    drift = Decimal((day % 29) - 14) / Decimal("100")
+    edge = Decimal((base_seed % 11) - 5) / Decimal("100")
+    quality = Decimal("0.018") + Decimal(base_seed % 7) / Decimal("1000")
+    growth = Decimal("1") + ((drift + edge) / Decimal("12")) + quality
     current_value = (start_value * growth).quantize(Decimal("0.01"))
     pnl = (current_value - start_value).quantize(Decimal("0.01"))
     roi = float((pnl / start_value) if start_value > 0 else Decimal("0"))
+    crypto_weight = 0.28 + float((base_seed % 9) / 100)
+    etp_weight = 0.24 + float((day % 5) / 100)
+    equity_weight = 0.27 + float((base_seed % 5) / 100)
+    savings_weight = round(1.0 - crypto_weight - etp_weight - equity_weight, 2)
+    strategy_mix = [
+        {"class": "Crypto", "weight": round(crypto_weight, 2)},
+        {"class": "ETP", "weight": round(etp_weight, 2)},
+        {"class": "Bourse", "weight": round(equity_weight, 2)},
+        {"class": "Epargne", "weight": round(max(savings_weight, 0.12), 2)},
+    ]
+    latest_actions = [
+        {"asset": "BTC", "action": "buy" if roi >= 0 else "sell", "amount": round(8.0 + float(base_seed % 4), 1)},
+        {"asset": "ETF World", "action": "buy", "amount": round(10.0 + float(day % 4), 1)},
+        {"asset": "Nasdaq ETP", "action": "sell" if base_seed % 2 == 0 else "buy", "amount": round(5.5 + float(base_seed % 3), 1)},
+        {"asset": "Actions Europe", "action": "buy" if day % 3 else "sell", "amount": round(4.0 + float(day % 2), 1)},
+    ]
+    history_points: list[dict] = []
+    history_span_days = 730
+    now = datetime.utcnow()
+    for i in range(history_span_days):
+        sample_day = max(1, day - ((history_span_days - 1) - i))
+        sample_drift = Decimal((sample_day % 29) - 14) / Decimal("100")
+        sample_growth = Decimal("1") + ((sample_drift + edge) / Decimal("12")) + quality
+        sample_value = (start_value * sample_growth).quantize(Decimal("0.01"))
+        sample_dt = (now - timedelta(days=((history_span_days - 1) - i))).replace(hour=12, minute=0, second=0, microsecond=0)
+        history_points.append(
+            {
+                "date": sample_dt.isoformat() + "Z",
+                "value": float(sample_value),
+            }
+        )
+
+    intraday_base = history_points[-1]["value"] if history_points else float(current_value)
+    for h in range(24, -1, -1):
+        sample_dt = now - timedelta(hours=h)
+        intraday_drift = (24 - h - 12) * 0.00045
+        intraday_wave = math.sin(((24 - h) / 24) * math.pi * 2) * 0.0028
+        intraday_value = max(float(start_value) * 0.72, intraday_base * (1 + intraday_wave + intraday_drift))
+        history_points.append(
+            {
+                "date": sample_dt.replace(microsecond=0).isoformat() + "Z",
+                "value": round(intraday_value, 2),
+            }
+        )
     return VirtualPortfolioResponse(
         portfolio_id=f"virtual-{current_user.id[:8]}",
         label="Portefeuille Virtuel IA",
@@ -447,17 +573,9 @@ def build_virtual_portfolio(current_user: User) -> VirtualPortfolioResponse:
         current_value=current_value,
         pnl=pnl,
         roi=roi,
-        strategy_mix=[
-            {"class": "Crypto", "weight": 0.35},
-            {"class": "ETP", "weight": 0.25},
-            {"class": "Bourse", "weight": 0.25},
-            {"class": "Epargne", "weight": 0.15},
-        ],
-        latest_actions=[
-            {"asset": "BTC", "action": "buy", "amount": 8.0},
-            {"asset": "ETF World", "action": "buy", "amount": 11.5},
-            {"asset": "Livret", "action": "rebalance", "amount": 4.0},
-        ],
+        history_points=history_points,
+        strategy_mix=strategy_mix,
+        latest_actions=latest_actions,
         agent_name=resolve_agent_name("virtual_alpha"),
     )
 
@@ -472,7 +590,7 @@ def assert_sensitive_mfa_if_enabled(db: Session, user: User, mfa_code: str | Non
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="MFA code required for sensitive operation")
 
     verified = False
-    if device.method == "email":
+    if device.method in {"email", "sms", "whatsapp", "google_chat"}:
         verified = consume_email_mfa_code(redis_client, user.id, mfa_code, purpose)
     else:
         secret = decrypt_secret(device.secret_encrypted)
@@ -527,8 +645,8 @@ def build_dashboard_from_positions(current_user: User, portfolio: Portfolio, ban
             key_indicators=[
                 {"label": "Valeur totale", "value": "null", "trend": "Synchronisation requise"},
                 {"label": "Liquidites", "value": "null", "trend": "Synchronisation requise"},
-                {"label": "Transactions ce mois", "value": "null", "trend": "Synchronisation requise"},
-                {"label": "Risque actuel", "value": "null", "trend": "Sources insuffisantes"},
+                {"label": "Transactions ce mois", "value": "null", "trend": "→ Synchronisation requise"},
+                {"label": "Risque actuel", "value": "null", "trend": "→ Sources insuffisantes"},
             ],
             sector_heatmap=[],
             allocation=[],
@@ -583,10 +701,10 @@ def build_dashboard_from_positions(current_user: User, portfolio: Portfolio, ban
         max_drawdown=0.0,
         is_empty=False,
         key_indicators=[
-            {"label": "Valeur totale", "value": f"{total_value.quantize(Decimal('0.01'))} EUR", "trend": f"{len(positions)} positions"},
-            {"label": "Liquidites", "value": f"{cash_balance.quantize(Decimal('0.01'))} EUR", "trend": "Synchronise"},
-            {"label": "Sources", "value": str(len([connection for connection in connections if connection.status == 'active'])), "trend": "Actives"},
-            {"label": "Virtuel IA", "value": f"{virtual_portfolio.current_value} EUR", "trend": f"ROI {(virtual_portfolio.roi * 100):.1f}%"},
+            {"label": "Valeur totale", "value": f"{total_value.quantize(Decimal('0.01'))} EUR", "trend": f"↑ {len(positions)} positions suivies"},
+            {"label": "Liquidites", "value": f"{cash_balance.quantize(Decimal('0.01'))} EUR", "trend": "→ Trésorerie synchronisée"},
+            {"label": "Sources", "value": str(len([connection for connection in connections if connection.status == 'active'])), "trend": "↑ Intégrations actives"},
+            {"label": "Virtuel IA", "value": f"{virtual_portfolio.current_value} EUR", "trend": f"{'↑' if virtual_portfolio.roi >= 0 else '↓'} ROI {(virtual_portfolio.roi * 100):.1f}%"},
         ],
         sector_heatmap=sector_heatmap,
         allocation=allocation,
@@ -677,6 +795,8 @@ def run_provider_sync(db: Session, current_user: User, connection: BrokerConnect
 
 @app.post("/auth/register", response_model=UserProfileResponse, status_code=status.HTTP_201_CREATED)
 def register(payload: RegisterRequest, request: Request, db: Session = Depends(get_db)) -> UserProfileResponse:
+    request_ip = request.client.host if request.client else "unknown"
+    enforce_rate_limit(f"rate:register:ip:{request_ip}", max_attempts=12, window_seconds=3600, detail="Too many registration attempts from this IP")
     email = normalize_email(payload.email)
     existing = db.scalar(select(User).where(User.email == email))
     if existing:
@@ -720,7 +840,9 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
 def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)) -> TokenResponse:
     email = normalize_email(payload.email)
     user = db.scalar(select(User).where(User.email == email))
-    request_ip = request.client.host if request.client else None
+    request_ip = request.client.host if request.client else "unknown"
+    enforce_rate_limit(f"rate:login:ip:{request_ip}", max_attempts=40, window_seconds=900, detail="Too many login attempts from this IP")
+    enforce_rate_limit(f"rate:login:email:{email}", max_attempts=15, window_seconds=900, detail="Too many login attempts for this account")
     client_context = normalize_client_context(payload.client_context)
 
     if not user or not verify_password(user.password_hash, payload.password):
@@ -749,19 +871,23 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
     access_token, expires_in = create_access_token(user.id, user.email, user.role, mfa_verified)
     refresh_token = create_refresh_token(redis_client, user.id, user.email, user.role, mfa_verified)
     write_audit_log(db, user.id, "auth.login_succeeded", {"mfa_verified": False, "client_context": client_context}, ip_address=request_ip)
-    return TokenResponse(
-        access_token=access_token,
-        refresh_token=refresh_token,
+    response_payload = TokenResponse(
         expires_in=expires_in,
         mfa_required=False,
         user=to_user_profile(user),
     )
+    response = ORJSONResponse(content=orjson.loads(response_payload.model_dump_json()))
+    set_auth_cookies(response, request, access_token, refresh_token, expires_in)
+    return response
 
 
 @app.post("/auth/refresh", response_model=TokenResponse)
-def refresh_tokens(payload: RefreshRequest, db: Session = Depends(get_db)) -> TokenResponse:
+def refresh_tokens(payload: RefreshRequest, request: Request, db: Session = Depends(get_db)) -> TokenResponse:
+    refresh_token_input = payload.refresh_token or request.cookies.get(REFRESH_COOKIE_NAME)
+    if not refresh_token_input:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token invalid")
     try:
-        new_refresh_token, refresh_payload = rotate_refresh_token(redis_client, payload.refresh_token)
+        new_refresh_token, refresh_payload = rotate_refresh_token(redis_client, refresh_token_input)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token invalid") from exc
 
@@ -771,24 +897,33 @@ def refresh_tokens(payload: RefreshRequest, db: Session = Depends(get_db)) -> To
 
     access_token, expires_in = create_access_token(user.id, user.email, user.role, bool(refresh_payload.get("mfa_verified")))
     write_audit_log(db, user.id, "auth.token_refreshed", {"mfa_verified": bool(refresh_payload.get("mfa_verified"))})
-    return TokenResponse(
-        access_token=access_token,
-        refresh_token=new_refresh_token,
+    response_payload = TokenResponse(
         expires_in=expires_in,
         user=to_user_profile(user),
     )
+    response = ORJSONResponse(content=orjson.loads(response_payload.model_dump_json()))
+    set_auth_cookies(response, request, access_token, new_refresh_token, expires_in)
+    return response
 
 
 @app.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
-def logout(payload: LogoutRequest, current_user: User = Depends(get_current_user)) -> None:
-    revoke_refresh_token(redis_client, payload.refresh_token)
+def logout(payload: LogoutRequest, request: Request, current_user: User = Depends(get_current_user)) -> Response:
+    refresh_token_input = payload.refresh_token or request.cookies.get(REFRESH_COOKIE_NAME)
+    if refresh_token_input:
+        revoke_refresh_token(redis_client, refresh_token_input)
     with SessionLocal() as db:
         write_audit_log(db, current_user.id, "auth.logout", {})
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    clear_auth_cookies(response, request)
+    return response
 
 
 @app.post("/auth/password-reset/request", response_model=PasswordResetResponse)
 def request_password_reset(payload: PasswordResetRequest, request: Request, db: Session = Depends(get_db)) -> PasswordResetResponse:
+    request_ip = request.client.host if request.client else "unknown"
+    enforce_rate_limit(f"rate:pwdreset:ip:{request_ip}", max_attempts=12, window_seconds=3600, detail="Too many password reset attempts from this IP")
     email = normalize_email(payload.email)
+    enforce_rate_limit(f"rate:pwdreset:email:{email}", max_attempts=6, window_seconds=3600, detail="Too many password reset attempts for this account")
     user = db.scalar(select(User).where(User.email == email))
     if not user or not user.is_active:
         return PasswordResetResponse(message="Si ce compte existe, un code temporaire de reinitialisation a ete emis.")
@@ -862,6 +997,9 @@ async def oauth_redirect(provider: str, request: Request) -> RedirectResponse:
         raise HTTPException(status_code=404, detail="OAuth provider not found")
     if not cfg["enabled"]():
         raise HTTPException(status_code=503, detail=f"OAuth provider '{provider}' is not configured on this server")
+
+    request_ip = request.client.host if request.client else "unknown"
+    enforce_rate_limit(f"rate:oauth:start:ip:{request_ip}", max_attempts=40, window_seconds=900, detail="Too many OAuth attempts from this IP")
 
     state = secrets.token_urlsafe(32)
     redis_client.setex(f"{_OAUTH_STATE_PREFIX}{state}", settings.oauth_state_ttl_seconds, provider)
@@ -1002,9 +1140,9 @@ async def oauth_callback(
         ip_address=request.client.host if request.client else None,
     )
 
-    import urllib.parse
-    fragment = urllib.parse.urlencode({"oauth_access": access_tok, "oauth_refresh": refresh_tok})
-    return RedirectResponse(f"{settings.public_base_url}/?{fragment}")
+    response = RedirectResponse(f"{settings.public_base_url}/")
+    set_auth_cookies(response, request, access_tok, refresh_tok, expires_in)
+    return response
 @app.get("/auth/me", response_model=UserProfileResponse)
 def me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> UserProfileResponse:
     write_audit_log(db, current_user.id, "auth.me_viewed", {})
@@ -1026,27 +1164,107 @@ def update_me_settings(payload: UserSettingsUpdateRequest, current_user: User = 
     return to_user_profile(current_user)
 
 
+@app.post("/auth/me/communication/test", response_model=CommunicationTestResponse)
+def test_user_communication_channel(payload: CommunicationTestRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> CommunicationTestResponse:
+    enforce_rate_limit(f"rate:communication-test:user:{current_user.id}", max_attempts=20, window_seconds=300, detail="Too many communication tests. Please wait a few minutes.")
+    settings_payload = dict(current_user.personal_settings or {})
+    phone_number = (payload.phone_number or current_user.phone_number or "").strip()
+
+    if payload.channel == "email":
+        if settings_payload.get("notify_email") is not True:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Canal email inactif.")
+        preview_code = secrets.token_hex(3).upper()
+        delivered = send_mfa_email_code(current_user.email, preview_code, "sensitive")
+        message = "Email de test envoye sur votre adresse principale." if delivered else "SMTP non configure: test email simule localement."
+        write_audit_log(db, current_user.id, "user.communication_test", {"channel": payload.channel, "delivered": delivered})
+        return CommunicationTestResponse(channel=payload.channel, status="ok", message=message)
+
+    if payload.channel == "sms":
+        if settings_payload.get("notify_sms") is not True:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Canal SMS inactif.")
+        if not phone_number:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Numero mobile manquant.")
+        write_audit_log(db, current_user.id, "user.communication_test", {"channel": payload.channel, "phone_number": phone_number})
+        return CommunicationTestResponse(channel=payload.channel, status="ok", message=f"SMS de test simule vers {phone_number}.")
+
+    if payload.channel == "whatsapp":
+        if settings_payload.get("notify_whatsapp") is not True:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Canal WhatsApp inactif.")
+        if not phone_number:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Numero WhatsApp manquant.")
+        write_audit_log(db, current_user.id, "user.communication_test", {"channel": payload.channel, "phone_number": phone_number})
+        return CommunicationTestResponse(channel=payload.channel, status="ok", message=f"Message WhatsApp de test simule vers {phone_number}.")
+
+    if payload.channel == "google_chat":
+        google_chat = settings_payload.get("communication_google_chat") if isinstance(settings_payload.get("communication_google_chat"), dict) else {}
+        enabled = google_chat.get("enabled") is True
+        webhook = str(payload.google_chat_webhook or google_chat.get("webhook") or "").strip()
+        if not enabled:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Canal Google Chat inactif.")
+        if not webhook:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Webhook Google Chat manquant.")
+        sent, error_message = send_google_chat_test_message(webhook, current_user)
+        if not sent:
+            write_audit_log(db, current_user.id, "user.communication_test_failed", {"channel": payload.channel, "reason": error_message}, severity="warning")
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Echec envoi Google Chat: {error_message}")
+        write_audit_log(db, current_user.id, "user.communication_test", {"channel": payload.channel})
+        return CommunicationTestResponse(channel=payload.channel, status="ok", message="Message Google Chat de test envoye.")
+
+    if payload.channel == "telegram":
+        telegram = settings_payload.get("communication_telegram") if isinstance(settings_payload.get("communication_telegram"), dict) else {}
+        enabled = telegram.get("enabled") is True
+        bot_token = str(payload.telegram_bot_token or telegram.get("bot_token") or "").strip()
+        chat_id = str(payload.telegram_chat_id or telegram.get("chat_id") or "").strip()
+        if not enabled:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Canal Telegram inactif.")
+        if not bot_token or not chat_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Configuration Telegram incomplete.")
+        sent, error_message = send_telegram_test_message(bot_token, chat_id, current_user)
+        if not sent:
+            write_audit_log(db, current_user.id, "user.communication_test_failed", {"channel": payload.channel, "reason": error_message}, severity="warning")
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Echec envoi Telegram: {error_message}")
+        write_audit_log(db, current_user.id, "user.communication_test", {"channel": payload.channel})
+        return CommunicationTestResponse(channel=payload.channel, status="ok", message="Message Telegram de test envoye.")
+
+    if payload.channel == "push":
+        if settings_payload.get("notify_push") is not True:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Canal Push inactif.")
+        write_audit_log(db, current_user.id, "user.communication_test", {"channel": payload.channel})
+        return CommunicationTestResponse(channel=payload.channel, status="ok", message="Notification push de test simulee (navigateur).")
+
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Canal de test non supporte.")
+
+
 @app.post("/auth/mfa/setup", response_model=MfaSetupResponse)
 def setup_mfa(payload: MfaSetupRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> MfaSetupResponse:
     device = primary_mfa_device(db, current_user.id)
-    if payload.method == "email":
+    if payload.method in {"email", "sms", "whatsapp", "google_chat"}:
         secret = generate_totp_secret()
         if device:
-            device.method = "email"
+            device.method = payload.method
             device.secret_encrypted = encrypt_secret(secret)
             device.is_verified = False
             device.recovery_codes = None
         else:
             device = MfaDevice(
                 user_id=current_user.id,
-                method="email",
+                method=payload.method,
                 secret_encrypted=encrypt_secret(secret),
                 is_primary=True,
                 is_verified=False,
             )
-        delivery_hint, preview_code = issue_email_mfa_code(current_user, "setup")
+        preview_code = create_email_mfa_code(redis_client, current_user.id, current_user.email, "setup")
+        if payload.method == "email":
+            delivered = send_mfa_email_code(current_user.email, preview_code, "setup")
+            delivery_hint = "Code envoye sur votre email principal." if delivered else "Email indisponible sur cette instance. Utilisez le code de previsualisation pour continuer."
+        elif payload.method == "sms":
+            delivery_hint = f"Code de validation SMS genere pour {current_user.phone_number or 'votre numero mobile'} (mode simulation locale)."
+        elif payload.method == "whatsapp":
+            delivery_hint = "Code de validation WhatsApp genere (mode simulation locale)."
+        else:
+            delivery_hint = "Code de validation Google Chat genere (mode simulation locale)."
         settings_payload = dict(current_user.personal_settings or {})
-        settings_payload["preferred_mfa_method"] = "email"
+        settings_payload["preferred_mfa_method"] = payload.method
         current_user.personal_settings = settings_payload
     else:
         secret = generate_totp_secret()
@@ -1080,7 +1298,7 @@ def verify_mfa_setup(payload: MfaVerifyRequest, current_user: User = Depends(get
     device = primary_mfa_device(db, current_user.id)
     if not device:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="MFA device not found")
-    if device.method == "email":
+    if device.method in {"email", "sms", "whatsapp", "google_chat"}:
         if not consume_email_mfa_code(redis_client, current_user.id, payload.code, "setup"):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid MFA code")
     else:
@@ -1109,10 +1327,22 @@ def mfa_challenge(payload: MfaChallengeRequest, current_user: User = Depends(get
     if not device or not device.is_verified:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="MFA device not found")
 
-    delivery_hint, preview_code = issue_email_mfa_code(current_user, payload.purpose)
+    preview_code = None
+    delivery_hint = "Code TOTP attendu depuis votre application d authentification."
+    if device.method in {"email", "sms", "whatsapp", "google_chat"}:
+        preview_code = create_email_mfa_code(redis_client, current_user.id, current_user.email, payload.purpose)
+        if device.method == "email":
+            delivered = send_mfa_email_code(current_user.email, preview_code, payload.purpose)
+            delivery_hint = "Code envoye sur votre email principal." if delivered else "Email indisponible sur cette instance. Utilisez le code de previsualisation pour continuer."
+        elif device.method == "sms":
+            delivery_hint = f"Code MFA SMS genere pour {current_user.phone_number or 'votre numero mobile'} (mode simulation locale)."
+        elif device.method == "whatsapp":
+            delivery_hint = "Code MFA WhatsApp genere (mode simulation locale)."
+        else:
+            delivery_hint = "Code MFA Google Chat genere (mode simulation locale)."
     return MfaChallengeResponse(
-        method="email" if device.method == "email" else "totp",
-        delivery_hint=delivery_hint if device.method == "email" else f"Code TOTP accepte. {delivery_hint}",
+        method=device.method if device.method in {"email", "sms", "whatsapp", "google_chat"} else "totp",
+        delivery_hint=delivery_hint,
         preview_code=preview_code,
     )
 
@@ -1394,6 +1624,76 @@ def sync_integration(provider_code: str, payload: IntegrationSyncRequest, curren
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Integration sync failed: {exc}") from exc
 
 
+@app.post("/api/v1/integrations/sync-all", response_model=IntegrationBulkSyncResponse)
+def sync_all_integrations(payload: IntegrationSyncRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> IntegrationBulkSyncResponse:
+    assert_sensitive_mfa_if_enabled(db, current_user, payload.mfa_code, "sensitive")
+
+    connections = db.scalars(
+        select(BrokerConnection).where(
+            BrokerConnection.user_id == current_user.id,
+            BrokerConnection.status == "active",
+        )
+    ).all()
+
+    summaries: list[dict] = []
+    synced = 0
+    skipped = 0
+    failed = 0
+
+    for connection in connections:
+        has_credentials = bool(connection.api_key_encrypted) if connection.provider_code != "coinbase" else bool(connection.api_key_encrypted and connection.api_secret_encrypted)
+        if not has_credentials:
+            skipped += 1
+            summaries.append({"provider_code": connection.provider_code, "status": "skipped", "message": "Credentials manquants."})
+            continue
+
+        if connection.provider_code != "coinbase":
+            skipped += 1
+            connection.last_sync_at = datetime.utcnow()
+            connection.last_sync_status = "not_supported"
+            connection.last_sync_error = "Synchronisation automatique non prise en charge pour ce connecteur actuellement."
+            db.add(connection)
+            db.add(
+                IntegrationSyncEvent(
+                    connection_id=connection.id,
+                    provider_code=connection.provider_code,
+                    status="skipped",
+                    error_message=connection.last_sync_error,
+                )
+            )
+            summaries.append({"provider_code": connection.provider_code, "status": "skipped", "message": connection.last_sync_error})
+            continue
+
+        try:
+            result = run_provider_sync(db, current_user, connection)
+            synced += 1
+            summaries.append({"provider_code": connection.provider_code, "status": result.status, "message": result.message})
+        except Exception as exc:
+            failed += 1
+            connection.last_sync_at = datetime.utcnow()
+            connection.last_sync_status = "error"
+            connection.last_sync_error = str(exc)
+            db.add(connection)
+            db.add(
+                IntegrationSyncEvent(
+                    connection_id=connection.id,
+                    provider_code=connection.provider_code,
+                    status="error",
+                    error_message=str(exc),
+                )
+            )
+            summaries.append({"provider_code": connection.provider_code, "status": "error", "message": str(exc)})
+
+    db.commit()
+    write_audit_log(
+        db,
+        current_user.id,
+        "integration.sync_all",
+        {"synced": synced, "skipped": skipped, "failed": failed},
+    )
+    return IntegrationBulkSyncResponse(synced=synced, skipped=skipped, failed=failed, summaries=summaries)
+
+
 @app.post("/api/v1/recommendations", response_model=RecommendationResponse)
 def recommendations(payload: RecommendationRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> RecommendationResponse:
     if is_kill_switch_active(db):
@@ -1407,7 +1707,8 @@ def recommendations(payload: RecommendationRequest, current_user: User = Depends
         f"Trend {agents.trend_regime}, valuation {agents.valuation_label}, "
         f"risk budget usage {agents.risk_budget_usage:.2f}."
     )
-    approval_required = action != "hold"
+    is_virtual_portfolio = payload.portfolio_id == "virtual_alpha" or payload.portfolio_id.startswith("virtual-")
+    approval_required = (action != "hold") and not is_virtual_portfolio
 
     decision = AgentDecision(
         portfolio_id=payload.portfolio_id,
@@ -1439,20 +1740,40 @@ def propose_order(payload: TradeProposalRequest, current_user: User = Depends(ge
     if is_kill_switch_active(db):
         raise HTTPException(status_code=423, detail="Kill switch active")
 
+    is_virtual_portfolio = payload.portfolio_id == "virtual_alpha" or payload.portfolio_id.startswith("virtual-")
+    target_portfolio_id = payload.portfolio_id
+    if is_virtual_portfolio:
+        fallback_portfolio = db.scalar(select(Portfolio).where(Portfolio.owner_id == current_user.id).limit(1))
+        if not fallback_portfolio:
+            raise HTTPException(status_code=404, detail="Portfolio not found")
+        target_portfolio_id = fallback_portfolio.id
+
     proposal = TradeProposal(
-        portfolio_id=payload.portfolio_id,
+        portfolio_id=target_portfolio_id,
         asset_symbol=payload.asset_symbol.upper(),
         side=payload.side,
         quantity=payload.quantity,
         order_type=payload.order_type,
         rationale=payload.rationale,
+        status="approved" if is_virtual_portfolio else "pending_approval",
     )
     db.add(proposal)
     db.commit()
     db.refresh(proposal)
 
-    write_audit_log(db, current_user.id, "trade.proposed", {"proposal_id": proposal.id, "asset": proposal.asset_symbol})
-    return TradeProposalResponse(proposal_id=proposal.id, status=proposal.status, approval_required=True)
+    write_audit_log(
+        db,
+        current_user.id,
+        "trade.proposed",
+        {
+            "proposal_id": proposal.id,
+            "asset": proposal.asset_symbol,
+            "virtual_auto_approved": is_virtual_portfolio,
+            "requested_portfolio_id": payload.portfolio_id,
+            "stored_portfolio_id": target_portfolio_id,
+        },
+    )
+    return TradeProposalResponse(proposal_id=proposal.id, status=proposal.status, approval_required=not is_virtual_portfolio)
 
 
 @app.post("/api/v1/orders/approve")
