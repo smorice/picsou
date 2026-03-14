@@ -52,6 +52,8 @@ type DashboardData = {
     agent_name: string;
     current_value?: string | null;
     last_sync_status?: string | null;
+    history_points?: Array<{ date: string; value: number }>;
+    latest_actions?: Array<{ asset: string; action: string; amount: number; date?: string; fee?: number; trade_id?: string }>;
   }>;
   virtual_portfolio: {
     portfolio_id: string;
@@ -179,7 +181,7 @@ type CommunicationTestRequest = {
 
 type Portfolio = {
   id: string;
-  type: 'virtual' | 'integration';
+  type: 'integration' | 'virtual';
   provider_code?: string;
   label: string;
   current_value: number;
@@ -188,6 +190,7 @@ type Portfolio = {
   roi: number;
   visible: boolean;
   status: 'active' | 'disabled' | 'pending_user_consent' | 'available';
+  last_sync_at?: string | null;
   agent_name: string;
   history: Array<{ date: string; value: number }>;
   operations: Array<{
@@ -196,8 +199,8 @@ type Portfolio = {
     side: 'buy' | 'sell';
     asset: string;
     amount: number;
-    tax_state: number;
-    tax_intermediary: number;
+    tax_state: number | null;
+    tax_intermediary: number | null;
     intermediary: string;
   }>;
   ai_advice: Array<{ kind: 'buy' | 'sell' | 'hold' | 'info'; text: string }>;
@@ -211,6 +214,70 @@ type InsightItem = {
   trend: string;
   detail: string;
   section: 'decisions' | 'indicator' | 'coach' | 'source';
+  portfolio_id?: string;
+  portfolio_label?: string;
+};
+
+type AppliedDecision = {
+  id: string;
+  title: string;
+  portfolio_label: string;
+  action: 'buy' | 'sell';
+  amount: number;
+  applied_at: string;
+};
+
+type Holding = {
+  asset: string;
+  firstBuyDate: string;
+  totalBought: number;
+  totalSold: number;
+  netInvested: number;
+  fees: number;
+  operationCount: number;
+  estimatedCurrentValue: number;
+  unrealizedPnl: number;
+  unrealizedPct: number;
+  estimatedSellFee: number;
+  taxFRIfSold: number;
+  intermediary: string;
+};
+
+type MarketSignal = {
+  id: string;
+  category: 'crypto' | 'actions' | 'etf' | 'obligations';
+  name: string;
+  symbol: string;
+  performance_30d: number;
+  confidence: number; // 1-5
+  rationale: string;
+  risk: 'faible' | 'modere' | 'eleve';
+  min_investment: number;
+};
+
+type AgentMode = 'manual' | 'autopilot';
+type AgentDomain = 'crypto' | 'actions' | 'etf' | 'obligations';
+type AgentDomainPolicy = 'prefer' | 'allow' | 'reject';
+
+type AgentQuotaConfig = {
+  enabled: boolean;
+  mode: AgentMode;
+  max_amount: number;
+  max_transactions_per_day: number;
+  domain_policy: Record<AgentDomain, AgentDomainPolicy>;
+};
+
+const DEFAULT_AGENT_CONFIG: AgentQuotaConfig = {
+  enabled: false,
+  mode: 'manual',
+  max_amount: 250,
+  max_transactions_per_day: 3,
+  domain_policy: {
+    crypto: 'allow',
+    actions: 'allow',
+    etf: 'prefer',
+    obligations: 'allow',
+  },
 };
 
 const PROVIDER_AGENT_NAMES: Record<string, string> = {
@@ -223,131 +290,73 @@ function resolveAgentNameFe(providerCode: string): string {
   return PROVIDER_AGENT_NAMES[providerCode] ?? `Agent ${providerCode}`;
 }
 
-function buildVirtualHistory(days = 730, hours = 24, minuteSpan = 180, minuteStep = 5, anchorValue = 100): Array<{ date: string; value: number }> {
-  const now = new Date();
-  const daily = Array.from({ length: days }, (_, i) => {
-    const d = new Date(now);
-    d.setHours(12, 0, 0, 0);
-    d.setDate(d.getDate() - (days - 1 - i));
-    const dayN = Math.floor((d.getTime() - new Date(d.getFullYear(), 0, 0).getTime()) / 86400000);
-    const growth = 1 + ((dayN % 41) - 20) / 1100 + i * 0.00034;
-    return {
-      date: d.toISOString(),
-      value: parseFloat(Math.max(anchorValue * 0.72, anchorValue * growth).toFixed(2)),
-    };
-  });
-
-  const intradayBase = daily[daily.length - 1]?.value ?? anchorValue;
-  const hourly = Array.from({ length: hours + 1 }, (_, i) => {
-    const d = new Date(now.getTime() - (hours - i) * 60 * 60 * 1000);
-    const wave = Math.sin((i / Math.max(hours, 1)) * Math.PI * 2) * 0.0028;
-    const drift = (i - hours / 2) * 0.00045;
-    return {
-      date: d.toISOString(),
-      value: parseFloat(Math.max(anchorValue * 0.72, intradayBase * (1 + wave + drift)).toFixed(2)),
-    };
-  });
-
-  const minutePoints = Array.from({ length: Math.floor(minuteSpan / minuteStep) + 1 }, (_, i) => {
-    const backMinutes = minuteSpan - i * minuteStep;
-    const d = new Date(now.getTime() - backMinutes * 60 * 1000);
-    const wave = Math.sin((i / Math.max(1, Math.floor(minuteSpan / minuteStep))) * Math.PI * 2) * 0.0014;
-    const drift = (i - minuteSpan / (2 * minuteStep)) * 0.00016;
-    return {
-      date: d.toISOString(),
-      value: parseFloat(Math.max(anchorValue * 0.72, intradayBase * (1 + wave + drift)).toFixed(2)),
-    };
-  });
-
-  return [...daily, ...hourly, ...minutePoints];
-}
-
-function ensureHistoryCoverage(history: Array<{ date: string; value: number }>, anchorValue: number) {
-  const nowMs = Date.now();
-  const parsed = history
-    .map((point) => ({ ...point, ts: Date.parse(point.date) }))
-    .filter((point) => Number.isFinite(point.ts))
-    .sort((a, b) => a.ts - b.ts);
-  const hasIntraday = parsed.some((point) => nowMs - point.ts <= 24 * 60 * 60 * 1000);
-  const hasFewMinutes = parsed.some((point) => nowMs - point.ts <= 15 * 60 * 1000);
-  const hasOverOneYear = parsed.some((point) => nowMs - point.ts >= 366 * 24 * 60 * 60 * 1000);
-  if (parsed.length < 40 || !hasIntraday || !hasFewMinutes || !hasOverOneYear) {
-    return buildVirtualHistory(730, 24, 180, 5, anchorValue > 0 ? anchorValue : 100);
+function computeHoldings(
+  operations: Portfolio['operations'],
+  portfolioROI: number
+): Holding[] {
+  const SELL_FEE_RATE = 0.003;
+  const PFU_RATE = 0.30;
+  const byAsset = new Map<string, {
+    asset: string; firstBuyDate: string; totalBought: number; totalSold: number;
+    fees: number; operationCount: number; intermediary: string;
+  }>();
+  for (const op of operations) {
+    if (!byAsset.has(op.asset)) {
+      byAsset.set(op.asset, { asset: op.asset, firstBuyDate: op.date, totalBought: 0, totalSold: 0, fees: 0, operationCount: 0, intermediary: op.intermediary });
+    }
+    const h = byAsset.get(op.asset)!;
+    if (op.side === 'buy') {
+      h.totalBought += op.amount;
+      if (op.date < h.firstBuyDate) h.firstBuyDate = op.date;
+    } else {
+      h.totalSold += op.amount;
+    }
+    if (op.tax_intermediary !== null) h.fees += op.tax_intermediary;
+    h.operationCount++;
   }
-  return parsed.map((point) => ({ date: point.date, value: point.value }));
+  return Array.from(byAsset.values())
+    .filter((h) => h.totalBought - h.totalSold > 0.01)
+    .map((h) => {
+      const netInvested = h.totalBought - h.totalSold;
+      const roiMultiplier = portfolioROI !== 0 ? (1 + portfolioROI / 100) : 1;
+      const estimatedCurrentValue = netInvested * roiMultiplier;
+      const unrealizedPnl = estimatedCurrentValue - netInvested;
+      const unrealizedPct = netInvested > 0 ? (unrealizedPnl / netInvested) * 100 : 0;
+      const estimatedSellFee = estimatedCurrentValue * SELL_FEE_RATE;
+      const taxFRIfSold = unrealizedPnl > 0 ? unrealizedPnl * PFU_RATE : 0;
+      return { ...h, netInvested, estimatedCurrentValue, unrealizedPnl, unrealizedPct, estimatedSellFee, taxFRIfSold };
+    })
+    .sort((a, b) => b.netInvested - a.netInvested);
 }
 
-function estimateStateTax(side: 'buy' | 'sell', amount: number, gainRate = 0.1) {
-  if (side !== 'sell') {
-    return 0;
-  }
-  const taxableGain = Math.max(0, amount * gainRate);
-  return parseFloat((taxableGain * 0.3).toFixed(2));
-}
-
-function estimateIntermediaryTax(providerCode: string | undefined, amount: number) {
-  const rates: Record<string, number> = {
-    coinbase: 0.004,
-    interactive_brokers: 0.0012,
-    trade_republic: 0.001,
-    virtual_alpha: 0.0008,
-  };
-  const rate = providerCode ? (rates[providerCode] ?? 0.001) : 0;
-  return parseFloat((Math.max(amount, 0) * rate).toFixed(2));
-}
-
-function buildVirtualOperations(
-  history: Array<{ date: string; value: number }>,
-  actions: Array<{ asset: string; action: string; amount: number }>
+function buildOperationsFromSyncActions(
+  actions: Array<{ asset: string; action: string; amount: number; date?: string; fee?: number; trade_id?: string }>,
+  providerCode: string | undefined,
+  intermediary: string
 ) {
-  if (history.length < 3) {
-    return [] as Portfolio['operations'];
-  }
-  const assets = actions.length > 0 ? actions.map((entry) => entry.asset) : ['BTC', 'ETF World', 'Nasdaq ETP', 'Actions Europe'];
-  const points = history.slice(-140);
-  const operations: Portfolio['operations'] = [];
-  for (let index = 1; index < points.length; index += 4) {
-    const previous = points[index - 1];
-    const current = points[index];
-    const side: 'buy' | 'sell' = current.value >= previous.value ? 'buy' : 'sell';
-    const grossMove = Math.abs(current.value - previous.value);
-    const amount = parseFloat(Math.max(2, grossMove * 1.9).toFixed(2));
-    operations.push({
-      id: `virtual-op-${index}`,
-      date: current.date,
-      side,
-      asset: assets[index % assets.length],
-      amount,
-      tax_state: estimateStateTax(side, amount, 0.1),
-      tax_intermediary: estimateIntermediaryTax('virtual_alpha', amount),
-      intermediary: 'Simulation IA',
-    });
-  }
-  return operations.slice(-26).reverse();
-}
-
-function buildOperationsFromHistory(history: Array<{ date: string; value: number }>, providerCode: string | undefined, intermediary: string) {
-  if (history.length < 3) {
-    return [] as Array<{ id: string; date: string; side: 'buy' | 'sell'; asset: string; amount: number; tax_state: number; tax_intermediary: number; intermediary: string }>;
-  }
-  const points = history.slice(-150);
-  const ops: Array<{ id: string; date: string; side: 'buy' | 'sell'; asset: string; amount: number; tax_state: number; tax_intermediary: number; intermediary: string }> = [];
-  for (let i = 1; i < points.length; i += 3) {
-    const delta = points[i].value - points[i - 1].value;
-    const amount = parseFloat(Math.max(1, Math.abs(delta) * 2.2).toFixed(2));
-    const side: 'buy' | 'sell' = delta >= 0 ? 'buy' : 'sell';
-    ops.push({
-      id: `${providerCode ?? 'provider'}-op-${i}`,
-      date: points[i].date,
-      side,
-      asset: providerCode === 'coinbase' ? 'Crypto Basket' : 'Portfolio Basket',
-      amount,
-      tax_state: estimateStateTax(side, amount, 0.08),
-      tax_intermediary: estimateIntermediaryTax(providerCode, amount),
-      intermediary,
-    });
-  }
-  return ops.slice(-36).reverse();
+  return actions
+    .slice()
+    .sort((a, b) => {
+      const da = Date.parse(a.date || '');
+      const db = Date.parse(b.date || '');
+      return (Number.isFinite(db) ? db : 0) - (Number.isFinite(da) ? da : 0);
+    })
+    .map((action, index) => {
+      const side: 'buy' | 'sell' = action.action.toLowerCase() === 'sell' ? 'sell' : 'buy';
+      const amount = Math.max(0, action.amount ?? 0);
+      const realFee = typeof action.fee === 'number' && Number.isFinite(action.fee) ? Math.max(0, action.fee) : null;
+      return {
+        id: action.trade_id ? `${providerCode ?? 'provider'}-sync-op-${action.trade_id}` : `${providerCode ?? 'provider'}-sync-op-${index}`,
+        date: action.date || new Date().toISOString(),
+        side,
+        asset: action.asset || (providerCode === 'coinbase' ? 'Crypto Basket' : 'Portfolio Basket'),
+        amount,
+        tax_state: null,
+        tax_intermediary: realFee,
+        intermediary,
+      };
+    })
+    .slice(0, 40);
 }
 
 function buildAllPortfolios(
@@ -365,40 +374,6 @@ function buildAllPortfolios(
       .map((item) => [item.provider_code, item])
   );
 
-  const virtualCurrentValue = parseFloat(dashboard.virtual_portfolio.current_value || '100');
-  const virtualBudget = parseFloat(dashboard.virtual_portfolio.budget_initial || '100');
-  const virtualPnl = parseFloat(dashboard.virtual_portfolio.pnl || String(virtualCurrentValue - virtualBudget));
-  const virtualPortfolio: Portfolio = {
-    id: 'virtual_alpha',
-    type: 'virtual',
-    provider_code: 'virtual_alpha',
-    label: dashboard.virtual_portfolio.label,
-    current_value: Number.isFinite(virtualCurrentValue) ? virtualCurrentValue : 100,
-    budget: Number.isFinite(virtualBudget) ? virtualBudget : 100,
-    pnl: Number.isFinite(virtualPnl) ? virtualPnl : 0,
-    roi: (dashboard.virtual_portfolio.roi ?? 0) * 100,
-    visible: visibility.virtual_alpha !== false,
-    status: 'active',
-    agent_name: dashboard.virtual_portfolio.agent_name,
-    history: ensureHistoryCoverage(dashboard.virtual_portfolio.history_points ?? [], Number.isFinite(virtualCurrentValue) ? virtualCurrentValue : 100),
-    operations: buildVirtualOperations(
-      ensureHistoryCoverage(dashboard.virtual_portfolio.history_points ?? [], Number.isFinite(virtualCurrentValue) ? virtualCurrentValue : 100),
-      dashboard.virtual_portfolio.latest_actions ?? []
-    ),
-    ai_advice: (dashboard.virtual_portfolio.latest_actions ?? []).slice(0, 4).map((action) => ({
-      kind: action.action.toLowerCase() === 'sell' ? 'sell' : 'buy',
-      text: `${action.action.toUpperCase()} ${action.asset} (${action.amount.toFixed(2)} €) par le robot virtuel · décision auto-approuvée`,
-    })),
-    allocation: (dashboard.virtual_portfolio.strategy_mix ?? []).map((entry) => {
-      const ratio = entry.weight > 1 ? entry.weight / 100 : entry.weight;
-      return {
-        class: entry.class,
-        weight: ratio,
-        value: parseFloat(((Number.isFinite(virtualCurrentValue) ? virtualCurrentValue : 100) * ratio).toFixed(2)),
-      };
-    }),
-  };
-
   const integrationPortfolios: Portfolio[] = integrations.map((connection) => {
     const item = dashboardByProvider.get(connection.provider_code);
     const rawValue = item?.current_value !== null && item?.current_value !== undefined
@@ -406,6 +381,13 @@ function buildAllPortfolios(
       : connection.last_snapshot_total_value
         ? parseFloat(connection.last_snapshot_total_value)
         : 0;
+    const backendHistory = (item?.history_points ?? []).filter((point) => Number.isFinite(point.value));
+    const history = backendHistory.length >= 2 ? backendHistory : [];
+    const backendActions = item?.latest_actions ?? [];
+    const operations = backendActions.length > 0
+      ? buildOperationsFromSyncActions(backendActions, connection.provider_code, connection.provider_name)
+      : [];
+
     return {
       id: connection.provider_code,
       type: 'integration',
@@ -417,16 +399,58 @@ function buildAllPortfolios(
       roi: 0,
       visible: visibility[connection.provider_code] !== false,
       status: connection.status as 'active' | 'disabled' | 'pending_user_consent' | 'available',
+      last_sync_at: connection.last_sync_at ?? null,
       agent_name: item?.agent_name || resolveAgentNameFe(connection.provider_code),
-      history: rawValue > 0 ? ensureHistoryCoverage(buildVirtualHistory(730, 24, 180, 5, rawValue), rawValue) : [],
-      operations: rawValue > 0 ? buildOperationsFromHistory(ensureHistoryCoverage(buildVirtualHistory(730, 24, 180, 5, rawValue), rawValue), connection.provider_code, connection.provider_name) : [],
+      history,
+      operations,
       ai_advice: [
         { kind: 'info', text: `${connection.provider_name} connecté. Statut sync: ${connection.last_sync_status ?? 'inconnu'}.` },
-        { kind: 'hold', text: rawValue > 0 ? 'Données disponibles. Synchronisez régulièrement pour des conseils IA affinés.' : 'Synchronisez pour récupérer vos positions et des conseils personnalisés.' },
+        { kind: 'hold', text: backendActions.length > 0 ? 'Les derniers mouvements proviennent des synchronisations Coinbase.' : rawValue > 0 ? 'Données disponibles. Synchronisez régulièrement pour des conseils IA affinés.' : 'Synchronisez pour récupérer vos positions et des conseils personnalisés.' },
       ],
       allocation: rawValue > 0 ? [{ class: 'Investissements', weight: 100, value: rawValue }] : [],
     };
   });
+
+  const vp = dashboard.virtual_portfolio;
+  const vpValue = parseFloat(vp.current_value) || 0;
+  const vpBudget = parseFloat(vp.budget_initial) || 100;
+  const vpPnl = parseFloat(vp.pnl) || 0;
+  const vpOps = vp.latest_actions.map((a, i) => ({
+    id: `virtual-op-${i}`,
+    date: new Date(Date.now() - (vp.latest_actions.length - i) * 2 * 24 * 60 * 60 * 1000).toISOString(),
+    side: a.action.toLowerCase() === 'sell' ? 'sell' as const : 'buy' as const,
+    asset: a.asset,
+    amount: Math.max(0, a.amount),
+    tax_state: null,
+    tax_intermediary: null,
+    intermediary: 'Picsou IA (virtuel)',
+  }));
+  const virtualPortfolio: Portfolio = {
+    id: vp.portfolio_id,
+    type: 'virtual',
+    label: vp.label || 'Portefeuille Virtuel IA',
+    current_value: vpValue,
+    budget: vpBudget,
+    pnl: vpPnl,
+    roi: vp.roi,
+    visible: visibility[vp.portfolio_id] !== false,
+    status: 'active',
+    last_sync_at: null,
+    agent_name: vp.agent_name,
+    history: vp.history_points,
+    operations: vpOps,
+    ai_advice: [
+      { kind: 'info', text: `Bac à sable virtuel — budget initial : ${vpBudget.toFixed(0)} €. Picsou IA teste ses stratégies ici sans risque réel.` },
+      vpPnl > 0
+        ? { kind: 'hold', text: `Performance actuelle : +${vpPnl.toFixed(2)} € (+${(vp.roi >= 0 ? '+' : '')}${(vp.roi).toFixed(1)}%). L IA surperforme.` }
+        : vpPnl < 0
+          ? { kind: 'sell', text: `Sous-performance virtuelle : ${vpPnl.toFixed(2)} €. L IA ajuste sa stratégie sans impact réel.` }
+          : { kind: 'info', text: 'Aucune activité virtuelle pour l instant. Souscrivez à un signal marché pour tester Picsou IA.' },
+    ],
+    allocation: vp.strategy_mix.length > 0
+      ? vp.strategy_mix.map((m) => ({ class: m.class, weight: m.weight, value: vpValue * m.weight / 100 }))
+      : (vpValue > 0 ? [{ class: 'Cash IA', weight: 100, value: vpValue }] : []),
+  };
 
   return [virtualPortfolio, ...integrationPortfolios];
 }
@@ -710,6 +734,34 @@ function trendFromScore(score: number) {
   return '↓ Priorite faible';
 }
 
+function scoreToConfidenceLevel(score: number) {
+  if (score >= 80) {
+    return 3;
+  }
+  if (score >= 60) {
+    return 2;
+  }
+  return 1;
+}
+
+function projectionConfidenceFromHistory(history: Array<{ date: string; value: number }>) {
+  const parsed = history
+    .map((point) => Date.parse(point.date))
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b);
+  if (parsed.length < 2) {
+    return 1;
+  }
+  const spanDays = (parsed[parsed.length - 1] - parsed[0]) / (24 * 60 * 60 * 1000);
+  if (spanDays >= 180 && parsed.length >= 24) {
+    return 3;
+  }
+  if (spanDays >= 30 && parsed.length >= 8) {
+    return 2;
+  }
+  return 1;
+}
+
 function toneFromTrend(trend: string) {
   return trendTone(trend) as 'up' | 'down' | 'neutral';
 }
@@ -795,9 +847,28 @@ function filterHistoryByScale(history: Array<{ date: string; value: number }>, s
   return parsed.slice(-Math.max(2, Math.ceil(parsed.length * 0.1))).map((point) => ({ date: point.date, value: point.value }));
 }
 
+const MARKET_SIGNALS: MarketSignal[] = [
+  // Crypto
+  { id: 'btc', category: 'crypto', name: 'Bitcoin', symbol: 'BTC', performance_30d: 12.4, confidence: 4, rationale: 'Demande institutionnelle soutenue. ETF spot en forte collecte. Momentum haussier confirmé sur les 30 derniers jours.', risk: 'eleve', min_investment: 10 },
+  { id: 'eth', category: 'crypto', name: 'Ethereum', symbol: 'ETH', performance_30d: 8.7, confidence: 3, rationale: 'Hausse du TVL DeFi et adoption L2. Signal technique modéré. Corrélation BTC élevée.', risk: 'eleve', min_investment: 10 },
+  { id: 'sol', category: 'crypto', name: 'Solana', symbol: 'SOL', performance_30d: 18.2, confidence: 3, rationale: 'Croissance du nombre de transactions, adoption gaming/DePIN. Volatilité élevée à surveiller.', risk: 'eleve', min_investment: 10 },
+  // Actions
+  { id: 'nvda', category: 'actions', name: 'NVIDIA', symbol: 'NVDA', performance_30d: 6.3, confidence: 4, rationale: 'Demande centres de données IA Blackwell dépasse les capacités de production. BPA estimé +85% exercice.', risk: 'modere', min_investment: 50 },
+  { id: 'msft', category: 'actions', name: 'Microsoft', symbol: 'MSFT', performance_30d: 3.1, confidence: 4, rationale: 'Azure AI et Copilot M365 en forte croissance. Flux de trésorerie solides. Position défensive et croissance.', risk: 'modere', min_investment: 50 },
+  { id: 'mc', category: 'actions', name: 'LVMH', symbol: 'MC', performance_30d: -1.2, confidence: 2, rationale: 'Reprise progressive du marché du luxe. Pression persistante sur les marges côté Chine. Signal attentiste.', risk: 'modere', min_investment: 50 },
+  // ETF
+  { id: 'cw8', category: 'etf', name: 'Amundi MSCI World (CW8)', symbol: 'CW8', performance_30d: 4.5, confidence: 5, rationale: 'Meilleur rapport rendement/risque ajusté sur 5 ans. Exposition monde maximale, frais réduits. Cœur de portefeuille.', risk: 'faible', min_investment: 20 },
+  { id: 'cspx', category: 'etf', name: 'iShares Core S&P 500', symbol: 'CSPX', performance_30d: 5.2, confidence: 5, rationale: 'Rebond post-correction T1 2026. Ratio Sharpe favorable. Concentration US à surveiller mais flux soutenu.', risk: 'faible', min_investment: 20 },
+  { id: 'ust', category: 'etf', name: 'Lyxor Nasdaq 100', symbol: 'UST', performance_30d: 7.8, confidence: 4, rationale: 'Concentration IA/tech. Surperformance vs monde. Volatilité modérée. Complémentaire CW8.', risk: 'modere', min_investment: 20 },
+  // Obligations
+  { id: 'oat', category: 'obligations', name: 'OAT France 10 ans', symbol: 'OAT10', performance_30d: 0.8, confidence: 3, rationale: 'Proche du pic de taux. Potentiel de plus-value si la BCE confirme son cycle de baisse. Rendement ~3.5%.', risk: 'faible', min_investment: 100 },
+  { id: 'igln', category: 'obligations', name: 'iShares Green Bond', symbol: 'IGLN', performance_30d: 1.2, confidence: 3, rationale: 'Rendement annualisé 3.8%. Demande ESG institutionnelle soutenue. Duration maîtrisée.', risk: 'faible', min_investment: 50 },
+  { id: 'ihyg', category: 'obligations', name: 'iShares EUR High Yield', symbol: 'IHYG', performance_30d: 2.1, confidence: 3, rationale: 'Spread HY en compression. Rendement 5.9%. Prime de risque de crédit attrayante en contexte de baisse de taux.', risk: 'modere', min_investment: 50 },
+];
+
 export default function PicsouApp() {
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
-  const [appView, setAppView] = useState<'dashboard' | 'settings' | 'admin'>('dashboard');
+  const [appView, setAppView] = useState<'dashboard' | 'portfolios' | 'settings' | 'admin'>('dashboard');
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState<string | null>(null);
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -846,8 +917,28 @@ export default function PicsouApp() {
   const [commGoogleChat, setCommGoogleChat] = useState({ enabled: false, webhook: '' });
   const [commTelegram, setCommTelegram] = useState({ enabled: false, botToken: '', chatId: '' });
   const [selectedInsight, setSelectedInsight] = useState<InsightItem | null>(null);
-  const [settingsTileCollapsed, setSettingsTileCollapsed] = useState<Record<string, boolean>>({});
+  const [settingsTileCollapsed, setSettingsTileCollapsed] = useState<Record<string, boolean>>({
+    intro: true,
+    profile: true,
+    agent: true,
+    virtual: false,
+    sources: true,
+    communication: true,
+    security: true,
+    config: true,
+  });
   const [decisionActionLoading, setDecisionActionLoading] = useState(false);
+  const [resolvedDecisionKeys, setResolvedDecisionKeys] = useState<Record<string, true>>({});
+  const [appliedDecisions, setAppliedDecisions] = useState<AppliedDecision[]>([]);
+  const [agentConfigs, setAgentConfigs] = useState<Record<string, AgentQuotaConfig>>({});
+  const [autopilotRunning, setAutopilotRunning] = useState(false);
+  const [emergencyStopActive, setEmergencyStopActive] = useState(false);
+  const [adminTransactionLog, setAdminTransactionLog] = useState<Array<{ id: string; user_id: string; user_name: string; portfolio_id: string; asset: string; side: string; amount: number; status: string; created_at: string }>>([]);
+  const [marketSignalFilter, setMarketSignalFilter] = useState<'all' | 'crypto' | 'actions' | 'etf' | 'obligations'>('all');
+  const [subscribeSignalId, setSubscribeSignalId] = useState<string | null>(null);
+  const [subscribePortfolioId, setSubscribePortfolioId] = useState<string>('');
+  const [subscribeAmount, setSubscribeAmount] = useState<number>(50);
+  const [subscribeLoading, setSubscribeLoading] = useState(false);
 
   useEffect(() => {
     const storedAccess = sessionStorage.getItem(ACCESS_TOKEN_KEY);
@@ -905,6 +996,7 @@ export default function PicsouApp() {
 
   useEffect(() => {
     if (!user) {
+      setAgentConfigs({});
       return;
     }
     setSettingsForm(defaultSettingsFromUser(user));
@@ -914,6 +1006,38 @@ export default function PicsouApp() {
       nextVisibility[key] = value !== false;
     }
     setPortfolioVisibility(nextVisibility);
+
+    const savedDecisionResolutions = (user.personal_settings.decision_resolutions ?? {}) as Record<string, unknown>;
+    const nextDecisionResolutions: Record<string, true> = {};
+    for (const [key, value] of Object.entries(savedDecisionResolutions)) {
+      if (value === true) {
+        nextDecisionResolutions[key] = true;
+      }
+    }
+    setResolvedDecisionKeys(nextDecisionResolutions);
+
+    const savedAgentConfigs = (user.personal_settings.agent_quotas ?? {}) as Record<string, unknown>;
+    const nextAgentConfigs: Record<string, AgentQuotaConfig> = {};
+    for (const [portfolioId, raw] of Object.entries(savedAgentConfigs)) {
+      if (!raw || typeof raw !== 'object') {
+        continue;
+      }
+      const source = raw as Record<string, unknown>;
+      const domainSource = (source.domain_policy ?? {}) as Record<string, unknown>;
+      nextAgentConfigs[portfolioId] = {
+        enabled: source.enabled === true,
+        mode: source.mode === 'autopilot' ? 'autopilot' : 'manual',
+        max_amount: Math.max(1, Number(source.max_amount ?? DEFAULT_AGENT_CONFIG.max_amount) || DEFAULT_AGENT_CONFIG.max_amount),
+        max_transactions_per_day: Math.max(1, Number(source.max_transactions_per_day ?? DEFAULT_AGENT_CONFIG.max_transactions_per_day) || DEFAULT_AGENT_CONFIG.max_transactions_per_day),
+        domain_policy: {
+          crypto: domainSource.crypto === 'reject' || domainSource.crypto === 'prefer' ? domainSource.crypto : 'allow',
+          actions: domainSource.actions === 'reject' || domainSource.actions === 'prefer' ? domainSource.actions : 'allow',
+          etf: domainSource.etf === 'reject' || domainSource.etf === 'prefer' ? domainSource.etf : 'allow',
+          obligations: domainSource.obligations === 'reject' || domainSource.obligations === 'prefer' ? domainSource.obligations : 'allow',
+        },
+      };
+    }
+    setAgentConfigs(nextAgentConfigs);
 
     const googleChat = (user.personal_settings.communication_google_chat ?? {}) as Record<string, unknown>;
     setCommGoogleChat({
@@ -1115,7 +1239,7 @@ export default function PicsouApp() {
     if (!accessToken || !user) {
       return;
     }
-    const shouldRefresh = appView === 'dashboard' || portfolioDetailOpen;
+    const shouldRefresh = appView === 'dashboard' || appView === 'portfolios' || portfolioDetailOpen;
     if (!shouldRefresh) {
       return;
     }
@@ -1202,7 +1326,8 @@ export default function PicsouApp() {
 
   function buildPersonalSettingsPayload(
     overrides: Record<string, unknown> = {},
-    visibilityState: Record<string, boolean> = portfolioVisibility
+    visibilityState: Record<string, boolean> = portfolioVisibility,
+    decisionState: Record<string, true> = resolvedDecisionKeys
   ) {
     return {
       currency: settingsForm.currency,
@@ -1219,6 +1344,8 @@ export default function PicsouApp() {
       communication_frequency: settingsForm.communicationFrequency,
       auto_refresh_seconds: Number.parseInt(settingsForm.autoRefreshSeconds, 10) || 30,
       portfolio_visibility: visibilityState,
+      decision_resolutions: decisionState,
+      agent_quotas: agentConfigs,
       communication_google_chat: {
         enabled: commGoogleChat.enabled,
         webhook: commGoogleChat.webhook,
@@ -1250,7 +1377,7 @@ export default function PicsouApp() {
           full_name: settingsForm.fullName,
           phone_number: settingsForm.phoneNumber || null,
           client_context: clientContext,
-          personal_settings: buildPersonalSettingsPayload({}, nextVisibility),
+          personal_settings: buildPersonalSettingsPayload({}, nextVisibility, resolvedDecisionKeys),
         }),
       });
       const payload = await readJsonResponse<UserProfile>(response);
@@ -1275,6 +1402,34 @@ export default function PicsouApp() {
     await persistDashboardPreferences(nextVisibility, 'Sélection des portefeuilles mise à jour.');
   }
 
+  async function persistDecisionResolutions(nextDecisionState: Record<string, true>) {
+    if (!accessToken) {
+      return;
+    }
+    try {
+      const response = await fetch(apiUrl('/auth/me/settings'), {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeader(accessToken),
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          full_name: settingsForm.fullName,
+          phone_number: settingsForm.phoneNumber || null,
+          client_context: clientContext,
+          personal_settings: buildPersonalSettingsPayload({}, portfolioVisibility, nextDecisionState),
+        }),
+      });
+      const payload = await readJsonResponse<UserProfile>(response);
+      if (response.ok && payload) {
+        setUser(payload);
+      }
+    } catch {
+      // Keep local state even if persistence fails.
+    }
+  }
+
   async function togglePortfolioActivation(portfolio: Portfolio, enabled: boolean) {
     if (!portfolio.provider_code) {
       return;
@@ -1283,6 +1438,101 @@ export default function PicsouApp() {
     setPortfolioVisibility(nextVisibility);
     await toggleIntegration(portfolio.provider_code, enabled, providerLabels[portfolio.provider_code] ?? portfolio.label);
     await persistDashboardPreferences(nextVisibility, 'Activation des portefeuilles mise à jour.');
+  }
+
+  async function updateAgentConfig(portfolioId: string, patch: Partial<AgentQuotaConfig>) {
+    const current = agentConfigs[portfolioId] ?? DEFAULT_AGENT_CONFIG;
+    const nextConfig: AgentQuotaConfig = {
+      ...current,
+      ...patch,
+      domain_policy: {
+        ...current.domain_policy,
+        ...(patch.domain_policy ?? {}),
+      },
+      max_amount: Math.max(1, Number((patch.max_amount ?? current.max_amount) || DEFAULT_AGENT_CONFIG.max_amount)),
+      max_transactions_per_day: Math.max(1, Number((patch.max_transactions_per_day ?? current.max_transactions_per_day) || DEFAULT_AGENT_CONFIG.max_transactions_per_day)),
+    };
+    const nextConfigs = { ...agentConfigs, [portfolioId]: nextConfig };
+    setAgentConfigs(nextConfigs);
+
+    if (!accessToken) {
+      return;
+    }
+
+    try {
+      const response = await fetch(apiUrl('/auth/me/settings'), {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeader(accessToken),
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          full_name: settingsForm.fullName,
+          phone_number: settingsForm.phoneNumber || null,
+          client_context: clientContext,
+          personal_settings: {
+            ...buildPersonalSettingsPayload(),
+            agent_quotas: nextConfigs,
+          },
+        }),
+      });
+      const payload = await readJsonResponse<UserProfile>(response);
+      if (response.ok && payload) {
+        setUser(payload);
+      }
+    } catch {
+      // Keep local settings even if persistence fails.
+    }
+  }
+
+  async function subscribeToMarketSignal(signal: MarketSignal, targetPortfolioId: string, amount: number) {
+    if (!accessToken) return;
+    if (emergencyStopActive) {
+      setError('Arrêt d urgence actif. Souscription impossible.');
+      return;
+    }
+    setSubscribeLoading(true);
+    setError(null);
+    try {
+      const proposalResponse = await fetch(apiUrl('/api/v1/orders/propose'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader(accessToken) },
+        credentials: 'include',
+        body: JSON.stringify({
+          portfolio_id: targetPortfolioId,
+          asset_symbol: signal.symbol,
+          side: 'buy',
+          quantity: Number(amount.toFixed(2)),
+          order_type: 'market',
+          rationale: `Signal marché Picsou IA — ${signal.name} (${signal.symbol}). ${signal.rationale}`,
+        }),
+      });
+      const proposalPayload = await readJsonResponse<TradeProposalResponse>(proposalResponse);
+      if (!proposalResponse.ok || !proposalPayload) {
+        throw new Error(extractErrorMessage(proposalPayload, 'Proposition de souscription impossible'));
+      }
+      if (proposalPayload.approval_required) {
+        const approvalResponse = await fetch(apiUrl('/api/v1/orders/approve'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeader(accessToken) },
+          credentials: 'include',
+          body: JSON.stringify({ proposal_id: proposalPayload.proposal_id, approved: true }),
+        });
+        const approvalPayload = await readJsonResponse<TradeApprovalResponse>(approvalResponse);
+        if (!approvalResponse.ok) {
+          throw new Error(extractErrorMessage(approvalPayload, 'Validation de souscription impossible'));
+        }
+      }
+      await refreshWorkspaceData(accessToken);
+      const targetLabel = allPortfolios.find((p) => p.id === targetPortfolioId)?.label ?? targetPortfolioId;
+      setSubscribeSignalId(null);
+      setError(`Ordre d achat de ${amount.toFixed(2)} € sur ${signal.name} envoyé vers "${targetLabel}".`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Souscription impossible');
+    } finally {
+      setSubscribeLoading(false);
+    }
   }
 
   async function syncAllIntegrations(token: string, silent = true) {
@@ -1931,13 +2181,10 @@ export default function PicsouApp() {
   );
   const visiblePortfolios = allPortfolios.filter((portfolio) => portfolio.visible && portfolio.status === 'active');
   const realVisiblePortfolios = visiblePortfolios.filter((portfolio) => portfolio.type === 'integration');
-  const virtualPortfolio = allPortfolios.find((portfolio) => portfolio.type === 'virtual');
-  const isVirtualVisible = Boolean(virtualPortfolio && virtualPortfolio.visible && virtualPortfolio.status === 'active');
   const aggregateAllHistory = aggregatePortfolioHistory(visiblePortfolios);
   const evolution24h = formatPortfolioEvolution(aggregateAllHistory, 1);
   const evolution7d = formatPortfolioEvolution(aggregateAllHistory, 7);
   const evolution1m = formatPortfolioEvolution(aggregateAllHistory, 30);
-  const pendingDecisionCount = (dashboard?.suggestions?.length ?? 0) + visiblePortfolios.reduce((count, portfolio) => count + portfolio.ai_advice.filter((advice) => advice.kind === 'buy' || advice.kind === 'sell').length, 0);
   const selectedHistory = selectedPortfolio ? filterHistoryByScale(selectedPortfolio.history, portfolioHistoryScale) : [];
   const duckSpeed = evolution24h.tone === 'up' ? 2.4 : evolution24h.tone === 'down' ? 7 : 3.8;
   const portfolioEvolutionRows = visiblePortfolios.map((portfolio) => ({
@@ -1947,32 +2194,46 @@ export default function PicsouApp() {
     evolution24h: formatPortfolioEvolution(portfolio.history, 1),
     evolution7d: formatPortfolioEvolution(portfolio.history, 7),
   }));
-  const suggestionInsights: InsightItem[] = (dashboard?.suggestions ?? []).map((item, index) => ({
-    id: `decision-suggestion-${index}`,
-    title: item.title,
-    value: `${item.score}/100`,
-    trend: trendFromScore(item.score),
-    detail: item.justification,
-    section: 'decisions',
-  }));
+  const suggestionInsights: InsightItem[] = (dashboard?.suggestions ?? []).flatMap((item, index) => {
+    const targetPortfolio = visiblePortfolios[0] ?? allPortfolios[0];
+    if (!targetPortfolio) {
+      return [];
+    }
+    return [{
+      id: `decision-suggestion-${index}`,
+      title: item.title,
+      value: `Confiance ${scoreToConfidenceLevel(item.score)}/3`,
+      trend: `Projection future · ${trendFromScore(item.score)}`,
+      detail: `${item.justification} (projection future)`,
+      section: 'decisions',
+      portfolio_id: targetPortfolio.id,
+      portfolio_label: targetPortfolio.label,
+    }];
+  });
   const aiDecisionInsights: InsightItem[] = visiblePortfolios.flatMap((portfolio) => {
     const actionable = portfolio.ai_advice.filter((advice) => advice.kind === 'buy' || advice.kind === 'sell');
+    const confidenceLevel = projectionConfidenceFromHistory(portfolio.history);
     return actionable.map((advice, index) => ({
       id: `decision-ai-${portfolio.id}-${index}`,
       title: `${portfolio.label} · ${advice.kind === 'buy' ? 'Achat suggere' : 'Vente suggeree'}`,
-      value: portfolio.current_value > 0 ? `${portfolio.current_value.toFixed(2)} €` : 'n/d',
-      trend: advice.kind === 'buy' ? '↑ Opportunite detectee' : '↓ Repli anticipe',
-      detail: advice.text,
+      value: `Confiance ${confidenceLevel}/3`,
+      trend: advice.kind === 'buy' ? 'Projection future · ↑ Opportunite detectee' : 'Projection future · ↓ Repli anticipe',
+      detail: `${advice.text} (projection future)`,
       section: 'decisions',
+      portfolio_id: portfolio.id,
+      portfolio_label: portfolio.label,
     }));
   });
-  const decisionInsights: InsightItem[] = [...suggestionInsights, ...aiDecisionInsights];
+  const decisionInsightKey = (insight: InsightItem) => `${insight.portfolio_id ?? 'none'}||${insight.title}||${insight.detail}||${insight.trend}`;
+  const decisionInsights: InsightItem[] = [...suggestionInsights, ...aiDecisionInsights].filter((insight) => !resolvedDecisionKeys[decisionInsightKey(insight)]);
+  const pendingDecisionCount = decisionInsights.length;
+  const annualizedProjectionConfidence = projectionConfidenceFromHistory(aggregateAllHistory);
   const indicatorInsights: InsightItem[] = (dashboard?.key_indicators ?? []).map((item, index) => ({
     id: `indicator-${index}`,
     title: item.label,
     value: item.value,
     trend: `${trendPrefix(item.trend)} ${item.trend}`.trim(),
-    detail: 'Lecture issue des donnees consolidees des portefeuilles reels et virtuels.',
+    detail: 'Lecture issue des donnees consolidees des portefeuilles reels synchronises.',
     section: 'indicator',
   }));
 
@@ -1993,40 +2254,85 @@ export default function PicsouApp() {
   }
 
   function inferDecisionPortfolioId(insight: InsightItem): string | null {
-    if (insight.id.startsWith('decision-ai-')) {
-      const raw = insight.id.replace('decision-ai-', '');
-      const parsed = raw.replace(/-\d+$/, '');
-      if (parsed) {
-        return parsed;
-      }
-    }
-    if (virtualPortfolio && virtualPortfolio.visible) {
-      return virtualPortfolio.id;
-    }
-    if (visiblePortfolios[0]) {
-      return visiblePortfolios[0].id;
-    }
-    return allPortfolios[0]?.id ?? null;
+    return insight.portfolio_id ?? null;
   }
 
-  async function runDecisionAction(insight: InsightItem, approved: boolean) {
+  function inferDecisionDomain(assetSymbol: string, insight: InsightItem): AgentDomain {
+    const normalizedAsset = assetSymbol.toUpperCase();
+    const text = `${insight.title} ${insight.detail}`.toLowerCase();
+    if (['BTC', 'ETH', 'SOL', 'ADA', 'XRP'].includes(normalizedAsset) || text.includes('crypto')) {
+      return 'crypto';
+    }
+    if (normalizedAsset.includes('ETF') || text.includes('etf')) {
+      return 'etf';
+    }
+    if (text.includes('obligation') || normalizedAsset.includes('BOND')) {
+      return 'obligations';
+    }
+    return 'actions';
+  }
+
+  function getAgentConfig(portfolioId: string): AgentQuotaConfig {
+    return agentConfigs[portfolioId] ?? DEFAULT_AGENT_CONFIG;
+  }
+
+  function countTodayOperations(portfolioId: string) {
+    const portfolio = allPortfolios.find((entry) => entry.id === portfolioId);
+    if (!portfolio) {
+      return 0;
+    }
+    const now = new Date();
+    return portfolio.operations.filter((op) => {
+      const date = new Date(op.date);
+      return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+    }).length;
+  }
+
+  function isDecisionAllowedByAgentPolicy(insight: InsightItem, portfolioId: string) {
+    const cfg = getAgentConfig(portfolioId);
+    const asset = inferDecisionAsset(insight);
+    const domain = inferDecisionDomain(asset, insight);
+    if (cfg.domain_policy[domain] === 'reject') {
+      return { allowed: false, reason: `Domaine ${domain} rejeté par votre quota agent.` };
+    }
+    if (countTodayOperations(portfolioId) >= cfg.max_transactions_per_day) {
+      return { allowed: false, reason: 'Quota quotidien de transactions atteint.' };
+    }
+    return { allowed: true, reason: '' };
+  }
+
+  async function runDecisionAction(insight: InsightItem, approved: boolean, options: { silent?: boolean; source?: 'manual' | 'autopilot' } = {}) {
     if (!accessToken) {
+      return;
+    }
+    if (emergencyStopActive) {
+      if (!options.silent) {
+        setError('Arrêt d urgence actif. Toutes les transactions sont bloquées. Désactivez le verrou dans Admin.');
+      }
       return;
     }
     const portfolioId = inferDecisionPortfolioId(insight);
     if (!portfolioId) {
-      setError('Aucun portefeuille disponible pour appliquer cette décision.');
+      setError('Cette décision n est liée à aucun portefeuille cible.');
       return;
     }
 
     setDecisionActionLoading(true);
-    setError(null);
+    if (!options.silent) {
+      setError(null);
+    }
     try {
       const side = inferDecisionSide(insight);
       const linkedPortfolio = allPortfolios.find((portfolio) => portfolio.id === portfolioId);
-      const notional = linkedPortfolio && linkedPortfolio.current_value > 0
+      let notional = linkedPortfolio && linkedPortfolio.current_value > 0
         ? Math.max(10, Math.min(250, linkedPortfolio.current_value * 0.03))
         : 25;
+      const config = getAgentConfig(portfolioId);
+      const policyCheck = isDecisionAllowedByAgentPolicy(insight, portfolioId);
+      if (!policyCheck.allowed) {
+        throw new Error(policyCheck.reason);
+      }
+      notional = Math.min(notional, config.max_amount);
 
       const proposalResponse = await fetch(apiUrl('/api/v1/orders/propose'), {
         method: 'POST',
@@ -2071,16 +2377,101 @@ export default function PicsouApp() {
       }
 
       await refreshWorkspaceData(accessToken);
-      setError(
-        approved
-          ? `Décision validée. Transaction ${finalStatus === 'approved' ? 'approuvée' : finalStatus}.`
-          : `Décision refusée. Transaction marquée ${finalStatus}.`
-      );
+      const processedKey = decisionInsightKey(insight);
+      const nextResolved: Record<string, true> = { ...resolvedDecisionKeys, [processedKey]: true };
+      setResolvedDecisionKeys(nextResolved);
+      await persistDecisionResolutions(nextResolved);
+      if (approved && finalStatus === 'approved') {
+        setAppliedDecisions((state) => [
+          {
+            id: processedKey,
+            title: insight.title,
+            portfolio_label: insight.portfolio_label ?? 'Portefeuille connecté',
+            action: side,
+            amount: Number(notional.toFixed(2)),
+            applied_at: new Date().toISOString(),
+          },
+          ...state.filter((entry) => entry.id !== processedKey),
+        ].slice(0, 12));
+        // Log to admin transaction history
+        if (hasAdminRole(user)) {
+          setAdminTransactionLog((prev) => [{
+            id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            user_id: user?.id ?? 'unknown',
+            user_name: user?.full_name ?? 'Utilisateur',
+            portfolio_id: portfolioId,
+            asset: inferDecisionAsset(insight),
+            side,
+            amount: Number(notional.toFixed(2)),
+            status: finalStatus,
+            created_at: new Date().toISOString(),
+          }, ...prev].slice(0, 100));
+        }
+      }
+      setSelectedInsight((current) => {
+        if (!current) {
+          return current;
+        }
+        return decisionInsightKey(current) === processedKey ? null : current;
+      });
+      if (!options.silent) {
+        setError(
+          approved
+            ? `Décision validée. Transaction ${finalStatus === 'approved' ? 'approuvée' : finalStatus}.`
+            : `Décision refusée. Transaction marquée ${finalStatus}.`
+        );
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Action sur décision impossible');
+      if (!options.silent) {
+        setError(err instanceof Error ? err.message : 'Action sur décision impossible');
+      }
     } finally {
       setDecisionActionLoading(false);
     }
+  }
+
+  useEffect(() => {
+    if (!accessToken || decisionActionLoading || autopilotRunning || emergencyStopActive) {
+      return;
+    }
+    const autopilotDecisions = decisionInsights.filter((insight) => {
+      const portfolioId = inferDecisionPortfolioId(insight);
+      if (!portfolioId) {
+        return false;
+      }
+      const cfg = getAgentConfig(portfolioId);
+      if (!cfg.enabled || cfg.mode !== 'autopilot') {
+        return false;
+      }
+      return isDecisionAllowedByAgentPolicy(insight, portfolioId).allowed;
+    });
+    if (autopilotDecisions.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    const run = async () => {
+      setAutopilotRunning(true);
+      for (const insight of autopilotDecisions.slice(0, 3)) {
+        if (cancelled) {
+          break;
+        }
+        await runDecisionAction(insight, true, { silent: true, source: 'autopilot' });
+      }
+      if (!cancelled) {
+        setError(`Pilote automatique: ${Math.min(autopilotDecisions.length, 3)} décision(s) exécutée(s).`);
+      }
+      setAutopilotRunning(false);
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, decisionActionLoading, autopilotRunning, emergencyStopActive, decisionInsights, agentConfigs]);
+
+  function acknowledgeAppliedDecision(decisionId: string) {
+    setAppliedDecisions((state) => state.filter((entry) => entry.id !== decisionId));
   }
 
   return (
@@ -2199,6 +2590,7 @@ export default function PicsouApp() {
             </div>
           </div>
           <p className="helperText" style={{ marginTop: 10 }}>{selectedInsight.detail}</p>
+          {selectedInsight.section === 'decisions' && selectedInsight.portfolio_label ? <p className="helperText">Portefeuille cible: {selectedInsight.portfolio_label}</p> : null}
           {selectedInsight.section === 'decisions' ? (
             <div className="providerActions fullWidth" style={{ marginTop: 12 }}>
               <button className="secondaryButton" disabled={decisionActionLoading} onClick={() => void runDecisionAction(selectedInsight, true)} type="button">
@@ -2392,8 +2784,11 @@ export default function PicsouApp() {
             <button className={appView === 'dashboard' && !portfolioDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
               Tableau de bord
             </button>
+            <button className={appView === 'portfolios' && !portfolioDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+              Portefeuilles
+            </button>
             <button className={appView === 'settings' && !portfolioDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-              Mon espace
+              Configuration
             </button>
             {canAccessAdmin ? (
               <button className={appView === 'admin' && !portfolioDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('admin'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
@@ -2412,24 +2807,46 @@ export default function PicsouApp() {
                   </button>
                 ))}
               </div>
+              {allPortfolios.filter((p) => p.status === 'active').length === 0 ? (
+                <span className="helperText" style={{ fontSize: '.76rem' }}>Connectez un portefeuille dans Configuration → Intégrations</span>
+              ) : null}
             </section>
           ) : null}
 
           {portfolioDetailOpen && selectedPortfolio ? (
             <div style={{ display: 'grid', gap: 22 }}>
               <button className="ghostButton" onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); window.scrollTo({ top: 0, behavior: 'smooth' }); }} style={{ width: 'fit-content' }} type="button">← Retour</button>
+              {selectedPortfolio.type === 'virtual' ? (
+                <div className="infoPanel" style={{ background: 'var(--indigo-soft)', border: '1px solid var(--indigo-border)', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                  <span style={{ fontSize: '1.5rem' }}>⚗️</span>
+                  <div>
+                    <strong>Bac à sable virtuel — 100 € simulés</strong>
+                    <p style={{ margin: '4px 0 0', fontSize: '.82rem' }}>Ce portefeuille est un espace d entraînement sans argent réel. Picsou IA teste ici ses stratégies avant de vous les proposer sur vos vrais portefeuilles. Utilisez-le pour évaluer ses performances et vous familiariser avec l application.</p>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                      <span className="metaPill">Budget initial : {selectedPortfolio.budget.toFixed(0)} €</span>
+                      <span className="metaPill">Valeur actuelle : {selectedPortfolio.current_value.toFixed(2)} €</span>
+                      {selectedPortfolio.pnl !== 0 ? (
+                        <span className={`metaPill ${selectedPortfolio.pnl >= 0 ? '' : ''}`} style={{ color: selectedPortfolio.pnl >= 0 ? 'var(--ok)' : 'var(--danger)', borderColor: selectedPortfolio.pnl >= 0 ? 'var(--ok-border)' : 'var(--danger-border)' }}>
+                          Perf. Picsou : {selectedPortfolio.pnl >= 0 ? '+' : ''}{selectedPortfolio.pnl.toFixed(2)} €
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
               <div className="portfolioDetailHeader">
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
                     <span className="agentBadge">{selectedPortfolio.agent_name}</span>
-                    <span className="metaPill">{selectedPortfolio.type === 'virtual' ? 'Virtuel' : 'Intégration'}</span>
+                    <span className="metaPill">{selectedPortfolio.type === 'virtual' ? '⚗️ Virtuel' : 'Intégration'}</span>
                   </div>
                   <h1 style={{ fontSize: '1.6rem' }}>{selectedPortfolio.label}</h1>
                 </div>
                 <div className="heroValueCard" style={{ minWidth: 210 }}>
-                  <span>Valeur actuelle</span>
-                  <strong style={{ fontSize: '1.8rem' }}>{selectedPortfolio.current_value > 0 ? `${selectedPortfolio.current_value.toFixed(2)} €` : '–'}</strong>
+                  <span>{selectedPortfolio.type === 'virtual' ? 'Valeur simulée' : 'Valeur actuelle'}</span>
+                  <strong style={{ fontSize: '1.8rem' }}>{selectedPortfolio.current_value > 0 ? `${selectedPortfolio.current_value.toFixed(2)} €` : selectedPortfolio.type === 'virtual' ? `${selectedPortfolio.budget.toFixed(2)} €` : '–'}</strong>
                   {selectedPortfolio.pnl !== 0 ? <small className={selectedPortfolio.pnl >= 0 ? 'up' : 'down'}>{selectedPortfolio.pnl >= 0 ? '+' : ''}{selectedPortfolio.pnl.toFixed(2)} € · ROI {selectedPortfolio.roi >= 0 ? '+' : ''}{selectedPortfolio.roi.toFixed(1)}%</small> : null}
+                  {selectedPortfolio.type === 'virtual' ? <small style={{ color: 'var(--indigo)' }}>⚗️ Argent simulé — budget : {selectedPortfolio.budget.toFixed(0)} €</small> : <small>Dernière synchro : {selectedPortfolio.last_sync_at ? new Date(selectedPortfolio.last_sync_at).toLocaleString('fr-FR') : 'jamais'}</small>}
                 </div>
               </div>
               <article className="featureCard">
@@ -2447,6 +2864,82 @@ export default function PicsouApp() {
                   <span>{selectedHistory[selectedHistory.length - 1]?.date ? new Date(selectedHistory[selectedHistory.length - 1].date).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Maintenant'}</span>
                 </div>
               </article>
+
+              {/* === Positions détaillées === */}
+              {(() => {
+                const holdings = computeHoldings(selectedPortfolio.operations, selectedPortfolio.roi);
+                const isVirtual = selectedPortfolio.type === 'virtual';
+                if (holdings.length === 0) return null;
+                return (
+                  <article className="featureCard">
+                    <div className="cardHeader">
+                      <h2>Positions détaillées</h2>
+                      <span style={{ fontSize: '.76rem', color: 'var(--muted)' }}>
+                        {isVirtual ? '⚗️ Virtuel — ' : ''}Valeurs estimées · PFU 30% = 12.8% IR + 17.2% PS
+                        {selectedPortfolio.roi === 0 ? ' · Synchronisez pour les +/− valeurs' : ''}
+                      </span>
+                    </div>
+                    <div className="operationLedgerWrap">
+                      <table className="operationLedger">
+                        <thead>
+                          <tr>
+                            <th>Support / Actif</th>
+                            <th>Date d entrée</th>
+                            <th>Investi net</th>
+                            <th>Valeur estimée</th>
+                            <th>+/− latent</th>
+                            <th>Frais vente est.</th>
+                            <th>Imposition FR si vente</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {holdings.map((h) => (
+                            <tr key={h.asset}>
+                              <td><strong>{h.asset}</strong><br /><span style={{ fontSize: '.72rem', color: 'var(--muted)' }}>{h.intermediary} · {h.operationCount} opération(s)</span></td>
+                              <td>{new Date(h.firstBuyDate).toLocaleDateString('fr-FR')}</td>
+                              <td>{h.netInvested.toFixed(2)} €</td>
+                              <td>{h.estimatedCurrentValue.toFixed(2)} €</td>
+                              <td>
+                                <span className={h.unrealizedPnl >= 0 ? 'up' : 'down'}>
+                                  {h.unrealizedPnl >= 0 ? '+' : ''}{h.unrealizedPnl.toFixed(2)} €
+                                  {selectedPortfolio.roi !== 0 ? ` (${h.unrealizedPct >= 0 ? '+' : ''}${h.unrealizedPct.toFixed(1)}%)` : ' (n/d sync)'}
+                                </span>
+                              </td>
+                              <td style={{ color: 'var(--muted)' }}>
+                                {isVirtual ? '—' : `~${h.estimatedSellFee.toFixed(2)} €`}
+                                <br /><span style={{ fontSize: '.7rem' }}>{isVirtual ? '' : '~0.30%'}</span>
+                              </td>
+                              <td style={{ color: h.taxFRIfSold > 0 ? 'var(--warn)' : 'var(--muted)' }}>
+                                {isVirtual ? '— (virtuel)' : h.taxFRIfSold > 0 ? `~${h.taxFRIfSold.toFixed(2)} €` : 'Aucune si perte'}
+                                {!isVirtual && h.taxFRIfSold > 0 ? <><br /><span style={{ fontSize: '.7rem' }}>PFU 30%</span></> : null}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr>
+                            <td colSpan={2}><strong>Total</strong></td>
+                            <td><strong>{holdings.reduce((s, h) => s + h.netInvested, 0).toFixed(2)} €</strong></td>
+                            <td><strong>{holdings.reduce((s, h) => s + h.estimatedCurrentValue, 0).toFixed(2)} €</strong></td>
+                            <td>
+                              <strong className={holdings.reduce((s, h) => s + h.unrealizedPnl, 0) >= 0 ? 'up' : 'down'}>
+                                {holdings.reduce((s, h) => s + h.unrealizedPnl, 0) >= 0 ? '+' : ''}
+                                {holdings.reduce((s, h) => s + h.unrealizedPnl, 0).toFixed(2)} €
+                              </strong>
+                            </td>
+                            <td>{isVirtual ? '—' : `~${holdings.reduce((s, h) => s + h.estimatedSellFee, 0).toFixed(2)} €`}</td>
+                            <td>{isVirtual ? '—' : `~${holdings.reduce((s, h) => s + h.taxFRIfSold, 0).toFixed(2)} €`}</td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                    <p className="helperText" style={{ marginTop: 8 }}>
+                      Estimations basées sur les opérations enregistrées.{selectedPortfolio.roi === 0 ? ' Synchronisez le portefeuille pour obtenir les plus/moins-values réelles.' : ' Le taux PFU de 30% (12.8% IR + 17.2% PS) s applique aux plus-values nettes lors de la cession.'}
+                    </p>
+                  </article>
+                );
+              })()}
+
               <article className="featureCard">
                 <div className="cardHeader"><h2>Achats / Ventes et Taxes</h2><span>Etat FR et intermédiaire</span></div>
                 {selectedPortfolio.operations.length > 0 ? (
@@ -2469,8 +2962,8 @@ export default function PicsouApp() {
                             <td><span className={op.side === 'buy' ? 'statusBadge ok' : 'statusBadge warn'}>{op.side === 'buy' ? 'Achat' : 'Vente'}</span></td>
                             <td>{op.asset}</td>
                             <td>{op.amount.toFixed(2)} €</td>
-                            <td>{op.tax_state.toFixed(2)} €</td>
-                            <td>{op.tax_intermediary.toFixed(2)} € · {op.intermediary}</td>
+                            <td>{op.tax_state !== null ? `${op.tax_state.toFixed(2)} €` : 'n/d réel'}</td>
+                            <td>{op.tax_intermediary !== null ? `${op.tax_intermediary.toFixed(2)} €` : 'n/d réel'} · {op.intermediary}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -2509,28 +3002,33 @@ export default function PicsouApp() {
               <article className="featureCard">
                 <div className="cardHeader"><h2>Paramètres du portefeuille</h2><span>Visibilité et libellé</span></div>
                 <div className="preferenceGroup">
-                  <label className="checkRow">
-                    <input type="checkbox" checked={portfolioVisibility[selectedPortfolio.id] !== false} onChange={(e) => void updatePortfolioVisibilityPreference(selectedPortfolio.id, e.target.checked)} />
-                    <span>Afficher sur le dashboard</span>
-                  </label>
-                  {selectedPortfolio.type === 'integration' ? (
-                    <label className="checkRow">
-                      <input type="checkbox" checked={selectedPortfolio.status === 'active'} onChange={(e) => void togglePortfolioActivation(selectedPortfolio, e.target.checked)} />
-                      <span>Activer ce portefeuille connecté</span>
-                    </label>
-                  ) : (
-                    <label className="checkRow">
-                      <input type="checkbox" checked={portfolioVisibility[selectedPortfolio.id] !== false} onChange={(e) => void updatePortfolioVisibilityPreference(selectedPortfolio.id, e.target.checked)} />
-                      <span>Activer le portefeuille test</span>
-                    </label>
-                  )}
-                  {selectedPortfolio.provider_code ? (
+                  {selectedPortfolio.type === 'virtual' ? (
                     <>
-                      <label>Libellé affiché<input type="text" value={providerLabels[selectedPortfolio.provider_code] ?? selectedPortfolio.label} onChange={(e) => setProviderLabels((v) => ({ ...v, [selectedPortfolio.provider_code!]: e.target.value }))} placeholder="Nom affiché dans le dashboard" /></label>
-                      <button className="secondaryButton" disabled={submitting} onClick={() => void savePortfolioLabel(selectedPortfolio.provider_code!)} type="button">Sauvegarder le libellé</button>
-                      {selectedPortfolio.type === 'integration' ? <button className="secondaryButton" disabled={submitting} onClick={() => void syncIntegration(selectedPortfolio.provider_code!)} type="button">Synchroniser maintenant</button> : null}
+                      <p className="helperText">Le portefeuille virtuel est toujours actif. Il sert de bac à sable pour Picsou IA. Vous pouvez choisir de l afficher ou non sur le cockpit.</p>
+                      <label className="checkRow">
+                        <input type="checkbox" checked={portfolioVisibility[selectedPortfolio.id] !== false} onChange={(e) => void updatePortfolioVisibilityPreference(selectedPortfolio.id, e.target.checked)} />
+                        <span>Afficher sur le tableau de bord</span>
+                      </label>
                     </>
-                  ) : null}
+                  ) : (
+                    <>
+                      <label className="checkRow">
+                        <input type="checkbox" checked={portfolioVisibility[selectedPortfolio.id] !== false} onChange={(e) => void updatePortfolioVisibilityPreference(selectedPortfolio.id, e.target.checked)} />
+                        <span>Afficher sur le dashboard</span>
+                      </label>
+                      <label className="checkRow">
+                        <input type="checkbox" checked={selectedPortfolio.status === 'active'} onChange={(e) => void togglePortfolioActivation(selectedPortfolio, e.target.checked)} />
+                        <span>Activer ce portefeuille connecté</span>
+                      </label>
+                      {selectedPortfolio.provider_code ? (
+                        <>
+                          <label>Libellé affiché<input type="text" value={providerLabels[selectedPortfolio.provider_code] ?? selectedPortfolio.label} onChange={(e) => setProviderLabels((v) => ({ ...v, [selectedPortfolio.provider_code!]: e.target.value }))} placeholder="Nom affiché dans le dashboard" /></label>
+                          <button className="secondaryButton" disabled={submitting} onClick={() => void savePortfolioLabel(selectedPortfolio.provider_code!)} type="button">Sauvegarder le libellé</button>
+                          <button className="secondaryButton" disabled={submitting} onClick={() => void syncIntegration(selectedPortfolio.provider_code!)} type="button">Synchroniser maintenant</button>
+                        </>
+                      ) : null}
+                    </>
+                  )}
                 </div>
               </article>
             </div>
@@ -2540,20 +3038,19 @@ export default function PicsouApp() {
             <>
               <section className="portfolioHero">
                 <div className="portfolioIntro">
-                  <p className="sectionTag">Tableau de bord</p>
-                  <h1>Investir avec plus de calme, mais sans rater les opportunites utiles.</h1>
-                  <p className="bodyText">Suivi marche, poche crypto, tresorerie, suggestions IA et prochaines actions: tout est rassemble dans un espace qui vous accompagne au lieu de vous submerger.</p>
+                  <p className="sectionTag">Cockpit investisseur</p>
+                  <h1>Vue d ensemble de votre patrimoine.</h1>
+                  <p className="bodyText">Tous vos portefeuilles consolidés, les alertes prioritaires et les actions recommandées par votre agent IA. Cliquez sur les portefeuilles ci-dessus pour filtrer l affichage.</p>
                   <div className="profileMeta">
                     <span className="metaPill">Profil: {user.role}</span>
-                    <span className="metaPill">Acces: {user.assigned_roles.join(', ')}</span>
                     <span className="metaPill">Theme: {String(user.personal_settings.theme ?? 'family')}</span>
+                    {autopilotRunning ? <span className="metaPill" style={{ color: 'var(--warn)', borderColor: 'var(--warn-border)' }}>⚡ Pilote auto actif</span> : null}
                   </div>
                 </div>
                 <div className="heroValueCard portfolioEvolutionCard">
                   <span>Portefeuilles connectés et évolution</span>
                   <div className="activePortfolioSplit">
                     <div className="activePortfolioChip real"><strong>{realVisiblePortfolios.length}</strong><small>Actifs réels</small></div>
-                    <div className="activePortfolioChip virtual"><strong>{isVirtualVisible ? 'ON' : 'OFF'}</strong><small>Virtuel</small></div>
                     <div className="activePortfolioChip total"><strong>{allPortfolios.length}</strong><small>Total</small></div>
                   </div>
                   <div className="evolutionKpiBars">
@@ -2577,6 +3074,61 @@ export default function PicsouApp() {
                   </div>
                 </div>
               </section>
+
+              {/* Vigilance section */}
+              {(() => {
+                const vigilanceItems: Array<{ level: 'danger' | 'warn' | 'info'; message: string; action?: string; actionView?: 'portfolios' | 'settings' }> = [];
+                const realPortfolios = allPortfolios.filter((p) => p.type === 'integration');
+                if (realPortfolios.length === 0 && allPortfolios.every((p) => p.type === 'virtual')) {
+                  vigilanceItems.push({ level: 'info', message: 'Aucune intégration connectée. Le portefeuille virtuel ⚗️ est actif en bac à sable. Ajoutez une intégration pour suivre vos actifs réels.', action: 'Configurer', actionView: 'settings' });
+                }
+                for (const p of visiblePortfolios) {
+                  if (p.type === 'virtual') continue; // skip sync/value warnings for virtual sandbox
+                  if (!p.last_sync_at) {
+                    vigilanceItems.push({ level: 'warn', message: `${p.label}: jamais synchronisé. Lancez une synchronisation pour obtenir des données en temps réel.`, action: 'Voir portefeuille', actionView: 'portfolios' });
+                  } else {
+                    const syncAge = Date.now() - Date.parse(p.last_sync_at);
+                    if (syncAge > 24 * 60 * 60 * 1000) {
+                      vigilanceItems.push({ level: 'info', message: `${p.label}: dernière synchronisation il y a plus de 24h.`, action: 'Voir portefeuille', actionView: 'portfolios' });
+                    }
+                  }
+                  if (p.current_value <= 0 && p.status === 'active') {
+                    vigilanceItems.push({ level: 'info', message: `${p.label}: valeur nulle. Synchronisez pour récupérer les positions.` });
+                  }
+                }
+                if (decisionInsights.length > 5) {
+                  vigilanceItems.push({ level: 'warn', message: `${decisionInsights.length} décisions IA en attente de validation. Traitez-les dans Portefeuilles.`, action: 'Portefeuilles', actionView: 'portfolios' });
+                }
+                const autopilotPortfolios = allPortfolios.filter((p) => (agentConfigs[p.id] ?? DEFAULT_AGENT_CONFIG).enabled && (agentConfigs[p.id] ?? DEFAULT_AGENT_CONFIG).mode === 'autopilot');
+                if (autopilotPortfolios.length > 0) {
+                  vigilanceItems.push({ level: 'info', message: `Pilote automatique actif sur ${autopilotPortfolios.map((p) => p.label).join(', ')}. Transactions exécutées dans les limites de vos quotas.` });
+                }
+                if (vigilanceItems.length === 0) {
+                  return null;
+                }
+                return (
+                  <section style={{ marginBottom: 18 }}>
+                    <div className="cardHeader" style={{ marginBottom: 10 }}>
+                      <h2>Points de vigilance</h2>
+                      <span>{vigilanceItems.length} point(s) à surveiller</span>
+                    </div>
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      {vigilanceItems.map((item, idx) => (
+                        <div key={idx} className={`infoPanel ${item.level === 'danger' ? 'warn' : item.level === 'warn' ? '' : 'mutedPanel'}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 16px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <span>{item.level === 'danger' ? '🔴' : item.level === 'warn' ? '🟡' : '🔵'}</span>
+                            <p style={{ margin: 0, fontSize: '.84rem' }}>{item.message}</p>
+                          </div>
+                          {item.action && item.actionView ? (
+                            <button className="ghostButton" style={{ whiteSpace: 'nowrap', fontSize: '.78rem' }} onClick={() => { setAppView(item.actionView!); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">{item.action} →</button>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                );
+              })()}
+
               {loading ? <article className="featureCard">Chargement de votre espace...</article> : null}
               {dashboard ? (
                 <>
@@ -2584,7 +3136,10 @@ export default function PicsouApp() {
                     <section style={{ marginBottom: 18 }}>
                       <div className="cardHeader" style={{ marginBottom: 10 }}>
                         <h2>Décisions prioritaires</h2>
-                        <span>Cliquez puis confirmez ou refusez</span>
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                          <span>Cliquez puis confirmez ou refusez</span>
+                          <button className="ghostButton" style={{ fontSize: '.78rem' }} onClick={() => { setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Voir tout dans Portefeuilles →</button>
+                        </div>
                       </div>
                       <div className="suggestionGrid">
                         {decisionInsights.slice(0, 4).map((decision) => (
@@ -2601,6 +3156,7 @@ export default function PicsouApp() {
                               <strong>{decision.value}</strong>
                             </button>
                             <p>{decision.detail}</p>
+                            {decision.portfolio_label ? <p className="helperText">Portefeuille: {decision.portfolio_label}</p> : null}
                             <small className={trendTone(decision.trend)}>{decision.trend}</small>
                             <div className="providerActions fullWidth" style={{ marginTop: 8 }}>
                               <button className="secondaryButton" disabled={decisionActionLoading} onClick={() => void runDecisionAction(decision, true)} type="button">Confirmer</button>
@@ -2612,19 +3168,43 @@ export default function PicsouApp() {
                     </section>
                   ) : null}
 
+                  {appliedDecisions.length > 0 ? (
+                    <section style={{ marginBottom: 18 }}>
+                      <div className="cardHeader" style={{ marginBottom: 10 }}>
+                        <h2>Décisions appliquées</h2>
+                        <span>En attente de validation finale utilisateur</span>
+                      </div>
+                      <div className="suggestionGrid">
+                        {appliedDecisions.map((decision) => (
+                          <div className="suggestionCard" key={decision.id}>
+                            <div className="compactRow"><strong>{decision.title}</strong><span>{decision.action === 'buy' ? 'Achat' : 'Vente'}</span></div>
+                            <p>{decision.portfolio_label} · {decision.amount.toFixed(2)} €</p>
+                            <small>Appliquée le {new Date(decision.applied_at).toLocaleString('fr-FR')}</small>
+                            <div className="providerActions fullWidth" style={{ marginTop: 8 }}>
+                              <button className="secondaryButton" onClick={() => acknowledgeAppliedDecision(decision.id)} type="button">Valider définitivement</button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
+
                   <section>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
-                      <p className="sectionTag" style={{ marginBottom: 0 }}>Mes portefeuilles</p>
-                      <button className="ghostButton" disabled={refreshingDashboard} onClick={() => void refreshDashboardNow()} type="button">
-                        {refreshingDashboard ? 'Rafraichissement...' : 'Rafraichir maintenant'}
-                      </button>
+                      <p className="sectionTag" style={{ marginBottom: 0 }}>Aperçu des portefeuilles</p>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button className="ghostButton" disabled={refreshingDashboard} onClick={() => void refreshDashboardNow()} type="button">
+                          {refreshingDashboard ? 'Rafraichissement...' : 'Rafraichir maintenant'}
+                        </button>
+                        <button className="ghostButton" onClick={() => { setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Tous les portefeuilles →</button>
+                      </div>
                     </div>
                     <div className="portfolioDeck">
                       {visiblePortfolios.map((p) => (
                         <button key={p.id} className="portfolioCard" onClick={() => { setSelectedPortfolio(p); setPortfolioDetailOpen(true); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
                           <div className="pCardHeader">
                             <span className="agentBadge">{p.agent_name}</span>
-                            <span className="metaPill">{p.type === 'virtual' ? 'Virtuel' : 'Intégration'}</span>
+                            <span className="metaPill">{p.type === 'virtual' ? '⚗️ Virtuel' : 'Intégration'}</span>
                           </div>
                           <strong className="pCardLabel">{p.label}</strong>
                           <div className="pCardValue">{p.current_value > 0 ? `${p.current_value.toFixed(2)} €` : '–'}</div>
@@ -2635,10 +3215,160 @@ export default function PicsouApp() {
                         </button>
                       ))}
                       {visiblePortfolios.length === 0 ? (
-                        <div className="infoPanel mutedPanel" style={{ gridColumn: '1/-1' }}><strong>Aucun portefeuille actif</strong><p>Activez un connecteur dans Mon espace → Sources du tableau de bord.</p></div>
+                        <div className="infoPanel mutedPanel" style={{ gridColumn: '1/-1' }}><strong>Aucun portefeuille actif</strong><p>Activez un connecteur dans Configuration → Intégrations.</p></div>
                       ) : null}
                     </div>
                   </section>
+
+                  {/* === Marchés & Opportunités === */}
+                  {(() => {
+                    const filtered = marketSignalFilter === 'all' ? MARKET_SIGNALS : MARKET_SIGNALS.filter((s) => s.category === marketSignalFilter);
+                    const activePorts = allPortfolios.filter((p) => p.status === 'active' || p.type === 'virtual');
+                    const subscribeTarget = MARKET_SIGNALS.find((s) => s.id === subscribeSignalId);
+                    return (
+                      <section style={{ marginBottom: 18 }}>
+                        <div className="cardHeader" style={{ marginBottom: 12 }}>
+                          <div>
+                            <h2>Marchés &amp; Opportunités</h2>
+                            <p style={{ margin: '2px 0 0', fontSize: '.78rem', color: 'var(--muted)' }}>Indicatif — données de marché mars 2026. Investir comporte des risques.</p>
+                          </div>
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            {(['all', 'crypto', 'actions', 'etf', 'obligations'] as const).map((cat) => (
+                              <button
+                                key={cat}
+                                className={marketSignalFilter === cat ? 'tagButton active' : 'tagButton'}
+                                onClick={() => setMarketSignalFilter(cat)}
+                                type="button"
+                              >
+                                {cat === 'all' ? 'Tous' : cat === 'crypto' ? '₿ Crypto' : cat === 'actions' ? '📈 Actions' : cat === 'etf' ? '🗂 ETF' : '🏦 Obligations'}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Subscribe panel */}
+                        {subscribeTarget ? (
+                          <div className="infoPanel" style={{ marginBottom: 16, background: 'var(--indigo-soft)', border: '1px solid var(--indigo-border)' }}>
+                            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+                              <div>
+                                <strong>Souscrire à {subscribeTarget.name} ({subscribeTarget.symbol})</strong>
+                                <p style={{ margin: '4px 0 0', fontSize: '.82rem' }}>{subscribeTarget.rationale}</p>
+                              </div>
+                              <button className="ghostButton" onClick={() => setSubscribeSignalId(null)} type="button">✕</button>
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 10, marginTop: 12, alignItems: 'end' }}>
+                              <label style={{ fontSize: '.82rem' }}>
+                                Portefeuille cible
+                                <select
+                                  value={subscribePortfolioId}
+                                  onChange={(e) => setSubscribePortfolioId(e.target.value)}
+                                  style={{ marginTop: 4 }}
+                                >
+                                  <option value="">— Choisir —</option>
+                                  {activePorts.map((p) => (
+                                    <option key={p.id} value={p.id}>
+                                      {p.type === 'virtual' ? '⚗️ ' : ''}{p.label}{p.type === 'virtual' ? ' (virtuel)' : ''}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label style={{ fontSize: '.82rem' }}>
+                                Montant (€)
+                                <input
+                                  type="number"
+                                  min={subscribeTarget.min_investment}
+                                  value={subscribeAmount}
+                                  onChange={(e) => setSubscribeAmount(Math.max(subscribeTarget.min_investment, Number(e.target.value) || subscribeTarget.min_investment))}
+                                  style={{ marginTop: 4 }}
+                                />
+                              </label>
+                              <button
+                                className="primaryButton"
+                                disabled={subscribeLoading || !subscribePortfolioId}
+                                onClick={() => void subscribeToMarketSignal(subscribeTarget, subscribePortfolioId, subscribeAmount)}
+                                type="button"
+                                style={{ whiteSpace: 'nowrap' }}
+                              >
+                                {subscribeLoading ? 'Envoi...' : 'Confirmer l achat'}
+                              </button>
+                            </div>
+                            {subscribePortfolioId && allPortfolios.find((p) => p.id === subscribePortfolioId)?.type === 'virtual' ? (
+                              <p style={{ margin: '8px 0 0', fontSize: '.75rem', color: 'var(--indigo)' }}>⚗️ Ordre simulé sur le portefeuille virtuel — aucun argent réel engagé.</p>
+                            ) : null}
+                            <p style={{ margin: '6px 0 0', fontSize: '.72rem', color: 'var(--muted)' }}>Montant minimum : {subscribeTarget.min_investment} €. L ordre sera soumis à validation avant exécution.</p>
+                          </div>
+                        ) : null}
+
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(280px,1fr))', gap: 14 }}>
+                          {filtered.map((signal) => (
+                            <div
+                              key={signal.id}
+                              style={{
+                                background: 'var(--surface)',
+                                border: '1px solid var(--border)',
+                                borderRadius: 'var(--card-radius-sm)',
+                                padding: '14px 16px',
+                                display: 'grid',
+                                gap: 8,
+                                boxShadow: 'var(--shadow-xs)',
+                              }}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                                <div>
+                                  <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+                                    <span className="metaPill" style={{ fontSize: '.7rem', textTransform: 'uppercase', letterSpacing: '.04em' }}>
+                                      {signal.category === 'crypto' ? '₿ Crypto' : signal.category === 'actions' ? '📈 Action' : signal.category === 'etf' ? '🗂 ETF' : '🏦 Obligation'}
+                                    </span>
+                                    <span className={`statusBadge ${signal.risk === 'faible' ? 'ok' : signal.risk === 'modere' ? 'idle' : 'warn'}`} style={{ fontSize: '.68rem' }}>
+                                      <span className={`statusDot ${signal.risk === 'faible' ? 'ok' : signal.risk === 'modere' ? 'idle' : 'warn'}`} />
+                                      Risque {signal.risk}
+                                    </span>
+                                  </div>
+                                  <strong style={{ fontSize: '1.0rem' }}>{signal.name}</strong>
+                                  <p style={{ margin: 0, fontSize: '.74rem', color: 'var(--muted)' }}>{signal.symbol}</p>
+                                </div>
+                                <div style={{ textAlign: 'right' }}>
+                                  <strong className={signal.performance_30d >= 0 ? 'up' : 'down'} style={{ display: 'block', fontSize: '1.15rem' }}>
+                                    {signal.performance_30d >= 0 ? '+' : ''}{signal.performance_30d.toFixed(1)}%
+                                  </strong>
+                                  <span style={{ fontSize: '.7rem', color: 'var(--muted)' }}>30 jours</span>
+                                </div>
+                              </div>
+                              {/* Confidence bar */}
+                              <div>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3, fontSize: '.72rem', color: 'var(--muted)' }}>
+                                  <span>Indice de confiance Picsou</span>
+                                  <strong style={{ color: signal.confidence >= 4 ? 'var(--ok)' : signal.confidence === 3 ? 'var(--gold)' : 'var(--warn)' }}>
+                                    {['●', '●', '●', '●', '●'].map((dot, i) => (
+                                      <span key={i} style={{ opacity: i < signal.confidence ? 1 : 0.2 }}>{dot}</span>
+                                    ))} {signal.confidence}/5
+                                  </strong>
+                                </div>
+                                <div style={{ height: 4, background: 'var(--bg-alt)', borderRadius: 4 }}>
+                                  <div style={{ height: 4, borderRadius: 4, width: `${signal.confidence * 20}%`, background: signal.confidence >= 4 ? 'var(--ok)' : signal.confidence === 3 ? 'var(--gold)' : 'var(--warn)' }} />
+                                </div>
+                              </div>
+                              <p style={{ margin: 0, fontSize: '.8rem', lineHeight: 1.4 }}>{signal.rationale}</p>
+                              <button
+                                className="secondaryButton"
+                                onClick={() => {
+                                  setSubscribeSignalId(signal.id);
+                                  setSubscribeAmount(signal.min_investment);
+                                  setSubscribePortfolioId(activePorts[0]?.id ?? '');
+                                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                                }}
+                                type="button"
+                                style={{ fontSize: '.82rem', padding: '7px 14px' }}
+                              >
+                                Souscrire — à partir de {signal.min_investment} €
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    );
+                  })()}
+
                   <section className="indicatorDeck">
                     {dashboard.key_indicators.map((item) => (
                       <button
@@ -2661,11 +3391,11 @@ export default function PicsouApp() {
                   </section>
                   <section className="workspaceGrid">
                     <article className="featureCard">
-                      <div className="cardHeader"><h2>Vue synthetic coach</h2><span>Actions et crypto</span></div>
+                      <div className="cardHeader"><h2>Vue coach réel</h2><span>Actions et crypto</span></div>
                       <div className="compactList">
                         <button className="compactRow compactRowButton" onClick={() => setSelectedInsight({ id: 'coach-pnl-realized', title: 'PnL realise', value: formatNullableCurrency(dashboard.pnl_realized), trend: `${evolution24h.tone === 'up' ? '↑' : evolution24h.tone === 'down' ? '↓' : '→'} Variation 24h ${evolution24h.value}`, detail: 'Profit ou perte deja cristallise(e) par les ordres executes.', section: 'coach' })} type="button"><span>PnL realise</span><strong>{formatNullableCurrency(dashboard.pnl_realized)}</strong></button>
                         <button className="compactRow compactRowButton" onClick={() => setSelectedInsight({ id: 'coach-pnl-unrealized', title: 'PnL latent', value: formatNullableCurrency(dashboard.pnl_unrealized), trend: `${evolution7d.tone === 'up' ? '↑' : evolution7d.tone === 'down' ? '↓' : '→'} Variation 7j ${evolution7d.value}`, detail: 'Profit ou perte en cours sur les positions ouvertes.', section: 'coach' })} type="button"><span>PnL latent</span><strong>{formatNullableCurrency(dashboard.pnl_unrealized)}</strong></button>
-                        <button className="compactRow compactRowButton" onClick={() => setSelectedInsight({ id: 'coach-annualized', title: 'Rendement annualise', value: formatNullablePercent(dashboard.annualized_return), trend: `${evolution1m.tone === 'up' ? '↑' : evolution1m.tone === 'down' ? '↓' : '→'} Impulsion 1m ${evolution1m.value}`, detail: 'Projection annualisee du rendement calcule sur vos donnees consolidees.', section: 'coach' })} type="button"><span>Rendement annualise</span><strong>{formatNullablePercent(dashboard.annualized_return)}</strong></button>
+                        <button className="compactRow compactRowButton" onClick={() => setSelectedInsight({ id: 'coach-annualized', title: 'Projection annuelle', value: formatNullablePercent(dashboard.annualized_return), trend: `Projection future · Confiance ${annualizedProjectionConfidence}/3`, detail: `Projection annuelle calculee depuis les donnees reelles synchronisees. Niveau de confiance: ${annualizedProjectionConfidence}/3.`, section: 'coach' })} type="button"><span>Projection annuelle</span><strong>{formatNullablePercent(dashboard.annualized_return)} · C{annualizedProjectionConfidence}/3</strong></button>
                         <button className="compactRow compactRowButton" onClick={() => setSelectedInsight({ id: 'coach-volatility', title: 'Volatilite glissante', value: formatNullablePercent(dashboard.rolling_volatility), trend: '→ Mesure de dispersion en cours', detail: 'Amplitude recente des variations: plus elle monte, plus le risque court terme augmente.', section: 'coach' })} type="button"><span>Volatilite glissante</span><strong>{formatNullablePercent(dashboard.rolling_volatility)}</strong></button>
                         <button className="compactRow compactRowButton" onClick={() => setSelectedInsight({ id: 'coach-drawdown', title: 'Drawdown max', value: formatNullablePercent(dashboard.max_drawdown), trend: '↓ Protection du capital', detail: 'Perte maximale observee depuis un plus haut recent.', section: 'coach' })} type="button"><span>Drawdown max</span><strong>{formatNullablePercent(dashboard.max_drawdown)}</strong></button>
                       </div>
@@ -2698,23 +3428,26 @@ export default function PicsouApp() {
                     <article className="featureCard">
                       <div className="cardHeader"><h2>Suggestions accompagnees</h2><span>Jamais sans validation</span></div>
                       <div className="suggestionGrid">
-                        {dashboard.suggestions.map((item) => (
+                        {suggestionInsights.map((item) => (
                           <button
                             className="suggestionCard"
-                            key={item.title}
+                            key={item.id}
                             onClick={() => setSelectedInsight({
-                              id: `suggestion-${item.title}`,
                               title: item.title,
-                              value: `${item.score}/100`,
-                              trend: trendFromScore(item.score),
-                              detail: item.justification,
+                              id: item.id,
+                              value: item.value,
+                              trend: item.trend,
+                              detail: item.detail,
                               section: 'decisions',
+                              portfolio_id: item.portfolio_id,
+                              portfolio_label: item.portfolio_label,
                             })}
                             type="button"
                           >
-                            <div className="compactRow"><strong>{item.title}</strong><span>{item.score}/100</span></div>
-                            <p>{item.justification}</p>
-                            <small className={trendTone(trendFromScore(item.score))}>{trendFromScore(item.score)}</small>
+                            <div className="compactRow"><strong>{item.title}</strong><span>{item.value}</span></div>
+                            <p>{item.detail}</p>
+                            {item.portfolio_label ? <p className="helperText">Portefeuille: {item.portfolio_label}</p> : null}
+                            <small className={trendTone(item.trend)}>{item.trend}</small>
                           </button>
                         ))}
                       </div>
@@ -2743,7 +3476,7 @@ export default function PicsouApp() {
                           ))}
                         </div>
                       ) : (
-                        <div className="infoPanel mutedPanel"><strong>Aucune source active</strong><p>Le tableau de bord reste a null tant qu aucune integration de suivi n est activee dans Mon espace.</p></div>
+                        <div className="infoPanel mutedPanel"><strong>Aucune intégration active</strong><p>Ajoutez une source dans Configuration → Intégrations pour connecter vos portefeuilles réels. Le bac à sable virtuel ⚗️ fonctionne sans intégration.</p></div>
                       )}
                     </article>
                   </section>
@@ -2752,17 +3485,204 @@ export default function PicsouApp() {
             </>
           ) : null}
 
+          {appView === 'portfolios' ? (
+            <section style={{ display: 'grid', gap: 22 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                <div>
+                  <p className="sectionTag" style={{ marginBottom: 4 }}>Portefeuilles</p>
+                  <h1 style={{ fontSize: '1.5rem', margin: 0 }}>Gestion et pilotage de vos portefeuilles</h1>
+                </div>
+                <button className="ghostButton" disabled={refreshingDashboard} onClick={() => void refreshDashboardNow()} type="button">
+                  {refreshingDashboard ? 'Rafraichissement...' : 'Rafraichir maintenant'}
+                </button>
+              </div>
+
+              {allPortfolios.length === 0 ? (
+                <div className="infoPanel mutedPanel">
+                  <strong>Aucun portefeuille disponible</strong>
+                  <p>Le portefeuille virtuel ⚗️ se charge automatiquement. Si vous ne le voyez pas, rechargez la page ou vérifiez votre connexion.</p>
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gap: 24 }}>
+                  {allPortfolios.map((p) => {
+                    const cfg = agentConfigs[p.id] ?? DEFAULT_AGENT_CONFIG;
+                    const portfolioDecisions = decisionInsights.filter((d) => d.portfolio_id === p.id);
+                    return (
+                      <article key={p.id} className="featureCard" style={{ display: 'grid', gap: 18 }}>
+                        {/* Portfolio header */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
+                          <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                              <span className="agentBadge">{p.agent_name}</span>
+                              <span className="metaPill">{p.type === 'virtual' ? '⚗️ Virtuel' : 'Intégration'}</span>
+                              <span className={statusBadgeClass(p.status)}><span className={statusDotClass(p.status)} />{statusLabel(p.status)}</span>
+                            </div>
+                            <h2 style={{ margin: 0, fontSize: '1.25rem' }}>{p.label}</h2>
+                            {p.last_sync_at ? <p style={{ margin: '4px 0 0', fontSize: '.76rem', color: 'var(--muted)' }}>Dernière sync: {new Date(p.last_sync_at).toLocaleString('fr-FR')}</p> : <p style={{ margin: '4px 0 0', fontSize: '.76rem', color: 'var(--warn)' }}>Jamais synchronisé</p>}
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+                            <strong style={{ fontSize: '1.5rem' }}>{p.current_value > 0 ? `${p.current_value.toFixed(2)} €` : '–'}</strong>
+                            {p.pnl !== 0 ? <small className={p.pnl >= 0 ? 'up' : 'down'}>{p.pnl >= 0 ? '+' : ''}{p.pnl.toFixed(2)} € · ROI {p.roi >= 0 ? '+' : ''}{p.roi.toFixed(1)}%</small> : null}
+                            <button className="ghostButton" onClick={() => { setSelectedPortfolio(p); setPortfolioDetailOpen(true); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Détail complet →</button>
+                          </div>
+                        </div>
+
+                        {/* Sparkline */}
+                        {p.history.length >= 2 ? (
+                          <div>
+                            <Sparkline data={p.history.slice(-30)} color={p.pnl >= 0 ? 'var(--ok)' : 'var(--danger)'} />
+                          </div>
+                        ) : null}
+
+                        {/* AI Proposals */}
+                        {portfolioDecisions.length > 0 ? (
+                          <div>
+                            <div className="cardHeader" style={{ marginBottom: 10 }}>
+                              <h3 style={{ margin: 0, fontSize: '1rem' }}>Propositions IA en attente</h3>
+                              <span>{portfolioDecisions.length} décision(s)</span>
+                            </div>
+                            <div className="suggestionGrid">
+                              {portfolioDecisions.map((decision) => (
+                                <div className="suggestionCard" key={decision.id}>
+                                  <div className="compactRow"><strong>{decision.title}</strong><span className="metaPill">{decision.value}</span></div>
+                                  <p style={{ fontSize: '.82rem', margin: '6px 0 4px' }}>{decision.detail}</p>
+                                  <small className={trendTone(decision.trend)}>{decision.trend}</small>
+                                  {cfg.enabled && cfg.mode === 'autopilot' ? (
+                                    <p className="helperText" style={{ color: 'var(--warn)', marginTop: 6 }}>⚡ Pilote auto — exécution automatique selon vos quotas</p>
+                                  ) : (
+                                    <div className="providerActions fullWidth" style={{ marginTop: 8 }}>
+                                      <button className="secondaryButton" disabled={decisionActionLoading} onClick={() => void runDecisionAction(decision, true)} type="button">
+                                        {decisionActionLoading ? 'Traitement...' : 'Valider la transaction'}
+                                      </button>
+                                      <button className="ghostButton" disabled={decisionActionLoading} onClick={() => void runDecisionAction(decision, false)} type="button">Refuser</button>
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="helperText" style={{ fontSize: '.82rem' }}>Aucune proposition IA en attente pour ce portefeuille.</p>
+                        )}
+
+                        {/* Agent IA configuration */}
+                        <div style={{ background: 'var(--surface-3)', borderRadius: 'var(--card-radius-sm)', padding: '14px 16px', display: 'grid', gap: 12 }}>
+                          <div className="cardHeader" style={{ margin: 0 }}>
+                            <h3 style={{ margin: 0, fontSize: '.95rem' }}>Pilotage Agent IA</h3>
+                            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                              <label className="checkRow" style={{ margin: 0 }}>
+                                <input type="checkbox" checked={cfg.enabled} onChange={(e) => void updateAgentConfig(p.id, { enabled: e.target.checked })} />
+                                <span style={{ fontSize: '.78rem' }}>Agent activé</span>
+                              </label>
+                            </div>
+                          </div>
+                          {cfg.enabled ? (
+                            <div style={{ display: 'grid', gap: 10 }}>
+                              <div>
+                                <p style={{ margin: '0 0 6px', fontSize: '.78rem', color: 'var(--muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em' }}>Mode de pilotage</p>
+                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                  <button
+                                    className={cfg.mode === 'manual' ? 'tagButton active' : 'tagButton'}
+                                    onClick={() => void updateAgentConfig(p.id, { mode: 'manual' })}
+                                    type="button"
+                                  >
+                                    ✋ Mode manuel — validation humaine requise
+                                  </button>
+                                  <button
+                                    className={cfg.mode === 'autopilot' ? 'tagButton active' : 'tagButton'}
+                                    onClick={() => void updateAgentConfig(p.id, { mode: 'autopilot' })}
+                                    type="button"
+                                    style={cfg.mode === 'autopilot' ? { borderColor: 'var(--warn)', color: 'var(--warn)' } : {}}
+                                  >
+                                    ⚡ Pilote automatique — IA exécute seule
+                                  </button>
+                                </div>
+                                {cfg.mode === 'autopilot' ? (
+                                  <div className="infoPanel" style={{ marginTop: 8, padding: '8px 12px', background: 'var(--warn-soft)', border: '1px solid var(--warn-border)' }}>
+                                    <p style={{ margin: 0, fontSize: '.78rem' }}>⚠️ En pilote automatique, l agent IA exécute les transactions dans vos limites sans validation. Vérifiez vos quotas.</p>
+                                  </div>
+                                ) : (
+                                  <p style={{ margin: '6px 0 0', fontSize: '.75rem', color: 'var(--muted)' }}>Chaque transaction vous sera proposée avant exécution.</p>
+                                )}
+                              </div>
+                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                                <label style={{ fontSize: '.82rem' }}>
+                                  Montant max / transaction (€)
+                                  <input
+                                    type="number" min={1}
+                                    value={cfg.max_amount}
+                                    onChange={(e) => void updateAgentConfig(p.id, { max_amount: Number(e.target.value) || 1 })}
+                                    style={{ marginTop: 4 }}
+                                  />
+                                </label>
+                                <label style={{ fontSize: '.82rem' }}>
+                                  Max transactions / jour
+                                  <input
+                                    type="number" min={1}
+                                    value={cfg.max_transactions_per_day}
+                                    onChange={(e) => void updateAgentConfig(p.id, { max_transactions_per_day: Number(e.target.value) || 1 })}
+                                    style={{ marginTop: 4 }}
+                                  />
+                                </label>
+                              </div>
+                              <div>
+                                <p style={{ margin: '0 0 6px', fontSize: '.78rem', color: 'var(--muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em' }}>Politique par domaine</p>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: 8 }}>
+                                  {(['crypto', 'actions', 'etf', 'obligations'] as AgentDomain[]).map((domain) => (
+                                    <label key={`${p.id}-${domain}`} style={{ fontSize: '.8rem' }}>
+                                      {domain.charAt(0).toUpperCase() + domain.slice(1)}
+                                      <select
+                                        value={cfg.domain_policy[domain]}
+                                        onChange={(e) => void updateAgentConfig(p.id, { domain_policy: { ...cfg.domain_policy, [domain]: e.target.value as AgentDomainPolicy } })}
+                                        style={{ marginTop: 4 }}
+                                      >
+                                        <option value="prefer">Préférence</option>
+                                        <option value="allow">Autoriser</option>
+                                        <option value="reject">Rejeter</option>
+                                      </select>
+                                    </label>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="helperText" style={{ margin: 0, fontSize: '.8rem' }}>Activez l agent pour configurer le mode de pilotage et les quotas.</p>
+                          )}
+                        </div>
+
+                        {/* Visibility toggle */}
+                        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', paddingTop: 6, borderTop: '1px solid var(--border)' }}>
+                          <label className="checkRow" style={{ margin: 0, padding: '4px 8px' }}>
+                            <input type="checkbox" checked={portfolioVisibility[p.id] !== false} onChange={(e) => void updatePortfolioVisibilityPreference(p.id, e.target.checked)} />
+                            <span style={{ fontSize: '.78rem' }}>Afficher sur le tableau de bord</span>
+                          </label>
+                          <label className="checkRow" style={{ margin: 0, padding: '4px 8px' }}>
+                            <input type="checkbox" checked={p.status === 'active'} onChange={(e) => void togglePortfolioActivation(p, e.target.checked)} />
+                            <span style={{ fontSize: '.78rem' }}>Activer le suivi</span>
+                          </label>
+                          {p.provider_code ? (
+                            <button className="ghostButton" style={{ fontSize: '.78rem' }} disabled={submitting} onClick={() => void syncIntegration(p.provider_code!)} type="button">Synchroniser maintenant</button>
+                          ) : null}
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          ) : null}
+
           {appView === 'settings' ? (
             <section className="workspaceGrid settingsGrid">
               <article className="featureCard settingsIntroCard">
                 <div className="cardHeader">
-                  <h2>Mon espace</h2>
+                  <h2>Configuration</h2>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span>Configuration unifiée</span>
+                    <span>Compte, intégrations et communication</span>
                     <button className="ghostButton" onClick={() => toggleSettingsTile('intro')} type="button">{settingsTileCollapsed.intro ? 'Expand' : 'Réduire'}</button>
                   </div>
                 </div>
-                {!settingsTileCollapsed.intro ? <p className="helperText">Activez vos portefeuilles, gérez vos connecteurs et configurez vos canaux de communication et MFA depuis un même espace homogène.</p> : null}
+                {!settingsTileCollapsed.intro ? <p className="helperText">Gérez votre profil, activez vos connecteurs de portefeuilles et configurez vos canaux de communication. Le pilotage de l agent IA se définit directement dans l onglet Portefeuilles.</p> : null}
               </article>
 
               <article className="featureCard settingsCard">
@@ -2849,7 +3769,7 @@ export default function PicsouApp() {
                   </label>
                   <p className="helperText">Prefill navigateur: {clientContext.country || clientContext.locale} · {clientContext.time_zone}</p>
                   <button className="primaryButton" disabled={submitting} type="submit">
-                    {submitting ? 'Enregistrement...' : 'Sauvegarder mon espace'}
+                    {submitting ? 'Enregistrement...' : 'Sauvegarder ma configuration'}
                   </button>
                 </form>
                 ) : null}
@@ -2857,61 +3777,66 @@ export default function PicsouApp() {
 
                 <article className="featureCard settingsCard">
                   <div className="cardHeader">
-                    <h2>Mes portefeuilles</h2>
+                    <h2>Raccourci Agent IA</h2>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span>Visibilité et gestion</span>
-                      <button className="ghostButton" onClick={() => toggleSettingsTile('portfolios')} type="button">{settingsTileCollapsed.portfolios ? 'Expand' : 'Réduire'}</button>
+                      <span>Pilotage par portefeuille</span>
                     </div>
                   </div>
-                  {!settingsTileCollapsed.portfolios ? (
-                  allPortfolios.length === 0 ? (
-                    <p className="helperText">Aucun portefeuille connecté. Activez une source ci-dessous pour commencer.</p>
-                  ) : (
-                    <div className="providerGrid">
-                      {allPortfolios.map((p) => (
-                        <div key={p.id} className="providerCard stacked">
-                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-                            <div>
-                              <strong>{p.label}</strong>
-                              <p style={{ marginTop: 2 }}>{p.agent_name}</p>
-                              <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                                <span className="metaPill">{p.type === 'virtual' ? 'Virtuel IA' : 'Intégration'}</span>
-                                {p.current_value > 0 ? <span className="metaPill" style={{ color: 'var(--ok)', borderColor: 'var(--ok-border)' }}>{p.current_value.toFixed(2)} €</span> : <span className="metaPill">Pas de données</span>}
-                              </div>
-                              {p.type === 'virtual' ? <p className="helperText" style={{ marginTop: 6 }}>Budget initial 100 € · Robot de simulation IA libre en achats/ventes virtuels.</p> : null}
-                            </div>
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
-                              <label className="checkRow" style={{ margin: 0, padding: '6px 10px' }}>
-                                <input type="checkbox" checked={portfolioVisibility[p.id] !== false} onChange={(e) => void updatePortfolioVisibilityPreference(p.id, e.target.checked)} />
-                                <span style={{ fontSize: '.78rem' }}>Afficher sur le dashboard</span>
-                              </label>
-                              {p.type === 'integration' ? (
-                                <label className="checkRow" style={{ margin: 0, padding: '6px 10px' }}>
-                                  <input type="checkbox" checked={p.status === 'active'} onChange={(e) => void togglePortfolioActivation(p, e.target.checked)} />
-                                  <span style={{ fontSize: '.78rem' }}>Activer le suivi</span>
-                                </label>
-                              ) : (
-                                <label className="checkRow" style={{ margin: 0, padding: '6px 10px' }}>
-                                  <input type="checkbox" checked={portfolioVisibility[p.id] !== false} onChange={(e) => void updatePortfolioVisibilityPreference(p.id, e.target.checked)} />
-                                  <span style={{ fontSize: '.78rem' }}>Activer le suivi</span>
-                                </label>
-                              )}
-                              <button className="ghostButton" onClick={() => { setSelectedPortfolio(p); setPortfolioDetailOpen(true); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Voir détail →</button>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )
-                  )
-                  : null}
+                  <div className="infoPanel mutedPanel">
+                    <strong>Configuration déplacée dans Portefeuilles</strong>
+                    <p>Le mode de pilotage (manuel / pilote automatique) et les quotas se configurent directement dans chaque fiche portefeuille.</p>
+                    <button className="secondaryButton" style={{ marginTop: 10 }} onClick={() => { setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Aller à Portefeuilles →</button>
+                  </div>
                 </article>
+
+              {/* Virtual Portfolio settings tile */}
+              <article className="featureCard settingsCard">
+                <div className="cardHeader">
+                  <h2>⚗️ Portefeuille Virtuel IA</h2>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span>Bac à sable &bull; 100 €</span>
+                    <button className="ghostButton" onClick={() => toggleSettingsTile('virtual')} type="button">{settingsTileCollapsed.virtual ? 'Expand' : 'Réduire'}</button>
+                  </div>
+                </div>
+                {!settingsTileCollapsed.virtual ? (
+                  <div style={{ display: 'grid', gap: 12 }}>
+                    <div className="infoPanel" style={{ background: 'rgba(250,200,40,.08)', border: '1px solid rgba(250,200,40,.3)', borderRadius: 8, padding: '10px 14px' }}>
+                      <strong>Actif par défaut — aucune intégration requise</strong>
+                      <p style={{ margin: '4px 0 0', fontSize: '.8rem' }}>Picsou IA dispose d'un portefeuille bac à sable de <strong>100 €</strong> pour tester ses stratégies sans risque. Il est toujours disponible, même sans connecteur bancaire.</p>
+                    </div>
+                    {(() => {
+                      const vp = allPortfolios.find((p) => p.type === 'virtual');
+                      if (!vp) return <p className="helperText">Chargement du portefeuille virtuel…</p>;
+                      const isVisible = portfolioVisibility[vp.id] !== false;
+                      return (
+                        <div style={{ display: 'grid', gap: 10 }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={isVisible}
+                              onChange={(e) => void updatePortfolioVisibilityPreference(vp.id, e.target.checked)}
+                            />
+                            <span><strong>{isVisible ? 'Actif' : 'Désactivé'}</strong> — {isVisible ? 'Visible sur le tableau de bord et dans Portefeuilles.' : 'Masqué. Vous pouvez le réactiver à tout moment.'}</span>
+                          </label>
+                          <div className="compactRow" style={{ fontSize: '.8rem', color: 'var(--muted)' }}>
+                            <span>Valeur simulée</span><strong>{vp.current_value.toFixed(2)} €</strong>
+                          </div>
+                          <div className="compactRow" style={{ fontSize: '.8rem', color: 'var(--muted)' }}>
+                            <span>Budget initial</span><strong>{vp.budget.toFixed(2)} €</strong>
+                          </div>
+                          <button className="ghostButton" onClick={() => { setSelectedPortfolio(vp); setPortfolioDetailOpen(true); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Voir le détail →</button>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                ) : null}
+              </article>
 
               <article className="featureCard settingsCard">
                 <div className="cardHeader">
-                  <h2>Sources du tableau de bord</h2>
+                  <h2>Intégrations et sources</h2>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span>Tile dediee aux integrations declarees</span>
+                    <span>Connecteurs déclarés et credentials API</span>
                     <button className="ghostButton" onClick={() => toggleSettingsTile('sources')} type="button">{settingsTileCollapsed.sources ? 'Expand' : 'Réduire'}</button>
                   </div>
                 </div>
@@ -2943,37 +3868,6 @@ export default function PicsouApp() {
                     )}
 
                     <div className="providerGrid">
-                      <div className="providerCard stacked" key="virtual-alpha-source">
-                        <div className="providerCardBody">
-                          <strong>Portefeuille test virtuel</strong>
-                          <p>Simulation IA avec budget initial de 100 €. Fonctionne comme une source activable/masquable du dashboard.</p>
-                          <div style={{ marginTop: '8px' }}>
-                            <span className={statusBadgeClass(portfolioVisibility.virtual_alpha !== false ? 'active' : 'disabled')}>
-                              <span className={statusDotClass(portfolioVisibility.virtual_alpha !== false ? 'active' : 'disabled')} />
-                              {portfolioVisibility.virtual_alpha !== false ? 'Actif' : 'Désactivé'}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="providerActions fullWidth">
-                          <button
-                            className="secondaryButton"
-                            disabled={submitting}
-                            onClick={() => void updatePortfolioVisibilityPreference('virtual_alpha', !(portfolioVisibility.virtual_alpha !== false))}
-                            type="button"
-                          >
-                            {portfolioVisibility.virtual_alpha !== false ? 'Désactiver le suivi' : 'Activer le suivi'}
-                          </button>
-                          <button
-                            className="ghostButton"
-                            disabled={refreshingDashboard}
-                            onClick={() => void refreshDashboardNow()}
-                            type="button"
-                          >
-                            Simuler une synchronisation
-                          </button>
-                        </div>
-                      </div>
-
                       {dashboard.bank_connectors.map((provider) => {
                         const providerConnection = findIntegration(provider.code);
                         const providerKeyState = providerKeys[provider.code] ?? { apiKey: '', apiSecret: '', portfolioId: '' };
@@ -3340,6 +4234,46 @@ export default function PicsouApp() {
 
           {appView === 'admin' ? (
             <section className="workspaceGrid adminGrid">
+              {/* Emergency Stop Banner */}
+              <article className="featureCard" style={{ background: emergencyStopActive ? 'var(--danger-soft)' : 'var(--surface)', border: emergencyStopActive ? '2px solid var(--danger)' : 'var(--card-border)', gridColumn: '1 / -1' }}>
+                <div className="cardHeader">
+                  <div>
+                    <h2 style={{ margin: 0 }}>Contrôle des transactions</h2>
+                    <p style={{ margin: '4px 0 0', fontSize: '.82rem', color: 'var(--muted)' }}>Interrompez toutes les transactions en cours et à venir en cas d urgence.</p>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    {emergencyStopActive ? (
+                      <span className="statusBadge warn"><span className="statusDot warn" />Arrêt d urgence actif — toutes transactions bloquées</span>
+                    ) : (
+                      <span className="statusBadge ok"><span className="statusDot ok" />Transactions opérationnelles</span>
+                    )}
+                    <button
+                      className={emergencyStopActive ? 'secondaryButton' : 'primaryButton'}
+                      style={emergencyStopActive ? { background: 'var(--ok)', color: 'white', borderColor: 'var(--ok)' } : { background: 'var(--danger)', color: 'white', borderColor: 'var(--danger)' }}
+                      onClick={() => {
+                        const next = !emergencyStopActive;
+                        setEmergencyStopActive(next);
+                        if (next) {
+                          setAutopilotRunning(false);
+                          setAdminFeedback('🛑 Arrêt d urgence activé. Toutes les transactions automatiques sont bloquées jusqu à désactivation manuelle.');
+                        } else {
+                          setAdminFeedback('✅ Arrêt d urgence désactivé. Le système reprend normalement.');
+                        }
+                      }}
+                      type="button"
+                    >
+                      {emergencyStopActive ? '✅ Reprendre les transactions' : '🛑 Arrêt d urgence'}
+                    </button>
+                  </div>
+                </div>
+                {emergencyStopActive ? (
+                  <div className="infoPanel" style={{ marginTop: 12, background: 'var(--danger-soft)', border: '1px solid var(--danger-border)' }}>
+                    <strong>Arrêt d urgence activé</strong>
+                    <p>Toutes les transactions automatiques (pilote auto) sont suspendues. Les propositions manuelles sont également bloquées. Désactivez le verrou pour reprendre.</p>
+                  </div>
+                ) : null}
+              </article>
+
               <article className="featureCard">
                 <div className="cardHeader">
                   <h2>Gestion des utilisateurs</h2>
@@ -3349,7 +4283,7 @@ export default function PicsouApp() {
                 {!user.mfa_enabled ? (
                   <div className="infoPanel">
                     <strong>MFA requise</strong>
-                    <p>Activez MFA dans Mon espace puis reconnectez-vous pour administrer la plateforme.</p>
+                    <p>Activez MFA dans Configuration puis reconnectez-vous pour administrer la plateforme.</p>
                   </div>
                 ) : (
                   <>
@@ -3429,6 +4363,49 @@ export default function PicsouApp() {
                     })}
                     </div>
                   </>
+                )}
+              </article>
+
+              <article className="featureCard">
+                <div className="cardHeader">
+                  <h2>Historique des transactions</h2>
+                  <span>Ordres exécutés sur la plateforme</span>
+                </div>
+                {adminTransactionLog.length === 0 ? (
+                  <div className="infoPanel mutedPanel">
+                    <strong>Aucune transaction enregistrée</strong>
+                    <p>L historique des transactions sera affiché ici dès que des ordres auront été exécutés via l agent IA ou validés manuellement par les utilisateurs.</p>
+                    <p style={{ marginTop: 6, fontSize: '.76rem', color: 'var(--muted)' }}>Les transactions sont cumulées localement en session. Un historique persistant nécessite une extension du backend.</p>
+                  </div>
+                ) : (
+                  <div className="operationLedgerWrap">
+                    <table className="operationLedger">
+                      <thead>
+                        <tr>
+                          <th>Date</th>
+                          <th>Utilisateur</th>
+                          <th>Portefeuille</th>
+                          <th>Actif</th>
+                          <th>Type</th>
+                          <th>Montant</th>
+                          <th>Statut</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {adminTransactionLog.map((tx) => (
+                          <tr key={tx.id}>
+                            <td>{new Date(tx.created_at).toLocaleString('fr-FR')}</td>
+                            <td>{tx.user_name}</td>
+                            <td>{tx.portfolio_id}</td>
+                            <td>{tx.asset}</td>
+                            <td><span className={tx.side === 'buy' ? 'statusBadge ok' : 'statusBadge warn'}>{tx.side === 'buy' ? 'Achat' : 'Vente'}</span></td>
+                            <td>{tx.amount.toFixed(2)} €</td>
+                            <td><span className={tx.status === 'approved' ? 'statusBadge ok' : tx.status === 'rejected' ? 'statusBadge warn' : 'statusBadge idle'}>{tx.status}</span></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
               </article>
 

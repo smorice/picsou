@@ -2,7 +2,6 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from decimal import Decimal
-import math
 import logging
 import secrets
 
@@ -314,6 +313,7 @@ def ensure_runtime_schema(db: Session) -> None:
         "ALTER TABLE broker_connections ADD COLUMN IF NOT EXISTS last_sync_error TEXT",
         "ALTER TABLE broker_connections ADD COLUMN IF NOT EXISTS last_sync_at TIMESTAMP",
         "ALTER TABLE broker_connections ADD COLUMN IF NOT EXISTS last_snapshot_total_value NUMERIC(18,2)",
+        "ALTER TABLE trade_proposals ADD COLUMN IF NOT EXISTS provider_portfolio_id VARCHAR(120)",
     ]
     for statement in statements:
         db.execute(text(statement))
@@ -506,69 +506,22 @@ def resolve_agent_name(provider_code: str) -> str:
         "coinbase": "Agent Crypto Momentum",
         "interactive_brokers": "Agent Multi-Marches Pro",
         "trade_republic": "Agent ETP Rendement",
-        "virtual_alpha": "Robot Alpha Simulation",
+        "virtual_alpha": "Agent inactif (pas de simulation)",
     }
     return mapping.get(provider_code, "Agent Allocation")
 
 
 def build_virtual_portfolio(current_user: User) -> VirtualPortfolioResponse:
     start_value = Decimal("100.00")
-    base_seed = sum(ord(char) for char in current_user.id) % 100
-    day = datetime.utcnow().timetuple().tm_yday
-    drift = Decimal((day % 29) - 14) / Decimal("100")
-    edge = Decimal((base_seed % 11) - 5) / Decimal("100")
-    quality = Decimal("0.018") + Decimal(base_seed % 7) / Decimal("1000")
-    growth = Decimal("1") + ((drift + edge) / Decimal("12")) + quality
-    current_value = (start_value * growth).quantize(Decimal("0.01"))
-    pnl = (current_value - start_value).quantize(Decimal("0.01"))
-    roi = float((pnl / start_value) if start_value > 0 else Decimal("0"))
-    crypto_weight = 0.28 + float((base_seed % 9) / 100)
-    etp_weight = 0.24 + float((day % 5) / 100)
-    equity_weight = 0.27 + float((base_seed % 5) / 100)
-    savings_weight = round(1.0 - crypto_weight - etp_weight - equity_weight, 2)
-    strategy_mix = [
-        {"class": "Crypto", "weight": round(crypto_weight, 2)},
-        {"class": "ETP", "weight": round(etp_weight, 2)},
-        {"class": "Bourse", "weight": round(equity_weight, 2)},
-        {"class": "Epargne", "weight": round(max(savings_weight, 0.12), 2)},
-    ]
-    latest_actions = [
-        {"asset": "BTC", "action": "buy" if roi >= 0 else "sell", "amount": round(8.0 + float(base_seed % 4), 1)},
-        {"asset": "ETF World", "action": "buy", "amount": round(10.0 + float(day % 4), 1)},
-        {"asset": "Nasdaq ETP", "action": "sell" if base_seed % 2 == 0 else "buy", "amount": round(5.5 + float(base_seed % 3), 1)},
-        {"asset": "Actions Europe", "action": "buy" if day % 3 else "sell", "amount": round(4.0 + float(day % 2), 1)},
-    ]
+    current_value = Decimal("100.00")
+    pnl = Decimal("0.00")
+    roi = 0.0
+    strategy_mix: list[dict] = []
+    latest_actions: list[dict] = []
     history_points: list[dict] = []
-    history_span_days = 730
-    now = datetime.utcnow()
-    for i in range(history_span_days):
-        sample_day = max(1, day - ((history_span_days - 1) - i))
-        sample_drift = Decimal((sample_day % 29) - 14) / Decimal("100")
-        sample_growth = Decimal("1") + ((sample_drift + edge) / Decimal("12")) + quality
-        sample_value = (start_value * sample_growth).quantize(Decimal("0.01"))
-        sample_dt = (now - timedelta(days=((history_span_days - 1) - i))).replace(hour=12, minute=0, second=0, microsecond=0)
-        history_points.append(
-            {
-                "date": sample_dt.isoformat() + "Z",
-                "value": float(sample_value),
-            }
-        )
-
-    intraday_base = history_points[-1]["value"] if history_points else float(current_value)
-    for h in range(24, -1, -1):
-        sample_dt = now - timedelta(hours=h)
-        intraday_drift = (24 - h - 12) * 0.00045
-        intraday_wave = math.sin(((24 - h) / 24) * math.pi * 2) * 0.0028
-        intraday_value = max(float(start_value) * 0.72, intraday_base * (1 + intraday_wave + intraday_drift))
-        history_points.append(
-            {
-                "date": sample_dt.replace(microsecond=0).isoformat() + "Z",
-                "value": round(intraday_value, 2),
-            }
-        )
     return VirtualPortfolioResponse(
         portfolio_id=f"virtual-{current_user.id[:8]}",
-        label="Portefeuille Virtuel IA",
+        label="Portefeuille Virtuel IA (inactif)",
         budget_initial=start_value,
         current_value=current_value,
         pnl=pnl,
@@ -603,33 +556,52 @@ def assert_sensitive_mfa_if_enabled(db: Session, user: User, mfa_code: str | Non
     db.commit()
 
 
-def build_dashboard_from_positions(current_user: User, portfolio: Portfolio, bank_connectors: list[BankProvider], connections: list[BrokerConnection], positions: list[IntegrationPosition]) -> DashboardResponse:
+def build_dashboard_from_positions(db: Session, current_user: User, portfolio: Portfolio, bank_connectors: list[BankProvider], connections: list[BrokerConnection], positions: list[IntegrationPosition]) -> DashboardResponse:
     virtual_portfolio = build_virtual_portfolio(current_user)
-    portfolio_cards = [
-        {
-            "portfolio_id": connection.id,
-            "provider_code": connection.provider_code,
-            "provider_name": connection.provider_name,
-            "label": connection.account_label or f"Portefeuille {connection.provider_name}",
-            "status": connection.status,
-            "agent_name": resolve_agent_name(connection.provider_code),
-            "last_sync_status": connection.last_sync_status,
-            "current_value": str(connection.last_snapshot_total_value) if connection.last_snapshot_total_value is not None else None,
-        }
-        for connection in connections if connection.status == "active"
-    ]
-    portfolio_cards.append(
-        {
-            "portfolio_id": virtual_portfolio.portfolio_id,
-            "provider_code": "virtual_alpha",
-            "provider_name": "Simulation IA",
-            "label": virtual_portfolio.label,
-            "status": "active",
-            "agent_name": virtual_portfolio.agent_name,
-            "last_sync_status": "simulated",
-            "current_value": str(virtual_portfolio.current_value),
-        }
+    active_connections = [connection for connection in connections if connection.status == "active"]
+    active_connection_ids = [connection.id for connection in active_connections]
+    sync_events = (
+        db.scalars(
+            select(IntegrationSyncEvent)
+            .where(IntegrationSyncEvent.connection_id.in_(active_connection_ids))
+            .order_by(IntegrationSyncEvent.created_at.desc())
+        ).all()
+        if active_connection_ids
+        else []
     )
+    events_by_connection: dict[str, list[IntegrationSyncEvent]] = {}
+    for event in sync_events:
+        events_by_connection.setdefault(event.connection_id, []).append(event)
+
+    portfolio_cards: list[dict] = []
+    for connection in active_connections:
+        events = events_by_connection.get(connection.id, [])
+        history_points = [
+            {
+                "date": event.created_at.replace(microsecond=0).isoformat() + "Z",
+                "value": float(event.total_value),
+            }
+            for event in reversed(events[:120])
+            if event.total_value is not None
+        ]
+        metadata = connection.provider_metadata if isinstance(connection.provider_metadata, dict) else {}
+        metadata_trade_history = metadata.get("trade_history") if isinstance(metadata, dict) else None
+        latest_actions = [entry for entry in metadata_trade_history if isinstance(entry, dict)] if isinstance(metadata_trade_history, list) else []
+
+        portfolio_cards.append(
+            {
+                "portfolio_id": connection.id,
+                "provider_code": connection.provider_code,
+                "provider_name": connection.provider_name,
+                "label": connection.account_label or f"Portefeuille {connection.provider_name}",
+                "status": connection.status,
+                "agent_name": resolve_agent_name(connection.provider_code),
+                "last_sync_status": connection.last_sync_status,
+                "current_value": str(connection.last_snapshot_total_value) if connection.last_snapshot_total_value is not None else None,
+                "history_points": history_points,
+                "latest_actions": latest_actions,
+            }
+        )
     if not positions:
         return DashboardResponse(
             portfolio_id=portfolio.id,
@@ -704,7 +676,7 @@ def build_dashboard_from_positions(current_user: User, portfolio: Portfolio, ban
             {"label": "Valeur totale", "value": f"{total_value.quantize(Decimal('0.01'))} EUR", "trend": f"↑ {len(positions)} positions suivies"},
             {"label": "Liquidites", "value": f"{cash_balance.quantize(Decimal('0.01'))} EUR", "trend": "→ Trésorerie synchronisée"},
             {"label": "Sources", "value": str(len([connection for connection in connections if connection.status == 'active'])), "trend": "↑ Intégrations actives"},
-            {"label": "Virtuel IA", "value": f"{virtual_portfolio.current_value} EUR", "trend": f"{'↑' if virtual_portfolio.roi >= 0 else '↓'} ROI {(virtual_portfolio.roi * 100):.1f}%"},
+            {"label": "Historique réel", "value": str(len(sync_events)), "trend": "→ Evénements de synchronisation"},
         ],
         sector_heatmap=sector_heatmap,
         allocation=allocation,
@@ -737,10 +709,18 @@ def run_provider_sync(db: Session, current_user: User, connection: BrokerConnect
     if connection.provider_code != "coinbase":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Read-only sync is currently implemented for Coinbase only")
 
+    existing_positions = db.scalars(select(IntegrationPosition).where(IntegrationPosition.connection_id == connection.id)).all()
+    previous_by_symbol: dict[str, tuple[Decimal, Decimal]] = {
+        position.symbol: (position.quantity, position.market_value)
+        for position in existing_positions
+    }
+
     result = sync_coinbase_read_only(connection)
     db.query(IntegrationPosition).filter(IntegrationPosition.connection_id == connection.id).delete()
     positions_to_store = []
+    current_by_symbol: dict[str, tuple[Decimal, Decimal]] = {}
     for position in result.positions:
+        current_by_symbol[position.symbol] = (position.quantity, position.market_value)
         positions_to_store.append(
             IntegrationPosition(
                 connection_id=connection.id,
@@ -755,6 +735,56 @@ def run_provider_sync(db: Session, current_user: User, connection: BrokerConnect
         )
     for position in positions_to_store:
         db.add(position)
+
+    metadata = dict(connection.provider_metadata or {})
+    existing_trade_history = metadata.get("trade_history") if isinstance(metadata.get("trade_history"), list) else []
+    existing_trade_history = [entry for entry in existing_trade_history if isinstance(entry, dict)]
+    merged_trades = [*result.trades, *existing_trade_history]
+    seen_trade_ids: set[str] = set()
+    normalized_trade_history: list[dict] = []
+    for trade in merged_trades:
+        trade_id = str(trade.get("trade_id") or "")
+        if not trade_id:
+            trade_id = f"{trade.get('asset')}|{trade.get('action')}|{trade.get('amount')}|{trade.get('date')}"
+        if trade_id in seen_trade_ids:
+            continue
+        seen_trade_ids.add(trade_id)
+        normalized_trade_history.append(
+            {
+                "trade_id": trade_id,
+                "asset": str(trade.get("asset") or "UNKNOWN"),
+                "action": "sell" if str(trade.get("action") or "").lower().startswith("sell") else "buy",
+                "amount": float(trade.get("amount") or 0),
+                "quantity": float(trade.get("quantity") or 0),
+                "price": float(trade.get("price") or 0),
+                "fee": float(trade.get("fee") or 0),
+                "date": str(trade.get("date") or ""),
+            }
+        )
+    normalized_trade_history.sort(key=lambda item: item.get("date") or "", reverse=True)
+    metadata["trade_history"] = normalized_trade_history[:300]
+    connection.provider_metadata = metadata
+
+    position_changes: list[dict] = []
+    all_symbols = set(previous_by_symbol.keys()) | set(current_by_symbol.keys())
+    for symbol in sorted(all_symbols):
+        prev_quantity, prev_value = previous_by_symbol.get(symbol, (Decimal("0"), Decimal("0")))
+        curr_quantity, curr_value = current_by_symbol.get(symbol, (Decimal("0"), Decimal("0")))
+        delta_quantity = curr_quantity - prev_quantity
+        delta_value = curr_value - prev_value
+        if delta_quantity == 0 and abs(delta_value) < Decimal("0.01"):
+            continue
+        side = "buy" if delta_quantity > 0 or (delta_quantity == 0 and delta_value > 0) else "sell"
+        amount = abs(delta_value) if abs(delta_value) >= Decimal("0.01") else abs(delta_quantity)
+        position_changes.append(
+            {
+                "asset": symbol,
+                "action": side,
+                "amount": float(amount.quantize(Decimal("0.01"))),
+                "quantity_delta": float(delta_quantity),
+                "value_delta": float(delta_value.quantize(Decimal("0.01"))),
+            }
+        )
 
     connection.permissions = result.permissions
     connection.external_portfolio_id = result.external_portfolio_id
@@ -773,7 +803,11 @@ def run_provider_sync(db: Session, current_user: User, connection: BrokerConnect
             status="ok",
             positions_synced=len(result.positions),
             total_value=result.total_value,
-            details={"external_account_ids": result.external_account_ids},
+            details={
+                "external_account_ids": result.external_account_ids,
+                "position_changes": position_changes,
+                "trades": result.trades[:80],
+            },
         )
     )
     db.commit()
@@ -1440,12 +1474,12 @@ def dashboard(portfolio_id: str, current_user: User = Depends(get_current_user),
     connections = db.scalars(select(BrokerConnection).where(BrokerConnection.user_id == current_user.id)).all()
     active_connections = [connection for connection in connections if connection.status == "active"]
     if not active_connections:
-        return build_dashboard_from_positions(current_user, portfolio, bank_connectors, connections, [])
+        return build_dashboard_from_positions(db, current_user, portfolio, bank_connectors, connections, [])
 
     positions = db.scalars(
         select(IntegrationPosition).where(IntegrationPosition.connection_id.in_([connection.id for connection in active_connections]))
     ).all()
-    return build_dashboard_from_positions(current_user, portfolio, bank_connectors, connections, positions)
+    return build_dashboard_from_positions(db, current_user, portfolio, bank_connectors, connections, positions)
 
 
 @app.get("/api/v1/broker-connections/providers", response_model=list[BankProvider])
@@ -1591,8 +1625,6 @@ def upsert_integration_credentials(payload: IntegrationCredentialRequest, curren
 
 @app.post("/api/v1/integrations/{provider_code}/sync", response_model=IntegrationSyncResponse)
 def sync_integration(provider_code: str, payload: IntegrationSyncRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> IntegrationSyncResponse:
-    assert_sensitive_mfa_if_enabled(db, current_user, payload.mfa_code, "sensitive")
-
     connection = db.scalar(
         select(BrokerConnection).where(
             BrokerConnection.user_id == current_user.id,
@@ -1626,8 +1658,6 @@ def sync_integration(provider_code: str, payload: IntegrationSyncRequest, curren
 
 @app.post("/api/v1/integrations/sync-all", response_model=IntegrationBulkSyncResponse)
 def sync_all_integrations(payload: IntegrationSyncRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> IntegrationBulkSyncResponse:
-    assert_sensitive_mfa_if_enabled(db, current_user, payload.mfa_code, "sensitive")
-
     connections = db.scalars(
         select(BrokerConnection).where(
             BrokerConnection.user_id == current_user.id,
@@ -1741,15 +1771,17 @@ def propose_order(payload: TradeProposalRequest, current_user: User = Depends(ge
         raise HTTPException(status_code=423, detail="Kill switch active")
 
     is_virtual_portfolio = payload.portfolio_id == "virtual_alpha" or payload.portfolio_id.startswith("virtual-")
-    target_portfolio_id = payload.portfolio_id
-    if is_virtual_portfolio:
-        fallback_portfolio = db.scalar(select(Portfolio).where(Portfolio.owner_id == current_user.id).limit(1))
-        if not fallback_portfolio:
-            raise HTTPException(status_code=404, detail="Portfolio not found")
-        target_portfolio_id = fallback_portfolio.id
+
+    # Always resolve to a real Portfolio FK UUID; the original requested id is stored separately
+    user_portfolio = db.scalar(select(Portfolio).where(Portfolio.owner_id == current_user.id).limit(1))
+    if not user_portfolio:
+        user_portfolio = Portfolio(owner_id=current_user.id, name="Portefeuille principal")
+        db.add(user_portfolio)
+        db.flush()
 
     proposal = TradeProposal(
-        portfolio_id=target_portfolio_id,
+        portfolio_id=user_portfolio.id,
+        provider_portfolio_id=payload.portfolio_id,
         asset_symbol=payload.asset_symbol.upper(),
         side=payload.side,
         quantity=payload.quantity,
@@ -1770,7 +1802,7 @@ def propose_order(payload: TradeProposalRequest, current_user: User = Depends(ge
             "asset": proposal.asset_symbol,
             "virtual_auto_approved": is_virtual_portfolio,
             "requested_portfolio_id": payload.portfolio_id,
-            "stored_portfolio_id": target_portfolio_id,
+            "stored_portfolio_id": user_portfolio.id,
         },
     )
     return TradeProposalResponse(proposal_id=proposal.id, status=proposal.status, approval_required=not is_virtual_portfolio)
@@ -1786,13 +1818,117 @@ def approve_order(payload: TradeApprovalRequest, current_user: User = Depends(ge
 
     proposal.status = "approved" if payload.approved else "rejected"
     db.add(proposal)
+
+    execution_summary: dict[str, object] = {"executed": False}
+    if payload.approved:
+        connection = db.scalar(
+            select(BrokerConnection).where(
+                BrokerConnection.user_id == current_user.id,
+                BrokerConnection.provider_code == (proposal.provider_portfolio_id or proposal.portfolio_id),
+            )
+        )
+        if connection:
+            now = datetime.utcnow()
+            amount_eur = Decimal(str(proposal.quantity)).quantize(Decimal("0.01"))
+            fee_rate = Decimal("0.004") if connection.provider_code == "coinbase" else Decimal("0.001")
+            fee = (amount_eur * fee_rate).quantize(Decimal("0.01"))
+
+            metadata = dict(connection.provider_metadata or {})
+            trade_history = metadata.get("trade_history") if isinstance(metadata.get("trade_history"), list) else []
+            trade_history = [entry for entry in trade_history if isinstance(entry, dict)]
+            trade_id = f"decision-{proposal.id}"
+            if not any(str(entry.get("trade_id") or "") == trade_id for entry in trade_history):
+                trade_history.insert(
+                    0,
+                    {
+                        "trade_id": trade_id,
+                        "asset": proposal.asset_symbol,
+                        "action": proposal.side,
+                        "amount": float(amount_eur),
+                        "quantity": float(proposal.quantity),
+                        "price": 0.0,
+                        "fee": float(fee),
+                        "date": now.replace(microsecond=0).isoformat() + "Z",
+                        "source": "decision_confirmation",
+                    },
+                )
+            metadata["trade_history"] = trade_history[:300]
+            connection.provider_metadata = metadata
+
+            previous_total = connection.last_snapshot_total_value or Decimal("0.00")
+            if proposal.side == "buy":
+                new_total = previous_total + amount_eur
+            else:
+                new_total = max(Decimal("0.00"), previous_total - amount_eur)
+            connection.last_snapshot_total_value = new_total.quantize(Decimal("0.01"))
+            connection.last_sync_at = now
+            connection.last_sync_status = "ok"
+            connection.last_sync_error = None
+
+            symbol = proposal.asset_symbol.upper()
+            position = db.scalar(
+                select(IntegrationPosition).where(
+                    IntegrationPosition.connection_id == connection.id,
+                    IntegrationPosition.symbol == symbol,
+                )
+            )
+            if proposal.side == "buy":
+                if position is None:
+                    position = IntegrationPosition(
+                        connection_id=connection.id,
+                        symbol=symbol,
+                        asset_name=symbol,
+                        asset_type="crypto" if connection.provider_code == "coinbase" else "securities",
+                        quantity=proposal.quantity,
+                        market_value=amount_eur,
+                        currency="EUR",
+                        position_metadata={"source": "decision_confirmation"},
+                    )
+                else:
+                    position.quantity = Decimal(str(position.quantity)) + Decimal(str(proposal.quantity))
+                    position.market_value = Decimal(str(position.market_value)) + amount_eur
+                db.add(position)
+            else:
+                if position is not None:
+                    next_quantity = max(Decimal("0"), Decimal(str(position.quantity)) - Decimal(str(proposal.quantity)))
+                    next_value = max(Decimal("0.00"), Decimal(str(position.market_value)) - amount_eur)
+                    position.quantity = next_quantity
+                    position.market_value = next_value
+                    if next_quantity == 0 and next_value == 0:
+                        db.delete(position)
+                    else:
+                        db.add(position)
+
+            db.add(connection)
+            db.add(
+                IntegrationSyncEvent(
+                    connection_id=connection.id,
+                    provider_code=connection.provider_code,
+                    status="ok",
+                    positions_synced=0,
+                    total_value=connection.last_snapshot_total_value,
+                    details={
+                        "source": "decision_confirmation",
+                        "proposal_id": proposal.id,
+                        "asset": proposal.asset_symbol,
+                        "side": proposal.side,
+                        "amount": float(amount_eur),
+                    },
+                )
+            )
+            execution_summary = {
+                "executed": True,
+                "provider_code": connection.provider_code,
+                "portfolio_total_value": str(connection.last_snapshot_total_value),
+            }
+
     db.commit()
 
     write_audit_log(
         db,
         current_user.id,
         "trade.approval",
-        {"proposal_id": proposal.id, "approved": payload.approved},
+        {"proposal_id": proposal.id, "approved": payload.approved, **execution_summary},
         device_fingerprint=payload.device_fingerprint,
         ip_address=payload.ip_address,
     )

@@ -139,6 +139,9 @@ class TradeProposal(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     portfolio_id: Mapped[str] = mapped_column(String(36), ForeignKey("portfolios.id"), index=True)
+    # provider_portfolio_id stores the original requested portfolio identifier (provider_code or virtual id)
+    # portfolio_id above always holds the internal Portfolio FK UUID
+    provider_portfolio_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     asset_symbol: Mapped[str] = mapped_column(String(32))
     side: Mapped[str] = mapped_column(String(8))
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 8))
