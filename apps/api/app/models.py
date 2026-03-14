@@ -1,8 +1,8 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -18,6 +18,11 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(Text)
     role: Mapped[str] = mapped_column(String(32), default="user")
     assigned_roles: Mapped[list[str]] = mapped_column(JSON, default=list)
+    access_profile: Mapped[str] = mapped_column(String(16), default="write")
+    app_access: Mapped[list[str]] = mapped_column(JSON, default=list)
+    birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    verification_channel: Mapped[str | None] = mapped_column(String(16), nullable=True)
     personal_settings: Mapped[dict] = mapped_column(JSON, default=dict)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -148,6 +153,22 @@ class TradeProposal(Base):
     order_type: Mapped[str] = mapped_column(String(16), default="market")
     status: Mapped[str] = mapped_column(String(24), default="pending_approval")
     rationale: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class VirtualTransaction(Base):
+    __tablename__ = "virtual_transactions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    domain: Mapped[str] = mapped_column(String(24), default="finance", index=True)
+    portfolio_id: Mapped[str] = mapped_column(String(64), index=True)
+    asset_symbol: Mapped[str] = mapped_column(String(32), default="CW8")
+    side: Mapped[str] = mapped_column(String(8), default="buy")
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0)
+    value_after: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("100.00"))
+    source: Mapped[str] = mapped_column(String(24), default="simulation")
+    rationale: Mapped[str] = mapped_column(Text, default="Simulation virtuelle")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 
 type UserProfile = {
   id: string;
@@ -258,6 +258,69 @@ type MarketSignal = {
 type AgentMode = 'manual' | 'autopilot';
 type AgentDomain = 'crypto' | 'actions' | 'etf' | 'obligations';
 type AgentDomainPolicy = 'prefer' | 'allow' | 'reject';
+type GoalPeriod = '7d' | '1m' | '3m' | '1y';
+
+type FinanceVirtualSimulation = {
+  currentValue: number;
+  history: Array<{ date: string; value: number }>;
+  operations: Portfolio['operations'];
+};
+
+/* ============================================================
+   BETTING TYPES — Paris Sportifs (Tipster IA)
+   ============================================================ */
+type BetSport = 'football' | 'tennis' | 'basketball' | 'rugby' | 'other';
+
+type BetRecord = {
+  id: string;
+  date: string;
+  sport: BetSport;
+  event: string;
+  market: string;
+  bookmaker: string;
+  odds: number;
+  stake: number;
+  result: 'won' | 'lost' | 'pending' | 'void';
+  profit: number;
+  strategyId: string;
+};
+
+type BettingStrategy = {
+  id: string;
+  name: string;
+  type: 'value_betting' | 'arbitrage' | 'statistical' | 'predictive' | 'personal';
+  description: string;
+  isVirtual: boolean;
+  bankroll: number;
+  roi: number;
+  winRate: number;
+  variance: number;
+  enabled: boolean;
+  betsTotal: number;
+  betsWon: number;
+  ai_enabled: boolean;
+  mode: 'manual' | 'supervised' | 'autonomous';
+  max_stake: number;
+  max_bets_per_day: number;
+  risk_profile?: 'low' | 'medium' | 'high';
+  history: Array<{ date: string; value: number }>;
+  recentBets: BetRecord[];
+};
+
+type TipsterSignal = {
+  id: string;
+  sport: BetSport;
+  event: string;
+  market: string;
+  odds: number;
+  value_pct: number;
+  confidence: number;
+  rationale: string;
+  risk: 'faible' | 'modere' | 'eleve';
+  bookmaker: string;
+  deadline: string;
+  status: 'pending' | 'approved' | 'rejected';
+};
 
 type AgentQuotaConfig = {
   enabled: boolean;
@@ -266,6 +329,8 @@ type AgentQuotaConfig = {
   max_transactions_per_day: number;
   domain_policy: Record<AgentDomain, AgentDomainPolicy>;
 };
+
+type UserRiskProfile = 'low' | 'medium' | 'high';
 
 const DEFAULT_AGENT_CONFIG: AgentQuotaConfig = {
   enabled: false,
@@ -279,6 +344,87 @@ const DEFAULT_AGENT_CONFIG: AgentQuotaConfig = {
     obligations: 'allow',
   },
 };
+
+const RISK_PROFILE_DEFAULT_QUOTAS: Record<UserRiskProfile, { max_amount: number; max_transactions_per_day: number }> = {
+  low: { max_amount: 120, max_transactions_per_day: 2 },
+  medium: { max_amount: 250, max_transactions_per_day: 3 },
+  high: { max_amount: 600, max_transactions_per_day: 8 },
+};
+
+const GOAL_PERIOD_DAYS: Record<GoalPeriod, number> = {
+  '7d': 7,
+  '1m': 30,
+  '3m': 90,
+  '1y': 365,
+};
+
+const GOAL_PERIOD_LABELS: Record<GoalPeriod, string> = {
+  '7d': '7 jours',
+  '1m': '1 mois',
+  '3m': '3 mois',
+  '1y': '1 an',
+};
+
+const ESTIMATED_TAX_RATE = 0.30;
+
+function normalizeGoalPeriod(value: unknown): GoalPeriod {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === '7d') {
+    return '7d';
+  }
+  if (normalized === '3m') {
+    return '3m';
+  }
+  if (normalized === '1y') {
+    return '1y';
+  }
+  return '1m';
+}
+
+function toPositiveNumber(value: unknown, fallback: number): number {
+  const parsed = Number.parseFloat(String(value ?? ''));
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function normalizeUserRiskProfile(value: unknown): UserRiskProfile {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (['low', 'prudent', 'faible'].includes(normalized)) {
+    return 'low';
+  }
+  if (['high', 'offensive', 'eleve'].includes(normalized)) {
+    return 'high';
+  }
+  return 'medium';
+}
+
+function resolveUserRiskProfile(user: UserProfile | null): UserRiskProfile {
+  if (!user || !user.personal_settings || typeof user.personal_settings !== 'object') {
+    return 'medium';
+  }
+  const settings = user.personal_settings as Record<string, unknown>;
+  return normalizeUserRiskProfile(
+    settings.risk_profile
+      ?? settings.investor_risk_profile
+      ?? settings.portfolio_risk_profile
+      ?? settings.riskLevel
+      ?? settings.risk_level,
+  );
+}
+
+function defaultAgentConfigFromUserRisk(user: UserProfile | null): AgentQuotaConfig {
+  const profile = resolveUserRiskProfile(user);
+  const quotas = RISK_PROFILE_DEFAULT_QUOTAS[profile];
+  return {
+    enabled: DEFAULT_AGENT_CONFIG.enabled,
+    mode: DEFAULT_AGENT_CONFIG.mode,
+    max_amount: quotas.max_amount,
+    max_transactions_per_day: quotas.max_transactions_per_day,
+    domain_policy: { ...DEFAULT_AGENT_CONFIG.domain_policy },
+  };
+}
 
 const PROVIDER_AGENT_NAMES: Record<string, string> = {
   coinbase: 'Agent Crypto Momentum',
@@ -362,7 +508,9 @@ function buildOperationsFromSyncActions(
 function buildAllPortfolios(
   dashboard: DashboardData | null,
   integrations: IntegrationConnection[],
-  visibility: Record<string, boolean>
+  visibility: Record<string, boolean>,
+  activation: Record<string, boolean>,
+  virtualSimulation: FinanceVirtualSimulation | null
 ): Portfolio[] {
   if (!dashboard) {
     return [];
@@ -398,7 +546,9 @@ function buildAllPortfolios(
       pnl: 0,
       roi: 0,
       visible: visibility[connection.provider_code] !== false,
-      status: connection.status as 'active' | 'disabled' | 'pending_user_consent' | 'available',
+      status: activation[connection.provider_code] === false
+        ? 'disabled'
+        : connection.status as 'active' | 'disabled' | 'pending_user_consent' | 'available',
       last_sync_at: connection.last_sync_at ?? null,
       agent_name: item?.agent_name || resolveAgentNameFe(connection.provider_code),
       history,
@@ -412,10 +562,11 @@ function buildAllPortfolios(
   });
 
   const vp = dashboard.virtual_portfolio;
-  const vpValue = parseFloat(vp.current_value) || 0;
+  const vpHistory = virtualSimulation?.history ?? vp.history_points;
+  const vpValue = virtualSimulation?.currentValue ?? parseFloat(vp.current_value) || 0;
   const vpBudget = parseFloat(vp.budget_initial) || 100;
-  const vpPnl = parseFloat(vp.pnl) || 0;
-  const vpOps = vp.latest_actions.map((a, i) => ({
+  const vpPnl = vpValue - vpBudget;
+  const vpOps = virtualSimulation?.operations ?? vp.latest_actions.map((a, i) => ({
     id: `virtual-op-${i}`,
     date: new Date(Date.now() - (vp.latest_actions.length - i) * 2 * 24 * 60 * 60 * 1000).toISOString(),
     side: a.action.toLowerCase() === 'sell' ? 'sell' as const : 'buy' as const,
@@ -423,7 +574,7 @@ function buildAllPortfolios(
     amount: Math.max(0, a.amount),
     tax_state: null,
     tax_intermediary: null,
-    intermediary: 'Picsou IA (virtuel)',
+    intermediary: 'Robin IA (virtuel)',
   }));
   const virtualPortfolio: Portfolio = {
     id: vp.portfolio_id,
@@ -434,18 +585,18 @@ function buildAllPortfolios(
     pnl: vpPnl,
     roi: vp.roi,
     visible: visibility[vp.portfolio_id] !== false,
-    status: 'active',
-    last_sync_at: null,
+    status: activation[vp.portfolio_id] === false ? 'disabled' : 'active',
+    last_sync_at: vpHistory.length > 0 ? vpHistory[vpHistory.length - 1].date : null,
     agent_name: vp.agent_name,
-    history: vp.history_points,
+    history: vpHistory,
     operations: vpOps,
     ai_advice: [
-      { kind: 'info', text: `Bac à sable virtuel — budget initial : ${vpBudget.toFixed(0)} €. Picsou IA teste ses stratégies ici sans risque réel.` },
+      { kind: 'info', text: `Bac à sable virtuel — budget initial : ${vpBudget.toFixed(0)} €. Robin IA teste ses stratégies ici sans risque réel.` },
       vpPnl > 0
         ? { kind: 'hold', text: `Performance actuelle : +${vpPnl.toFixed(2)} € (+${(vp.roi >= 0 ? '+' : '')}${(vp.roi).toFixed(1)}%). L IA surperforme.` }
         : vpPnl < 0
           ? { kind: 'sell', text: `Sous-performance virtuelle : ${vpPnl.toFixed(2)} €. L IA ajuste sa stratégie sans impact réel.` }
-          : { kind: 'info', text: 'Aucune activité virtuelle pour l instant. Souscrivez à un signal marché pour tester Picsou IA.' },
+          : { kind: 'info', text: 'Aucune activité virtuelle pour l instant. Souscrivez à un signal marché pour tester Robin IA.' },
     ],
     allocation: vp.strategy_mix.length > 0
       ? vp.strategy_mix.map((m) => ({ class: m.class, weight: m.weight, value: vpValue * m.weight / 100 }))
@@ -599,6 +750,8 @@ function hasAdminRole(user: UserProfile | null) {
 }
 
 function defaultSettingsFromUser(user: UserProfile | null) {
+  const rawGoal = user?.personal_settings.net_goal_after_tax;
+  const goalConfig = rawGoal && typeof rawGoal === 'object' ? rawGoal as Record<string, unknown> : {};
   return {
     fullName: user?.full_name ?? '',
     phoneNumber: user?.phone_number ?? '',
@@ -615,6 +768,8 @@ function defaultSettingsFromUser(user: UserProfile | null) {
     marketAlerts: readBooleanSetting(user?.personal_settings.market_alerts, true),
     communicationFrequency: String(user?.personal_settings.communication_frequency ?? 'important_only'),
     autoRefreshSeconds: String(user?.personal_settings.auto_refresh_seconds ?? '30'),
+    objectiveNetGain: String(toPositiveNumber(goalConfig.target_eur, 250)),
+    objectivePeriod: normalizeGoalPeriod(goalConfig.period),
   };
 }
 
@@ -624,6 +779,20 @@ function matchesSearch(value: string, search: string) {
 
 function normalizeOtpInput(value: string) {
   return value.replace(/\D/g, '').slice(0, 8);
+}
+
+function formatDateTimeFr(value: string) {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    return 'n/d';
+  }
+  return new Date(parsed).toLocaleString('fr-FR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 function inferCountryFromLocale(locale: string) {
@@ -866,9 +1035,136 @@ const MARKET_SIGNALS: MarketSignal[] = [
   { id: 'ihyg', category: 'obligations', name: 'iShares EUR High Yield', symbol: 'IHYG', performance_30d: 2.1, confidence: 3, rationale: 'Spread HY en compression. Rendement 5.9%. Prime de risque de crédit attrayante en contexte de baisse de taux.', risk: 'modere', min_investment: 50 },
 ];
 
-export default function PicsouApp() {
+/* ============================================================
+   MOCK DATA — Paris Sportifs (Tipster IA)
+   ============================================================ */
+const MOCK_STRATEGIES: BettingStrategy[] = [
+  {
+    id: 'sv0', name: 'Portefeuille Virtuel Tipster', type: 'personal',
+    description: 'Portefeuille de simulation 100 € sans trafic réel. Les transactions sont simulées selon votre niveau de risque.',
+    isVirtual: true,
+    bankroll: 100, roi: 0, winRate: 0, variance: 0, enabled: true, betsTotal: 0, betsWon: 0,
+    ai_enabled: true,
+    mode: 'autonomous',
+    max_stake: 12,
+    max_bets_per_day: 6,
+    risk_profile: 'medium',
+    history: [
+      { date: '2026-03-01', value: 100 },
+      { date: '2026-03-05', value: 100 },
+      { date: '2026-03-10', value: 100 },
+      { date: '2026-03-14', value: 100 },
+    ],
+    recentBets: [],
+  },
+  {
+    id: 's1', name: 'Value Betting Ligue 1', type: 'value_betting',
+    description: 'Identification de cotes sous-évaluées sur les matchs de Ligue 1 via modèle ELO ajusté.',
+    isVirtual: false,
+    bankroll: 1200, roi: 8.4, winRate: 54, variance: 12.3, enabled: true, betsTotal: 87, betsWon: 47,
+    ai_enabled: true,
+    mode: 'supervised',
+    max_stake: 95,
+    max_bets_per_day: 5,
+    history: [
+      { date: '2026-01-01', value: 1000 }, { date: '2026-01-15', value: 1050 },
+      { date: '2026-02-01', value: 1100 }, { date: '2026-02-15', value: 1080 },
+      { date: '2026-03-01', value: 1180 }, { date: '2026-03-14', value: 1200 },
+    ],
+    recentBets: [
+      { id: 'b1', date: '2026-03-12', sport: 'football', event: 'PSG vs Lyon', market: '1N2 - 1', bookmaker: 'Winamax', odds: 1.72, stake: 50, result: 'won', profit: 36, strategyId: 's1' },
+      { id: 'b2', date: '2026-03-10', sport: 'football', event: 'Monaco vs Marseille', market: 'Over 2.5', bookmaker: 'Betclic', odds: 1.88, stake: 40, result: 'lost', profit: -40, strategyId: 's1' },
+      { id: 'b3', date: '2026-03-08', sport: 'football', event: 'Lille vs Rennes', market: 'BTTS', bookmaker: 'Unibet', odds: 1.65, stake: 35, result: 'won', profit: 22.75, strategyId: 's1' },
+    ],
+  },
+  {
+    id: 's2', name: 'ATP Value Tennis', type: 'statistical',
+    description: 'Modèle statistique surface/forme sur ATP 250 et Masters. Focus sous-cotations en direct.',
+    isVirtual: false,
+    bankroll: 600, roi: 12.1, winRate: 59, variance: 8.7, enabled: true, betsTotal: 43, betsWon: 25,
+    ai_enabled: true,
+    mode: 'manual',
+    max_stake: 60,
+    max_bets_per_day: 4,
+    history: [
+      { date: '2026-01-01', value: 500 }, { date: '2026-01-20', value: 540 },
+      { date: '2026-02-05', value: 560 }, { date: '2026-02-20', value: 545 },
+      { date: '2026-03-05', value: 590 }, { date: '2026-03-14', value: 600 },
+    ],
+    recentBets: [
+      { id: 'b4', date: '2026-03-13', sport: 'tennis', event: 'Sinner vs Medvedev', market: 'Sinner 1er set', bookmaker: 'Betway', odds: 1.55, stake: 30, result: 'won', profit: 16.5, strategyId: 's2' },
+      { id: 'b5', date: '2026-03-11', sport: 'tennis', event: 'Alcaraz vs Zverev', market: '1N2 - Alcaraz', bookmaker: 'Winamax', odds: 1.45, stake: 50, result: 'pending', profit: 0, strategyId: 's2' },
+    ],
+  },
+  {
+    id: 's3', name: 'Arbitrage Multi-Bookmakers', type: 'arbitrage',
+    description: 'Détection automatique d opportunités d arbitrage sur 12 bookmakers. Marge garantie sur chaque pari identifié.',
+    isVirtual: false,
+    bankroll: 3500, roi: 3.2, winRate: 98, variance: 0.8, enabled: true, betsTotal: 156, betsWon: 153,
+    ai_enabled: true,
+    mode: 'autonomous',
+    max_stake: 220,
+    max_bets_per_day: 12,
+    history: [
+      { date: '2026-01-01', value: 3000 }, { date: '2026-01-15', value: 3080 },
+      { date: '2026-02-01', value: 3160 }, { date: '2026-02-15', value: 3240 },
+      { date: '2026-03-01', value: 3360 }, { date: '2026-03-14', value: 3500 },
+    ],
+    recentBets: [
+      { id: 'b6', date: '2026-03-14', sport: 'football', event: 'Bayern vs Dortmund', market: 'Arb 2.1%', bookmaker: 'Multi', odds: 0, stake: 200, result: 'won', profit: 4.2, strategyId: 's3' },
+    ],
+  },
+];
+
+const TIPSTER_SIGNALS: TipsterSignal[] = [
+  { id: 'ts1', sport: 'football', event: 'Real Madrid vs Barcelona', market: 'Over 2.5 buts', odds: 1.82, value_pct: 8.4, confidence: 5, rationale: 'Modèle prédictif 87% : les 4 dernières confrontations ont produit 3+ buts. Défense du Real récente poreuse (7 concédés en 3 matchs).', risk: 'faible', bookmaker: 'Winamax', deadline: '2026-03-16T20:45:00Z', status: 'pending' },
+  { id: 'ts2', sport: 'tennis', event: 'Sinner vs Alcaraz — Miami Open', market: 'Moins de 3 sets', odds: 1.68, value_pct: 5.2, confidence: 4, rationale: 'Historique direct : 7/9 matchs en 2 sets. Alcaraz avec gêne à l épaule gauche. Sinner dominant sur quick court.', risk: 'faible', bookmaker: 'Betclic', deadline: '2026-03-17T18:00:00Z', status: 'pending' },
+  { id: 'ts3', sport: 'basketball', event: 'Lakers vs Warriors — NBA', market: 'Total Over 225', odds: 1.91, value_pct: 6.8, confidence: 3, rationale: 'Warriors 2e attaque away (116 pts/match). Lakers Over 225 à 68% cette saison à domicile. Rythme de jeu élevé attendu.', risk: 'modere', bookmaker: 'Unibet', deadline: '2026-03-15T02:00:00Z', status: 'pending' },
+  { id: 'ts4', sport: 'football', event: 'Arsenal vs Chelsea — Premier League', market: 'BTTS — Oui', odds: 1.75, value_pct: 4.1, confidence: 4, rationale: 'BTTS 71% sur les 7 derniers Derby anglais cette saison. Chelsea marque à l extérieur 5/6. Arsenal encaisse sur corner récemment.', risk: 'faible', bookmaker: 'Betway', deadline: '2026-03-15T15:00:00Z', status: 'pending' },
+  { id: 'ts5', sport: 'rugby', event: 'France vs Angleterre — 6 Nations', market: 'France -7', odds: 1.95, value_pct: 9.3, confidence: 3, rationale: 'XV de France invaincu au Stade de France en 6N depuis 2022. Modèle ELO attribue 62% de prob à une victoire +7. Cote sous-évaluée de 9.3%.', risk: 'modere', bookmaker: 'Winamax', deadline: '2026-03-16T15:45:00Z', status: 'pending' },
+];
+
+/* sport emoji helper */
+function sportEmoji(sport: BetSport): string {
+  return sport === 'football' ? '⚽' : sport === 'tennis' ? '🎾' : sport === 'basketball' ? '🏀' : sport === 'rugby' ? '🏉' : '🏆';
+}
+
+type VirtualRiskProfile = 'low' | 'medium' | 'high';
+
+const VIRTUAL_RISK_PRESETS: Record<VirtualRiskProfile, {
+  label: string;
+  guardrail: string;
+  maxDrawdownPct: number;
+  minGainPct: number;
+  maxGainPct: number;
+}> = {
+  low: {
+    label: 'Risque faible',
+    guardrail: 'Capital garanti (simulation interne Robin)',
+    maxDrawdownPct: 0,
+    minGainPct: 0.2,
+    maxGainPct: 1.1,
+  },
+  medium: {
+    label: 'Risque moyen',
+    guardrail: 'Perte potentielle tolérée jusqu à -30%',
+    maxDrawdownPct: 30,
+    minGainPct: 0.8,
+    maxGainPct: 3.8,
+  },
+  high: {
+    label: 'Risque fort',
+    guardrail: 'Perte potentielle tolérée jusqu à -70%',
+    maxDrawdownPct: 70,
+    minGainPct: 1.4,
+    maxGainPct: 9.5,
+  },
+};
+
+export default function RobinApp() {
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
-  const [appView, setAppView] = useState<'dashboard' | 'portfolios' | 'settings' | 'admin'>('dashboard');
+  const [activeApp, setActiveApp] = useState<'finance' | 'betting'>('finance');
+  const [appView, setAppView] = useState<'dashboard' | 'portfolios' | 'settings' | 'admin' | 'strategies'>('dashboard');
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState<string | null>(null);
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -912,6 +1208,7 @@ export default function PicsouApp() {
   const [selectedPortfolio, setSelectedPortfolio] = useState<Portfolio | null>(null);
   const [portfolioHistoryScale, setPortfolioHistoryScale] = useState<'5m' | '15m' | '1h' | '6h' | '24h' | '7d' | '1m' | '3m' | '1y' | '2y'>('1m');
   const [portfolioVisibility, setPortfolioVisibility] = useState<Record<string, boolean>>({});
+  const [portfolioActivation, setPortfolioActivation] = useState<Record<string, boolean>>({});
   const [refreshingDashboard, setRefreshingDashboard] = useState(false);
   const [communicationTestResult, setCommunicationTestResult] = useState<string | null>(null);
   const [commGoogleChat, setCommGoogleChat] = useState({ enabled: false, webhook: '' });
@@ -939,6 +1236,16 @@ export default function PicsouApp() {
   const [subscribePortfolioId, setSubscribePortfolioId] = useState<string>('');
   const [subscribeAmount, setSubscribeAmount] = useState<number>(50);
   const [subscribeLoading, setSubscribeLoading] = useState(false);
+
+  /* ---- Paris Sportifs state ---- */
+  const [bettingStrategies, setBettingStrategies] = useState<BettingStrategy[]>(MOCK_STRATEGIES);
+  const [tipsterSignals, setTipsterSignals] = useState<TipsterSignal[]>(TIPSTER_SIGNALS);
+  const [selectedStrategy, setSelectedStrategy] = useState<BettingStrategy | null>(null);
+  const [strategyDetailOpen, setStrategyDetailOpen] = useState(false);
+  const [bettingAlert, setBettingAlert] = useState<string | null>(null);
+  const [virtualRiskProfile, setVirtualRiskProfile] = useState<VirtualRiskProfile>('medium');
+  const [financeVirtualSimulation, setFinanceVirtualSimulation] = useState<FinanceVirtualSimulation | null>(null);
+  const defaultAgentConfig = useMemo(() => defaultAgentConfigFromUserRisk(user), [user]);
 
   useEffect(() => {
     const storedAccess = sessionStorage.getItem(ACCESS_TOKEN_KEY);
@@ -1007,6 +1314,13 @@ export default function PicsouApp() {
     }
     setPortfolioVisibility(nextVisibility);
 
+    const savedActivation = (user.personal_settings.portfolio_activation ?? {}) as Record<string, unknown>;
+    const nextActivation: Record<string, boolean> = {};
+    for (const [key, value] of Object.entries(savedActivation)) {
+      nextActivation[key] = value !== false;
+    }
+    setPortfolioActivation(nextActivation);
+
     const savedDecisionResolutions = (user.personal_settings.decision_resolutions ?? {}) as Record<string, unknown>;
     const nextDecisionResolutions: Record<string, true> = {};
     for (const [key, value] of Object.entries(savedDecisionResolutions)) {
@@ -1018,6 +1332,7 @@ export default function PicsouApp() {
 
     const savedAgentConfigs = (user.personal_settings.agent_quotas ?? {}) as Record<string, unknown>;
     const nextAgentConfigs: Record<string, AgentQuotaConfig> = {};
+    const riskBasedDefaults = defaultAgentConfigFromUserRisk(user);
     for (const [portfolioId, raw] of Object.entries(savedAgentConfigs)) {
       if (!raw || typeof raw !== 'object') {
         continue;
@@ -1027,8 +1342,8 @@ export default function PicsouApp() {
       nextAgentConfigs[portfolioId] = {
         enabled: source.enabled === true,
         mode: source.mode === 'autopilot' ? 'autopilot' : 'manual',
-        max_amount: Math.max(1, Number(source.max_amount ?? DEFAULT_AGENT_CONFIG.max_amount) || DEFAULT_AGENT_CONFIG.max_amount),
-        max_transactions_per_day: Math.max(1, Number(source.max_transactions_per_day ?? DEFAULT_AGENT_CONFIG.max_transactions_per_day) || DEFAULT_AGENT_CONFIG.max_transactions_per_day),
+        max_amount: Math.max(1, Number(source.max_amount ?? riskBasedDefaults.max_amount) || riskBasedDefaults.max_amount),
+        max_transactions_per_day: Math.max(1, Number(source.max_transactions_per_day ?? riskBasedDefaults.max_transactions_per_day) || riskBasedDefaults.max_transactions_per_day),
         domain_policy: {
           crypto: domainSource.crypto === 'reject' || domainSource.crypto === 'prefer' ? domainSource.crypto : 'allow',
           actions: domainSource.actions === 'reject' || domainSource.actions === 'prefer' ? domainSource.actions : 'allow',
@@ -1236,6 +1551,33 @@ export default function PicsouApp() {
   }, [appView, accessToken, user]);
 
   useEffect(() => {
+    if (!dashboard?.virtual_portfolio) {
+      setFinanceVirtualSimulation(null);
+      return;
+    }
+    const vp = dashboard.virtual_portfolio;
+    const initialValue = Number.parseFloat(vp.current_value) || Number.parseFloat(vp.budget_initial) || 100;
+    const initialHistory = vp.history_points.length > 0
+      ? vp.history_points
+      : [{ date: new Date().toISOString(), value: initialValue }];
+    const initialOps = vp.latest_actions.map((a, i) => ({
+      id: `virtual-op-init-${i}`,
+      date: new Date(Date.now() - (vp.latest_actions.length - i) * 2 * 24 * 60 * 60 * 1000).toISOString(),
+      side: a.action.toLowerCase() === 'sell' ? 'sell' as const : 'buy' as const,
+      asset: a.asset,
+      amount: Math.max(0, a.amount),
+      tax_state: null,
+      tax_intermediary: null,
+      intermediary: 'Robin IA (virtuel)',
+    }));
+    setFinanceVirtualSimulation({
+      currentValue: initialValue,
+      history: initialHistory,
+      operations: initialOps,
+    });
+  }, [dashboard?.virtual_portfolio?.portfolio_id, dashboard?.virtual_portfolio?.current_value]);
+
+  useEffect(() => {
     if (!accessToken || !user) {
       return;
     }
@@ -1292,6 +1634,7 @@ export default function PicsouApp() {
     setUser(null);
     setDashboard(null);
     setMfaRequired(false);
+    setActiveApp('finance');
     setAppView('dashboard');
     setMfaQrDataUrl(null);
   }
@@ -1305,6 +1648,9 @@ export default function PicsouApp() {
     if (!usersResponse.ok || !auditResponse.ok) {
       const failedPayload = await readJsonResponse(usersResponse.ok ? auditResponse : usersResponse);
       setAdminFeedback(extractErrorMessage(failedPayload, 'Administration indisponible. Activez puis validez MFA pour continuer.'));
+      if (user) {
+        setAdminUsers((prev) => prev.length > 0 ? prev : [user]);
+      }
       return;
     }
 
@@ -1343,7 +1689,12 @@ export default function PicsouApp() {
       market_alerts: settingsForm.marketAlerts,
       communication_frequency: settingsForm.communicationFrequency,
       auto_refresh_seconds: Number.parseInt(settingsForm.autoRefreshSeconds, 10) || 30,
+      net_goal_after_tax: {
+        target_eur: toPositiveNumber(settingsForm.objectiveNetGain, 0),
+        period: normalizeGoalPeriod(settingsForm.objectivePeriod),
+      },
       portfolio_visibility: visibilityState,
+      portfolio_activation: portfolioActivation,
       decision_resolutions: decisionState,
       agent_quotas: agentConfigs,
       communication_google_chat: {
@@ -1431,17 +1782,49 @@ export default function PicsouApp() {
   }
 
   async function togglePortfolioActivation(portfolio: Portfolio, enabled: boolean) {
-    if (!portfolio.provider_code) {
-      return;
+    const nextActivation = { ...portfolioActivation, [portfolio.id]: enabled };
+    setPortfolioActivation(nextActivation);
+
+    if (portfolio.provider_code) {
+      await toggleIntegration(portfolio.provider_code, enabled, providerLabels[portfolio.provider_code] ?? portfolio.label);
     }
-    const nextVisibility = { ...portfolioVisibility, [portfolio.id]: enabled };
-    setPortfolioVisibility(nextVisibility);
-    await toggleIntegration(portfolio.provider_code, enabled, providerLabels[portfolio.provider_code] ?? portfolio.label);
+
+    const nextVisibility = !enabled
+      ? { ...portfolioVisibility, [portfolio.id]: false }
+      : portfolioVisibility;
+    if (!enabled) {
+      setPortfolioVisibility(nextVisibility);
+    }
+
     await persistDashboardPreferences(nextVisibility, 'Activation des portefeuilles mise à jour.');
+
+    if (accessToken) {
+      try {
+        await fetch(apiUrl('/auth/me/settings'), {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            ...authHeader(accessToken),
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            full_name: settingsForm.fullName,
+            phone_number: settingsForm.phoneNumber || null,
+            client_context: clientContext,
+            personal_settings: {
+              ...buildPersonalSettingsPayload({}, nextVisibility),
+              portfolio_activation: nextActivation,
+            },
+          }),
+        });
+      } catch {
+        // Keep local state even if persistence fails.
+      }
+    }
   }
 
   async function updateAgentConfig(portfolioId: string, patch: Partial<AgentQuotaConfig>) {
-    const current = agentConfigs[portfolioId] ?? DEFAULT_AGENT_CONFIG;
+    const current = agentConfigs[portfolioId] ?? defaultAgentConfig;
     const nextConfig: AgentQuotaConfig = {
       ...current,
       ...patch,
@@ -1449,8 +1832,8 @@ export default function PicsouApp() {
         ...current.domain_policy,
         ...(patch.domain_policy ?? {}),
       },
-      max_amount: Math.max(1, Number((patch.max_amount ?? current.max_amount) || DEFAULT_AGENT_CONFIG.max_amount)),
-      max_transactions_per_day: Math.max(1, Number((patch.max_transactions_per_day ?? current.max_transactions_per_day) || DEFAULT_AGENT_CONFIG.max_transactions_per_day)),
+      max_amount: Math.max(1, Number((patch.max_amount ?? current.max_amount) || defaultAgentConfig.max_amount)),
+      max_transactions_per_day: Math.max(1, Number((patch.max_transactions_per_day ?? current.max_transactions_per_day) || defaultAgentConfig.max_transactions_per_day)),
     };
     const nextConfigs = { ...agentConfigs, [portfolioId]: nextConfig };
     setAgentConfigs(nextConfigs);
@@ -1505,7 +1888,7 @@ export default function PicsouApp() {
           side: 'buy',
           quantity: Number(amount.toFixed(2)),
           order_type: 'market',
-          rationale: `Signal marché Picsou IA — ${signal.name} (${signal.symbol}). ${signal.rationale}`,
+          rationale: `Signal marché Robin IA — ${signal.name} (${signal.symbol}). ${signal.rationale}`,
         }),
       });
       const proposalPayload = await readJsonResponse<TradeProposalResponse>(proposalResponse);
@@ -1716,6 +2099,8 @@ export default function PicsouApp() {
       setAccessToken(COOKIE_SESSION_MARKER);
       setRefreshToken(COOKIE_SESSION_MARKER);
       setUser(payload.user ?? null);
+      setActiveApp('finance');
+      setAppView('dashboard');
       setMfaRequired(false);
       setMfaDeliveryHint(null);
       setMfaPreviewCode(null);
@@ -2177,7 +2562,9 @@ export default function PicsouApp() {
   const allPortfolios = buildAllPortfolios(
     dashboard,
     integrationConnections,
-    portfolioVisibility
+    portfolioVisibility,
+    portfolioActivation,
+    financeVirtualSimulation
   );
   const visiblePortfolios = allPortfolios.filter((portfolio) => portfolio.visible && portfolio.status === 'active');
   const realVisiblePortfolios = visiblePortfolios.filter((portfolio) => portfolio.type === 'integration');
@@ -2186,7 +2573,27 @@ export default function PicsouApp() {
   const evolution7d = formatPortfolioEvolution(aggregateAllHistory, 7);
   const evolution1m = formatPortfolioEvolution(aggregateAllHistory, 30);
   const selectedHistory = selectedPortfolio ? filterHistoryByScale(selectedPortfolio.history, portfolioHistoryScale) : [];
-  const duckSpeed = evolution24h.tone === 'up' ? 2.4 : evolution24h.tone === 'down' ? 7 : 3.8;
+  const goalPeriod = normalizeGoalPeriod(settingsForm.objectivePeriod);
+  const goalPeriodDays = GOAL_PERIOD_DAYS[goalPeriod];
+  const goalPeriodLabel = GOAL_PERIOD_LABELS[goalPeriod];
+  const goalTargetNet = toPositiveNumber(settingsForm.objectiveNetGain, 0);
+  const aggregatePoints = aggregateAllHistory
+    .map((point) => ({ ts: Date.parse(point.date), value: point.value }))
+    .filter((point) => Number.isFinite(point.ts))
+    .sort((a, b) => a.ts - b.ts);
+  const goalNowPoint = aggregatePoints[aggregatePoints.length - 1] ?? null;
+  const goalBasePoint = goalNowPoint
+    ? [...aggregatePoints].reverse().find((point) => point.ts <= (goalNowPoint.ts - goalPeriodDays * 24 * 60 * 60 * 1000)) ?? aggregatePoints[0] ?? null
+    : null;
+  const grossGainPeriod = goalNowPoint && goalBasePoint ? (goalNowPoint.value - goalBasePoint.value) : 0;
+  const estimatedNetGainPeriod = grossGainPeriod > 0 ? grossGainPeriod * (1 - ESTIMATED_TAX_RATE) : grossGainPeriod;
+  const goalProgress = goalTargetNet > 0 ? Math.max(0, Math.min(1, estimatedNetGainPeriod / goalTargetNet)) : 0;
+  const goalReached = goalTargetNet > 0 && estimatedNetGainPeriod >= goalTargetNet;
+  const goalProgressText = goalTargetNet > 0
+    ? `${estimatedNetGainPeriod >= 0 ? '+' : ''}${estimatedNetGainPeriod.toFixed(0)}€ / ${goalTargetNet.toFixed(0)}€`
+    : 'Objectif non défini';
+  const trendArrowSpeed = evolution24h.tone === 'up' ? 1.9 : evolution24h.tone === 'down' ? 3.2 : 2.5;
+  const trendArrowScale = evolution24h.tone === 'up' ? 1.08 : evolution24h.tone === 'down' ? 0.88 : 0.96;
   const portfolioEvolutionRows = visiblePortfolios.map((portfolio) => ({
     id: portfolio.id,
     label: portfolio.label,
@@ -2227,6 +2634,29 @@ export default function PicsouApp() {
   const decisionInsightKey = (insight: InsightItem) => `${insight.portfolio_id ?? 'none'}||${insight.title}||${insight.detail}||${insight.trend}`;
   const decisionInsights: InsightItem[] = [...suggestionInsights, ...aiDecisionInsights].filter((insight) => !resolvedDecisionKeys[decisionInsightKey(insight)]);
   const pendingDecisionCount = decisionInsights.length;
+  const pendingTipsterSignals = useMemo(
+    () => tipsterSignals.filter((signal) => signal.status === 'pending'),
+    [tipsterSignals]
+  );
+  const activeBettingBets = useMemo(
+    () => bettingStrategies
+      .flatMap((strategy) => strategy.recentBets
+        .filter((bet) => bet.result === 'pending')
+        .map((bet) => ({ ...bet, strategyName: strategy.name })))
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
+    [bettingStrategies]
+  );
+  const activeBettingExposure = useMemo(
+    () => activeBettingBets.reduce((sum, bet) => sum + bet.stake, 0),
+    [activeBettingBets]
+  );
+  const recentBettingBets = useMemo(
+    () => bettingStrategies
+      .flatMap((strategy) => strategy.recentBets.map((bet) => ({ ...bet, strategyName: strategy.name })))
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .slice(0, 10),
+    [bettingStrategies]
+  );
   const annualizedProjectionConfidence = projectionConfidenceFromHistory(aggregateAllHistory);
   const indicatorInsights: InsightItem[] = (dashboard?.key_indicators ?? []).map((item, index) => ({
     id: `indicator-${index}`,
@@ -2273,7 +2703,7 @@ export default function PicsouApp() {
   }
 
   function getAgentConfig(portfolioId: string): AgentQuotaConfig {
-    return agentConfigs[portfolioId] ?? DEFAULT_AGENT_CONFIG;
+    return agentConfigs[portfolioId] ?? defaultAgentConfig;
   }
 
   function countTodayOperations(portfolioId: string) {
@@ -2474,45 +2904,295 @@ export default function PicsouApp() {
     setAppliedDecisions((state) => state.filter((entry) => entry.id !== decisionId));
   }
 
+  function updateBettingStrategy(strategyId: string, patch: Partial<BettingStrategy>) {
+    setBettingStrategies((prev) => prev.map((s) => s.id === strategyId ? { ...s, ...patch } : s));
+    setSelectedStrategy((prev) => prev && prev.id === strategyId ? { ...prev, ...patch } : prev);
+  }
+
+  function simulateFinanceVirtualCycle() {
+    if (emergencyStopActive) {
+      return;
+    }
+    const virtualPortfolioId = dashboard?.virtual_portfolio?.portfolio_id;
+    if (!virtualPortfolioId || portfolioActivation[virtualPortfolioId] === false) {
+      return;
+    }
+    const cfg = getAgentConfig(virtualPortfolioId);
+    if (!cfg.enabled) {
+      return;
+    }
+
+    setFinanceVirtualSimulation((prev) => {
+      if (!prev) {
+        return prev;
+      }
+      const now = new Date();
+      const todayCount = prev.operations.filter((op) => {
+        const d = new Date(op.date);
+        return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+      }).length;
+      if (todayCount >= cfg.max_transactions_per_day) {
+        return prev;
+      }
+
+      const side: 'buy' | 'sell' = Math.random() > 0.45 ? 'buy' : 'sell';
+      const baseAmount = Math.max(8, Math.min(cfg.max_amount, prev.currentValue * 0.08));
+      const amount = Number((baseAmount * (0.7 + Math.random() * 0.7)).toFixed(2));
+      const move = (Math.random() * 0.05) - 0.018;
+      const delta = Number((amount * move).toFixed(2));
+      const nextValue = Math.max(20, Number((prev.currentValue + delta).toFixed(2)));
+      const assets = ['CW8', 'SP500', 'BTC', 'ETH', 'AIR'];
+      const asset = assets[Math.floor(Math.random() * assets.length)] ?? 'CW8';
+      const operation: Portfolio['operations'][number] = {
+        id: `finance-virtual-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        date: now.toISOString(),
+        side,
+        asset,
+        amount,
+        tax_state: null,
+        tax_intermediary: null,
+        intermediary: 'Robin IA (virtuel)',
+      };
+
+      if (hasAdminRole(user)) {
+        setAdminTransactionLog((prev) => [{
+          id: operation.id,
+          user_id: user?.id ?? 'system',
+          user_name: 'Robin IA (virtuel finance)',
+          portfolio_id: virtualPortfolioId,
+          asset,
+          side,
+          amount,
+          status: 'simulated',
+          created_at: now.toISOString(),
+        }, ...prev].slice(0, 100));
+      }
+
+      return {
+        currentValue: nextValue,
+        history: [...prev.history, { date: now.toISOString(), value: nextValue }].slice(-180),
+        operations: [operation, ...prev.operations].slice(0, 120),
+      };
+    });
+  }
+
+  function simulateVirtualBetCycle(sourceSignal?: TipsterSignal, options: { silent?: boolean } = {}) {
+    const virtual = bettingStrategies.find((s) => s.isVirtual && s.enabled);
+    if (!virtual) return;
+    const activeRiskProfile = (virtual.risk_profile ?? virtualRiskProfile) as VirtualRiskProfile;
+    const profile = VIRTUAL_RISK_PRESETS[activeRiskProfile];
+
+    const todayOps = virtual.recentBets.filter((bet) => {
+      const date = new Date(bet.date);
+      const now = new Date();
+      return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+    }).length;
+    if (todayOps >= virtual.max_bets_per_day) {
+      setBettingAlert(`Quota atteint sur le portefeuille tipster virtuel (${virtual.max_bets_per_day}/jour).`);
+      return;
+    }
+
+    const stake = Math.max(5, Math.min(virtual.max_stake, Number((virtual.bankroll * 0.14).toFixed(2))));
+    const win = Math.random() > (activeRiskProfile === 'high' ? 0.54 : activeRiskProfile === 'medium' ? 0.48 : 0.36);
+    const pct = win
+      ? (profile.minGainPct + Math.random() * (profile.maxGainPct - profile.minGainPct))
+      : -(activeRiskProfile === 'low' ? 0 : Math.random() * (profile.maxDrawdownPct / 100));
+    const profit = Number((stake * pct).toFixed(2));
+    const nextBankrollRaw = virtual.bankroll + profit;
+    const floor = activeRiskProfile === 'low' ? 100 : activeRiskProfile === 'medium' ? 70 : 30;
+    const nextBankroll = Math.max(floor, Number(nextBankrollRaw.toFixed(2)));
+    const nextHistory = [...virtual.history, { date: new Date().toISOString().slice(0, 10), value: nextBankroll }].slice(-80);
+    const nextBetsTotal = virtual.betsTotal + 1;
+    const nextBetsWon = virtual.betsWon + (win ? 1 : 0);
+    const nextRoi = Number((((nextBankroll - 100) / 100) * 100).toFixed(1));
+    const nextWinRate = nextBetsTotal > 0 ? Number(((nextBetsWon / nextBetsTotal) * 100).toFixed(0)) : 0;
+    const iaAction = sourceSignal
+      ? (sourceSignal.risk === 'faible' ? 'Achat IA' : sourceSignal.risk === 'eleve' ? 'Vente IA' : (Math.random() > 0.5 ? 'Achat IA' : 'Vente IA'))
+      : 'Simulation IA';
+    const bet: BetRecord = {
+      id: `vb-${Date.now()}`,
+      date: new Date().toISOString(),
+      sport: sourceSignal?.sport ?? 'other',
+      event: sourceSignal?.event ?? 'Simulation Tipster Virtuelle',
+      market: sourceSignal ? `${iaAction} · ${sourceSignal.market}` : profile.label,
+      bookmaker: 'Simulateur Robin',
+      odds: win ? Number((1.25 + Math.random() * 1.5).toFixed(2)) : 0,
+      stake,
+      result: win ? 'won' : 'lost',
+      profit,
+      strategyId: virtual.id,
+    };
+    updateBettingStrategy(virtual.id, {
+      bankroll: nextBankroll,
+      roi: nextRoi,
+      winRate: nextWinRate,
+      betsTotal: nextBetsTotal,
+      betsWon: nextBetsWon,
+      history: nextHistory,
+      recentBets: [bet, ...virtual.recentBets].slice(0, 80),
+      risk_profile: activeRiskProfile,
+    });
+    if (hasAdminRole(user)) {
+      setAdminTransactionLog((prev) => [{
+        id: bet.id,
+        user_id: user?.id ?? 'system',
+        user_name: 'Robin IA (virtuel betting)',
+        portfolio_id: virtual.id,
+        asset: bet.market,
+        side: win ? 'buy' : 'sell',
+        amount: bet.stake,
+        status: 'simulated',
+        created_at: bet.date,
+      }, ...prev].slice(0, 100));
+    }
+    if (!options.silent) {
+      setBettingAlert(`Simulation virtuelle exécutée (${profile.label}) : ${profit >= 0 ? '+' : ''}${profit.toFixed(2)} €.`);
+    }
+  }
+
+  function approveTipsterSignal(signal: TipsterSignal, source: 'manual' | 'autonomous' = 'manual') {
+    let wasPending = false;
+    setTipsterSignals((prev) => prev.map((s) => {
+      if (s.id !== signal.id) {
+        return s;
+      }
+      if (s.status !== 'pending') {
+        return s;
+      }
+      wasPending = true;
+      return { ...s, status: 'approved' };
+    }));
+    if (!wasPending) {
+      return;
+    }
+    const virtual = bettingStrategies.find((s) => s.isVirtual);
+    if (virtual?.enabled && virtual.ai_enabled) {
+      simulateVirtualBetCycle(signal);
+      if (source === 'autonomous') {
+        setBettingAlert(`🤖 Tipster autonome: ${signal.event} traité et simulé sur le portefeuille virtuel.`);
+      }
+      return;
+    }
+    setBettingAlert(`✅ Pari validé : ${signal.event} — ${signal.market}`);
+  }
+
+  function resetVirtualBettingPortfolio() {
+    const virtual = bettingStrategies.find((s) => s.isVirtual);
+    if (!virtual) return;
+    updateBettingStrategy(virtual.id, {
+      bankroll: 100,
+      roi: 0,
+      winRate: 0,
+      betsTotal: 0,
+      betsWon: 0,
+      history: [
+        { date: new Date().toISOString().slice(0, 10), value: 100 },
+      ],
+      recentBets: [],
+    });
+    setBettingAlert('Portefeuille virtuel Paris Sportifs réinitialisé à 100 € (historique simulé supprimé).');
+  }
+
+  useEffect(() => {
+    if (emergencyStopActive) {
+      return;
+    }
+    const virtual = bettingStrategies.find((s) => s.isVirtual);
+    if (!virtual || !virtual.enabled || !virtual.ai_enabled || virtual.mode === 'manual') {
+      return;
+    }
+    const pending = tipsterSignals.find((signal) => signal.status === 'pending');
+    if (!pending) {
+      return;
+    }
+    const todayOps = virtual.recentBets.filter((bet) => {
+      const date = new Date(bet.date);
+      const now = new Date();
+      return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+    }).length;
+    if (todayOps >= virtual.max_bets_per_day) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      approveTipsterSignal(pending, 'autonomous');
+    }, 12000);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [bettingStrategies, tipsterSignals, emergencyStopActive]);
+
+  useEffect(() => {
+    if (emergencyStopActive) {
+      return;
+    }
+    const virtual = bettingStrategies.find((s) => s.isVirtual);
+    if (!virtual || !virtual.enabled || !virtual.ai_enabled || virtual.mode !== 'autonomous') {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      simulateVirtualBetCycle(undefined, { silent: true });
+    }, 45000);
+    return () => window.clearInterval(timer);
+  }, [bettingStrategies, emergencyStopActive]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      simulateFinanceVirtualCycle();
+    }, 35000);
+    return () => window.clearInterval(timer);
+  }, [agentConfigs, portfolioActivation, emergencyStopActive, dashboard?.virtual_portfolio?.portfolio_id]);
+
+  useEffect(() => {
+    if (!bettingAlert) {
+      return;
+    }
+    const timer = window.setTimeout(() => setBettingAlert(null), 7000);
+    return () => window.clearTimeout(timer);
+  }, [bettingAlert]);
+
   return (
-    <main className="investShell">
+    <main className={`investShell appTheme-${activeApp}`}>
       <header className="heroTopbar">
         <div className="brandCluster">
           <div className="brandBadge" aria-hidden="true">
             <svg width="30" height="30" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-              {/* Water ripple */}
-              <ellipse cx="50" cy="88" rx="40" ry="10" fill="#bae6fd" opacity="0.7"/>
-              {/* Body */}
-              <ellipse cx="48" cy="64" rx="32" ry="26" fill="#FDE047"/>
-              {/* Wing highlight */}
-              <ellipse cx="44" cy="72" rx="18" ry="12" fill="#EAB308" opacity="0.6"/>
-              {/* Tail */}
-              <path d="M20 60 Q6 44 22 36 Q14 52 20 60Z" fill="#EAB308"/>
-              {/* Head */}
-              <circle cx="72" cy="42" r="20" fill="#FDE047"/>
-              {/* Eye */}
-              <circle cx="80" cy="36" r="5" fill="#111"/>
-              <circle cx="81.5" cy="34.5" r="1.8" fill="white"/>
-              {/* Beak upper */}
-              <path d="M88 40 L100 35 L100 42 Z" fill="#F97316"/>
-              {/* Beak lower */}
-              <path d="M88 42 L100 42 L100 47 Z" fill="#EA580C"/>
-              {/* Feet */}
-              <path d="M38 87 Q32 95 27 93 Q32 90 36 93 Q38 86 43 89Z" fill="#F97316"/>
-              <path d="M56 87 Q50 95 45 93 Q50 90 54 93 Q56 86 61 89Z" fill="#F97316"/>
-              {/* Hat */}
-              <rect x="57" y="16" width="30" height="20" rx="3" fill="#1e293b"/>
-              <rect x="52" y="33" width="40" height="7" rx="3.5" fill="#1e293b"/>
-              <rect x="57" y="24" width="30" height="7" fill="#FDE047"/>
+              <rect x="4" y="4" width="92" height="92" rx="30" fill="#fff5e9" stroke="#7a3412" strokeWidth="4"/>
+              <path d="M18 45 L36 18 L42 46 Z" fill="#f97316" stroke="#9a3412" strokeWidth="3" strokeLinejoin="round"/>
+              <path d="M82 45 L64 18 L58 46 Z" fill="#f97316" stroke="#9a3412" strokeWidth="3" strokeLinejoin="round"/>
+              <path d="M20 52 C20 34 34 24 50 24 C66 24 80 34 80 52 C80 72 66 84 50 84 C34 84 20 72 20 52 Z" fill="#fb923c"/>
+              <ellipse cx="50" cy="67" rx="22" ry="13" fill="#fff7ed"/>
+              <circle cx="40" cy="52" r="8" fill="#fff"/>
+              <circle cx="60" cy="52" r="8" fill="#fff"/>
+              <circle cx="41" cy="53" r="3.5" fill="#111827"/>
+              <circle cx="59" cy="53" r="3.5" fill="#111827"/>
+              <path d="M34 43 Q39 39 44 43" stroke="#7a3412" strokeWidth="3" strokeLinecap="round"/>
+              <path d="M56 43 Q61 39 66 43" stroke="#7a3412" strokeWidth="3" strokeLinecap="round"/>
+              <path d="M50 58 L56 65 L50 68 L44 65 Z" fill="#7a3412"/>
+              <path d="M44 71 Q50 76 56 71" stroke="#7a3412" strokeWidth="3" strokeLinecap="round"/>
+              <circle cx="71" cy="30" r="7" fill="#86efac" stroke="#166534" strokeWidth="2"/>
+              <path d="M68.5 30 L70.5 32.5 L74 27.5" stroke="#166534" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
           </div>
           <div className="brandInfo">
-            <strong>Picsou IA</strong>
-            <div className="duckPool" aria-hidden="true" style={{ ['--duck-speed' as string]: `${duckSpeed}s` }}>
-              <div className="duckPoolWater" />
-              <div className={`duckPoolDuck${evolution24h.tone === 'down' ? ' sad' : ''}`}>🦆</div>
-              <div className="duckPoolBill">€</div>
-              <div className="duckPoolBill">€</div>
+            <strong>
+              <span className="robinWord">ROBIN</span>
+              {user ? ` ${activeApp === 'betting' ? '• Paris Sportifs' : '• Finance'}` : ''}
+            </strong>
+            <div
+              className={`trendArrowTrack ${evolution24h.tone} ${goalReached ? 'achieved' : ''}`}
+              aria-hidden="true"
+              style={{
+                ['--trend-speed' as string]: `${trendArrowSpeed}s`,
+                ['--trend-scale' as string]: `${trendArrowScale}`,
+                ['--goal-progress' as string]: `${goalProgress}`,
+              } as Record<string, string>}
+            >
+              <div className="trendArrowLine" />
+              <div className="trendArrow">➤</div>
+              <div className="trendGoalTarget">🎯</div>
+              <div className="trendArrowGlow" />
             </div>
             <div className="topbarKpis">
               <button
@@ -2545,6 +3225,18 @@ export default function PicsouApp() {
                 type="button"
               >
                 Décisions: {pendingDecisionCount}
+              </button>
+              <button
+                className={goalReached ? 'smallPill selectedPortfolioPill up' : 'smallPill selectedPortfolioPill'}
+                onClick={() => {
+                  setAppView('settings');
+                  setActiveApp('finance');
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+                type="button"
+                title={`Objectif net ${goalPeriodLabel} (après taxe estimée ${Math.round(ESTIMATED_TAX_RATE * 100)}%)`}
+              >
+                {goalReached ? '🎯 Objectif atteint' : `🎯 ${goalProgressText} (${goalPeriodLabel})`}
               </button>
             </div>
           </div>
@@ -2607,33 +3299,32 @@ export default function PicsouApp() {
       {!user ? (
         <section className="landingCanvas">
           <article className="landingStoryCard">
-            <p className="sectionTag">Votre copilote investisseur</p>
-            <h1>Construisez un patrimoine plus serein avec un guide qui suit les marches, les cryptos et vos objectifs de vie.</h1>
+            <p className="sectionTag">Votre cockpit d analyse</p>
+            <h1>Robin vous accompagne avec une IA explicable pour agir avec discipline et clarté.</h1>
             <p className="bodyText">
-              Picsou IA melange tableau de bord, analyse de marche et accompagnement pedagogique. Vous voyez ce qui se
-              passe, pourquoi c est important et quelle decision merite vraiment votre attention.
+              Connectez-vous pour accéder à vos applications autorisées. Robin présente uniquement les espaces auxquels votre profil a droit.
             </p>
             <div className="marketPulseGrid">
               <div className="pulseCard">
-                <span>Actions</span>
-                <strong>Cap croissance</strong>
-                <p>Des indicateurs pour arbitrer entre coeur de portefeuille, ETF et themes sectoriels.</p>
+                <span>Accès protégé</span>
+                <strong>Connexion requise</strong>
+                <p>Les espaces applicatifs ne sont jamais visibles ni accessibles sans authentification.</p>
               </div>
               <div className="pulseCard">
-                <span>Crypto</span>
-                <strong>Risque sous controle</strong>
-                <p>Une place claire pour le crypto, sans laisser la volatilite dicter la strategie.</p>
+                <span>Profils & permissions</span>
+                <strong>Droits stricts</strong>
+                <p>Chaque utilisateur voit uniquement les sections autorisées par son profil et ses accès.</p>
               </div>
               <div className="pulseCard">
-                <span>Coaching</span>
-                <strong>Decision expliquee</strong>
-                <p>Chaque suggestion vous dit quoi faire, pourquoi et dans quel niveau de prudence.</p>
+                <span>IA explicable</span>
+                <strong>Décision justifiée</strong>
+                <p>Chaque recommandation affiche le contexte, la confiance et le risque associé.</p>
               </div>
             </div>
             <div className="coachStrip">
               <div>
                 <span>Mode accompagnement</span>
-                <strong>Du premier euro jusqu aux arbitrages plus avances.</strong>
+                <strong>Du premier euro jusqu aux arbitrages les plus avancés.</strong>
               </div>
               <div className="coachStats">
                 <span>Marche</span>
@@ -2780,54 +3471,92 @@ export default function PicsouApp() {
         </section>
       ) : (
         <section className="workspaceShell">
-          <nav className="workspaceNav">
-            <button className={appView === 'dashboard' && !portfolioDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-              Tableau de bord
+          {/* App switcher */}
+          <div className="appSwitcher">
+            <button
+              className={activeApp === 'finance' ? 'appSwitchBtn finance active' : 'appSwitchBtn finance'}
+              onClick={() => { setActiveApp('finance'); setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+              type="button"
+            >
+              🏦 Finance
             </button>
-            <button className={appView === 'portfolios' && !portfolioDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-              Portefeuilles
-            </button>
-            <button className={appView === 'settings' && !portfolioDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-              Configuration
+            <button
+              className={activeApp === 'betting' ? 'appSwitchBtn betting active' : 'appSwitchBtn betting'}
+              onClick={() => { setActiveApp('betting'); setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+              type="button"
+            >
+              ⚽ Paris Sportifs
             </button>
             {canAccessAdmin ? (
-              <button className={appView === 'admin' && !portfolioDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('admin'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                Admin
+              <button
+                className={appView === 'admin' ? 'appSwitchBtn admin active' : 'appSwitchBtn admin'}
+                onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('admin'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                type="button"
+              >
+                🛡️ Admin
               </button>
             ) : null}
+          </div>
+
+          <nav className="workspaceNav">
+            <button className={appView === 'dashboard' && !portfolioDetailOpen && !strategyDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+              Tableau de bord
+            </button>
+            {activeApp === 'finance' ? (
+              <button className={appView === 'portfolios' && !portfolioDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                Portefeuilles
+              </button>
+            ) : (
+              <button className={appView === 'strategies' && !strategyDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('strategies'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                Portefeuilles
+              </button>
+            )}
+            <button className={appView === 'settings' && !portfolioDetailOpen && !strategyDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+              Configuration
+            </button>
           </nav>
 
-          {!portfolioDetailOpen && appView === 'dashboard' ? (
+          {activeApp === 'finance' && !portfolioDetailOpen && appView === 'dashboard' ? (
             <section className="selectedPortfolioStrip">
               <span>Portefeuilles affichés:</span>
               <div className="selectedPortfolioList">
-                {allPortfolios.filter((portfolio) => portfolio.status === 'active').map((portfolio) => (
-                  <button className={portfolioVisibility[portfolio.id] !== false ? 'smallPill selectedPortfolioPill selected' : 'smallPill selectedPortfolioPill'} key={portfolio.id} onClick={() => void updatePortfolioVisibilityPreference(portfolio.id, portfolioVisibility[portfolio.id] === false)} type="button">
-                    {portfolio.label}
-                  </button>
-                ))}
+                {allPortfolios.filter((portfolio) => portfolio.status === 'active').map((portfolio) => {
+                  const cfg = getAgentConfig(portfolio.id);
+                  const modeClass = !cfg.enabled ? '' : cfg.mode === 'autopilot' ? 'modeAutopilot' : 'modeSupervised';
+                  return (
+                    <button className={`${portfolioVisibility[portfolio.id] !== false ? 'smallPill selectedPortfolioPill selected' : 'smallPill selectedPortfolioPill'} ${modeClass}`} key={portfolio.id} onClick={() => void updatePortfolioVisibilityPreference(portfolio.id, portfolioVisibility[portfolio.id] === false)} type="button">
+                      {portfolio.type === 'virtual' ? '⚗️ ' : ''}{portfolio.label}
+                    </button>
+                  );
+                })}
               </div>
               {allPortfolios.filter((p) => p.status === 'active').length === 0 ? (
-                <span className="helperText" style={{ fontSize: '.76rem' }}>Connectez un portefeuille dans Configuration → Intégrations</span>
+                <span className="helperText" style={{ fontSize: '.76rem' }}>Le portefeuille virtuel ⚗️ est disponible. Connectez une intégration pour suivre vos actifs réels.</span>
               ) : null}
             </section>
           ) : null}
 
-          {portfolioDetailOpen && selectedPortfolio ? (
+          {activeApp === 'finance' && portfolioDetailOpen && selectedPortfolio ? (
             <div style={{ display: 'grid', gap: 22 }}>
-              <button className="ghostButton" onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); window.scrollTo({ top: 0, behavior: 'smooth' }); }} style={{ width: 'fit-content' }} type="button">← Retour</button>
+              <nav className="breadcrumbNav">
+                <button className="breadcrumbBack" onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                  ← Retour
+                </button>
+                <span className="breadcrumbSep">/</span>
+                <span className="breadcrumbCurrent">{selectedPortfolio.label}</span>
+              </nav>
               {selectedPortfolio.type === 'virtual' ? (
                 <div className="infoPanel" style={{ background: 'var(--indigo-soft)', border: '1px solid var(--indigo-border)', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
                   <span style={{ fontSize: '1.5rem' }}>⚗️</span>
                   <div>
                     <strong>Bac à sable virtuel — 100 € simulés</strong>
-                    <p style={{ margin: '4px 0 0', fontSize: '.82rem' }}>Ce portefeuille est un espace d entraînement sans argent réel. Picsou IA teste ici ses stratégies avant de vous les proposer sur vos vrais portefeuilles. Utilisez-le pour évaluer ses performances et vous familiariser avec l application.</p>
+                    <p style={{ margin: '4px 0 0', fontSize: '.82rem' }}>Ce portefeuille est un espace d entraînement sans argent réel. Robin IA teste ici ses stratégies avant de vous les proposer sur vos vrais portefeuilles. Utilisez-le pour évaluer ses performances et vous familiariser avec l application.</p>
                     <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                       <span className="metaPill">Budget initial : {selectedPortfolio.budget.toFixed(0)} €</span>
                       <span className="metaPill">Valeur actuelle : {selectedPortfolio.current_value.toFixed(2)} €</span>
                       {selectedPortfolio.pnl !== 0 ? (
                         <span className={`metaPill ${selectedPortfolio.pnl >= 0 ? '' : ''}`} style={{ color: selectedPortfolio.pnl >= 0 ? 'var(--ok)' : 'var(--danger)', borderColor: selectedPortfolio.pnl >= 0 ? 'var(--ok-border)' : 'var(--danger-border)' }}>
-                          Perf. Picsou : {selectedPortfolio.pnl >= 0 ? '+' : ''}{selectedPortfolio.pnl.toFixed(2)} €
+                          Perf. Robin : {selectedPortfolio.pnl >= 0 ? '+' : ''}{selectedPortfolio.pnl.toFixed(2)} €
                         </span>
                       ) : null}
                     </div>
@@ -3004,7 +3733,11 @@ export default function PicsouApp() {
                 <div className="preferenceGroup">
                   {selectedPortfolio.type === 'virtual' ? (
                     <>
-                      <p className="helperText">Le portefeuille virtuel est toujours actif. Il sert de bac à sable pour Picsou IA. Vous pouvez choisir de l afficher ou non sur le cockpit.</p>
+                      <p className="helperText">Le portefeuille virtuel sert de bac à sable pour Robin IA. Vous pouvez l activer ou le désactiver, puis choisir de l afficher ou non sur le cockpit.</p>
+                      <label className="checkRow">
+                        <input type="checkbox" checked={selectedPortfolio.status === 'active'} onChange={(e) => void togglePortfolioActivation(selectedPortfolio, e.target.checked)} />
+                        <span>Activer le portefeuille virtuel</span>
+                      </label>
                       <label className="checkRow">
                         <input type="checkbox" checked={portfolioVisibility[selectedPortfolio.id] !== false} onChange={(e) => void updatePortfolioVisibilityPreference(selectedPortfolio.id, e.target.checked)} />
                         <span>Afficher sur le tableau de bord</span>
@@ -3034,8 +3767,46 @@ export default function PicsouApp() {
             </div>
           ) : null}
 
-          {!portfolioDetailOpen && appView === 'dashboard' ? (
+          {activeApp === 'finance' && !portfolioDetailOpen && appView === 'dashboard' ? (
             <>
+              <div className="heroKpiStrip">
+                <div className="heroKpiItem">
+                  <span>Patrimoine total</span>
+                  <strong>{visiblePortfolios.reduce((s, p) => s + (p.current_value || 0), 0).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €</strong>
+                  <small className={evolution24h.tone}>24h: {evolution24h.value}</small>
+                </div>
+                <div className="heroKpiItem">
+                  <span>Actifs réels</span>
+                  <strong>{realVisiblePortfolios.length}</strong>
+                  <small>portefeuilles actifs</small>
+                </div>
+                <div className="heroKpiItem">
+                  <span>ROI 7j</span>
+                  <strong className={evolution7d.tone}>{evolution7d.value}</strong>
+                  <small className={evolution1m.tone}>1m: {evolution1m.value}</small>
+                </div>
+                {decisionInsights.length > 0 ? (
+                  <div className="heroKpiItem">
+                    <span>Décisions IA</span>
+                    <strong style={{ color: 'var(--brand)' }}>{decisionInsights.length}</strong>
+                    <small>en attente de validation</small>
+                  </div>
+                ) : (
+                  <div className="heroKpiItem">
+                    <span>Agent IA</span>
+                    <strong style={{ color: 'var(--ok)' }}>{autopilotRunning ? '⚡ Auto' : '✔ OK'}</strong>
+                    <small>{autopilotRunning ? 'Pilote automatique actif' : 'Aucune action en attente'}</small>
+                  </div>
+                )}
+                {emergencyStopActive ? (
+                  <div className="heroKpiItem">
+                    <span style={{ color: 'var(--danger)' }}>KILL SWITCH</span>
+                    <strong style={{ color: 'var(--danger)' }}>🛑 ACTIF</strong>
+                    <small style={{ color: 'var(--danger)' }}>Toutes transactions bloquées</small>
+                  </div>
+                ) : null}
+              </div>
+
               <section className="portfolioHero">
                 <div className="portfolioIntro">
                   <p className="sectionTag">Cockpit investisseur</p>
@@ -3075,7 +3846,7 @@ export default function PicsouApp() {
                 </div>
               </section>
 
-              {/* Vigilance section */}
+              {/* Vigilance section — priority alert strip */}
               {(() => {
                 const vigilanceItems: Array<{ level: 'danger' | 'warn' | 'info'; message: string; action?: string; actionView?: 'portfolios' | 'settings' }> = [];
                 const realPortfolios = allPortfolios.filter((p) => p.type === 'integration');
@@ -3099,33 +3870,32 @@ export default function PicsouApp() {
                 if (decisionInsights.length > 5) {
                   vigilanceItems.push({ level: 'warn', message: `${decisionInsights.length} décisions IA en attente de validation. Traitez-les dans Portefeuilles.`, action: 'Portefeuilles', actionView: 'portfolios' });
                 }
-                const autopilotPortfolios = allPortfolios.filter((p) => (agentConfigs[p.id] ?? DEFAULT_AGENT_CONFIG).enabled && (agentConfigs[p.id] ?? DEFAULT_AGENT_CONFIG).mode === 'autopilot');
+                const autopilotPortfolios = allPortfolios.filter((p) => getAgentConfig(p.id).enabled && getAgentConfig(p.id).mode === 'autopilot');
                 if (autopilotPortfolios.length > 0) {
                   vigilanceItems.push({ level: 'info', message: `Pilote automatique actif sur ${autopilotPortfolios.map((p) => p.label).join(', ')}. Transactions exécutées dans les limites de vos quotas.` });
                 }
                 if (vigilanceItems.length === 0) {
                   return null;
                 }
+                const dominantLevel = vigilanceItems.some((i) => i.level === 'danger') ? 'danger' : vigilanceItems.some((i) => i.level === 'warn') ? 'warn' : 'info';
                 return (
-                  <section style={{ marginBottom: 18 }}>
-                    <div className="cardHeader" style={{ marginBottom: 10 }}>
-                      <h2>Points de vigilance</h2>
-                      <span>{vigilanceItems.length} point(s) à surveiller</span>
+                  <div className={`alertStrip ${dominantLevel === 'danger' ? '' : dominantLevel}`} role="alert">
+                    <div className="alertStripHeader">
+                      <span>{dominantLevel === 'danger' ? '🔴' : dominantLevel === 'warn' ? '🟡' : '🔵'}</span>
+                      Points de vigilance — {vigilanceItems.length} point(s)
                     </div>
-                    <div style={{ display: 'grid', gap: 8 }}>
-                      {vigilanceItems.map((item, idx) => (
-                        <div key={idx} className={`infoPanel ${item.level === 'danger' ? 'warn' : item.level === 'warn' ? '' : 'mutedPanel'}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 16px' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                            <span>{item.level === 'danger' ? '🔴' : item.level === 'warn' ? '🟡' : '🔵'}</span>
-                            <p style={{ margin: 0, fontSize: '.84rem' }}>{item.message}</p>
-                          </div>
-                          {item.action && item.actionView ? (
-                            <button className="ghostButton" style={{ whiteSpace: 'nowrap', fontSize: '.78rem' }} onClick={() => { setAppView(item.actionView!); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">{item.action} →</button>
-                          ) : null}
-                        </div>
-                      ))}
-                    </div>
-                  </section>
+                    {vigilanceItems.map((item, idx) => (
+                      <div key={idx} className="alertItem">
+                        <span className="alertItemText">{item.message}</span>
+                        <span className={`alertItemLevel ${item.level === 'danger' ? 'danger' : item.level === 'warn' ? 'warn' : 'info'}`}>
+                          {item.level === 'danger' ? 'Critique' : item.level === 'warn' ? 'Attention' : 'Info'}
+                        </span>
+                        {item.action && item.actionView ? (
+                          <button className="ghostButton" style={{ whiteSpace: 'nowrap', fontSize: '.75rem', padding: '6px 11px' }} onClick={() => { setAppView(item.actionView!); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">{item.action} →</button>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
                 );
               })()}
 
@@ -3134,37 +3904,38 @@ export default function PicsouApp() {
                 <>
                   {decisionInsights.length > 0 ? (
                     <section style={{ marginBottom: 18 }}>
-                      <div className="cardHeader" style={{ marginBottom: 10 }}>
-                        <h2>Décisions prioritaires</h2>
-                        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                          <span>Cliquez puis confirmez ou refusez</span>
-                          <button className="ghostButton" style={{ fontSize: '.78rem' }} onClick={() => { setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Voir tout dans Portefeuilles →</button>
-                        </div>
-                      </div>
-                      <div className="suggestionGrid">
-                        {decisionInsights.slice(0, 4).map((decision) => (
-                          <div className="suggestionCard" key={decision.id}>
-                            <button
-                              className="compactRow compactRowButton"
-                              onClick={() => {
-                                setSelectedInsight(decision);
-                                window.scrollTo({ top: 120, behavior: 'smooth' });
-                              }}
-                              type="button"
-                            >
-                              <span>{decision.title}</span>
-                              <strong>{decision.value}</strong>
-                            </button>
-                            <p>{decision.detail}</p>
-                            {decision.portfolio_label ? <p className="helperText">Portefeuille: {decision.portfolio_label}</p> : null}
-                            <small className={trendTone(decision.trend)}>{decision.trend}</small>
-                            <div className="providerActions fullWidth" style={{ marginTop: 8 }}>
-                              <button className="secondaryButton" disabled={decisionActionLoading} onClick={() => void runDecisionAction(decision, true)} type="button">Confirmer</button>
-                              <button className="ghostButton" disabled={decisionActionLoading} onClick={() => void runDecisionAction(decision, false)} type="button">Refuser</button>
-                            </div>
+                      <article className="featureCard" style={{ borderColor: 'var(--brand-border)', background: 'linear-gradient(135deg,var(--brand-soft) 0%,#fff 60%)' }}>
+                        <div className="decisionQueueHeader">
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <h2>🤖 Décisions IA en attente</h2>
+                            <span className="decisionQueueBadge">{decisionInsights.length}</span>
                           </div>
-                        ))}
-                      </div>
+                          <button className="ghostButton" style={{ fontSize: '.78rem' }} onClick={() => { setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Tout voir →</button>
+                        </div>
+                        <div className="decisionQueue">
+                          {decisionInsights.slice(0, 3).map((decision) => {
+                            const side = inferDecisionSide(decision);
+                            return (
+                              <div className={`decisionCard ${side}`} key={decision.id}>
+                                <div className="decisionCardTop">
+                                  <span className="decisionSide">{side === 'buy' ? 'ACHAT' : side === 'sell' ? 'VENTE' : 'HOLD'}</span>
+                                  <span className="decisionAsset">{inferDecisionAsset(decision)}</span>
+                                  {decision.portfolio_label ? <span className="metaPill" style={{ fontSize: '.68rem' }}>{decision.portfolio_label}</span> : null}
+                                  <span className="decisionAmount">{decision.value}</span>
+                                </div>
+                                <p className="decisionRationale">{decision.detail}</p>
+                                <div className="decisionActions">
+                                  <button className="approveButton" disabled={decisionActionLoading} onClick={() => void runDecisionAction(decision, true)} type="button">✓ Approuver</button>
+                                  <button className="rejectButton" disabled={decisionActionLoading} onClick={() => void runDecisionAction(decision, false)} type="button">✕ Refuser</button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                          {decisionInsights.length > 3 ? (
+                            <p className="helperText" style={{ textAlign: 'center', padding: '8px 0' }}>+{decisionInsights.length - 3} autre(s) dans <button className="textLinkButton" onClick={() => { setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Portefeuilles</button></p>
+                          ) : null}
+                        </div>
+                      </article>
                     </section>
                   ) : null}
 
@@ -3200,22 +3971,34 @@ export default function PicsouApp() {
                       </div>
                     </div>
                     <div className="portfolioDeck">
-                      {visiblePortfolios.map((p) => (
-                        <button key={p.id} className="portfolioCard" onClick={() => { setSelectedPortfolio(p); setPortfolioDetailOpen(true); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                          <div className="pCardHeader">
-                            <span className="agentBadge">{p.agent_name}</span>
-                            <span className="metaPill">{p.type === 'virtual' ? '⚗️ Virtuel' : 'Intégration'}</span>
-                          </div>
-                          <strong className="pCardLabel">{p.label}</strong>
-                          <div className="pCardValue">{p.current_value > 0 ? `${p.current_value.toFixed(2)} €` : '–'}</div>
-                          <div className={`pCardPnl${p.pnl >= 0 ? ' up' : ' down'}`}>{p.pnl !== 0 ? `${p.pnl >= 0 ? '+' : ''}${p.pnl.toFixed(2)} € · ROI ${p.roi >= 0 ? '+' : ''}${p.roi.toFixed(1)}%` : 'Synchronisez pour le ROI'}</div>
-                          <div className="pCardSparkline"><Sparkline data={p.history.slice(-30)} color={p.pnl >= 0 ? 'var(--ok)' : 'var(--danger)'} /></div>
-                          {p.ai_advice[0] ? <p className="pCardAdvice">{p.ai_advice[0].text}</p> : null}
-                          <div className="pCardFooter">Voir le détail →</div>
-                        </button>
-                      ))}
+                      {visiblePortfolios.map((p) => {
+                        const cfg = getAgentConfig(p.id);
+                        const aiMode = p.type === 'virtual' ? 'supervised' : !cfg.enabled ? 'manual' : cfg.mode === 'autopilot' ? 'autopilot' : 'supervised';
+                        const aiModeLabel = aiMode === 'autopilot' ? '🤖 Auto' : aiMode === 'supervised' ? '👁 Supervisé' : '🖐 Manuel';
+                        return (
+                          <button key={p.id} className={`portfolioCard${p.type === 'virtual' ? ' virtualCard' : ''} mode${aiMode.charAt(0).toUpperCase() + aiMode.slice(1)}`} onClick={() => { setSelectedPortfolio(p); setPortfolioDetailOpen(true); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                            <div className="pCardHeader">
+                              <span className="agentBadge">{p.agent_name}</span>
+                              <span className="metaPill">{p.type === 'virtual' ? '⚗️ Virtuel' : 'Intégration'}</span>
+                            </div>
+                            <strong className="pCardLabel">{p.label}</strong>
+                            <div className="pCardValue">{p.current_value > 0 ? `${p.current_value.toFixed(2)} €` : '–'}</div>
+                            <div className={`pCardPnl${p.pnl >= 0 ? ' up' : ' down'}`}>{p.pnl !== 0 ? `${p.pnl >= 0 ? '+' : ''}${p.pnl.toFixed(2)} € · ROI ${p.roi >= 0 ? '+' : ''}${p.roi.toFixed(1)}%` : 'Synchronisez pour le ROI'}</div>
+                            <div className="pCardSparkline"><Sparkline data={p.history.slice(-30)} color={p.pnl >= 0 ? 'var(--ok)' : 'var(--danger)'} /></div>
+                            {p.ai_advice[0] ? <p className="pCardAdvice">{p.ai_advice[0].text}</p> : null}
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
+                              <span className={`aiModeBadge ${aiMode}`}>{aiModeLabel}</span>
+                              <span className="pCardFooter">Voir le détail →</span>
+                            </div>
+                          </button>
+                        );
+                      })}
                       {visiblePortfolios.length === 0 ? (
-                        <div className="infoPanel mutedPanel" style={{ gridColumn: '1/-1' }}><strong>Aucun portefeuille actif</strong><p>Activez un connecteur dans Configuration → Intégrations.</p></div>
+                        <div className="emptyState" style={{ gridColumn: '1/-1' }}>
+                          <span className="emptyStateIcon">📂</span>
+                          <p className="emptyStateTitle">Aucun portefeuille actif</p>
+                          <p className="emptyStateText">Activez un connecteur dans Configuration → Intégrations ou utilisez le portefeuille virtuel ⚗️.</p>
+                        </div>
                       ) : null}
                     </div>
                   </section>
@@ -3337,7 +4120,7 @@ export default function PicsouApp() {
                               {/* Confidence bar */}
                               <div>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3, fontSize: '.72rem', color: 'var(--muted)' }}>
-                                  <span>Indice de confiance Picsou</span>
+                                  <span>Indice de confiance Robin IA</span>
                                   <strong style={{ color: signal.confidence >= 4 ? 'var(--ok)' : signal.confidence === 3 ? 'var(--gold)' : 'var(--warn)' }}>
                                     {['●', '●', '●', '●', '●'].map((dot, i) => (
                                       <span key={i} style={{ opacity: i < signal.confidence ? 1 : 0.2 }}>{dot}</span>
@@ -3485,7 +4268,7 @@ export default function PicsouApp() {
             </>
           ) : null}
 
-          {appView === 'portfolios' ? (
+          {activeApp === 'finance' && appView === 'portfolios' ? (
             <section style={{ display: 'grid', gap: 22 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
                 <div>
@@ -3505,7 +4288,7 @@ export default function PicsouApp() {
               ) : (
                 <div style={{ display: 'grid', gap: 24 }}>
                   {allPortfolios.map((p) => {
-                    const cfg = agentConfigs[p.id] ?? DEFAULT_AGENT_CONFIG;
+                    const cfg = getAgentConfig(p.id);
                     const portfolioDecisions = decisionInsights.filter((d) => d.portfolio_id === p.id);
                     return (
                       <article key={p.id} className="featureCard" style={{ display: 'grid', gap: 18 }}>
@@ -3518,7 +4301,11 @@ export default function PicsouApp() {
                               <span className={statusBadgeClass(p.status)}><span className={statusDotClass(p.status)} />{statusLabel(p.status)}</span>
                             </div>
                             <h2 style={{ margin: 0, fontSize: '1.25rem' }}>{p.label}</h2>
-                            {p.last_sync_at ? <p style={{ margin: '4px 0 0', fontSize: '.76rem', color: 'var(--muted)' }}>Dernière sync: {new Date(p.last_sync_at).toLocaleString('fr-FR')}</p> : <p style={{ margin: '4px 0 0', fontSize: '.76rem', color: 'var(--warn)' }}>Jamais synchronisé</p>}
+                            {p.type === 'virtual'
+                              ? <p style={{ margin: '4px 0 0', fontSize: '.76rem', color: 'var(--indigo)' }}>Simulation IA locale continue</p>
+                              : p.last_sync_at
+                                ? <p style={{ margin: '4px 0 0', fontSize: '.76rem', color: 'var(--muted)' }}>Dernière sync: {new Date(p.last_sync_at).toLocaleString('fr-FR')}</p>
+                                : <p style={{ margin: '4px 0 0', fontSize: '.76rem', color: 'var(--warn)' }}>Jamais synchronisé</p>}
                           </div>
                           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
                             <strong style={{ fontSize: '1.5rem' }}>{p.current_value > 0 ? `${p.current_value.toFixed(2)} €` : '–'}</strong>
@@ -3565,76 +4352,102 @@ export default function PicsouApp() {
                           <p className="helperText" style={{ fontSize: '.82rem' }}>Aucune proposition IA en attente pour ce portefeuille.</p>
                         )}
 
-                        {/* Agent IA configuration */}
-                        <div style={{ background: 'var(--surface-3)', borderRadius: 'var(--card-radius-sm)', padding: '14px 16px', display: 'grid', gap: 12 }}>
-                          <div className="cardHeader" style={{ margin: 0 }}>
-                            <h3 style={{ margin: 0, fontSize: '.95rem' }}>Pilotage Agent IA</h3>
-                            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                              <label className="checkRow" style={{ margin: 0 }}>
-                                <input type="checkbox" checked={cfg.enabled} onChange={(e) => void updateAgentConfig(p.id, { enabled: e.target.checked })} />
-                                <span style={{ fontSize: '.78rem' }}>Agent activé</span>
-                              </label>
+                        {/* Agent IA configuration — redesigned with aiModeSelector */}
+                        <div style={{ background: 'var(--surface-2)', borderRadius: 'var(--card-radius-sm)', border: 'var(--card-border)', padding: '14px 16px', display: 'grid', gap: 14 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <h3 style={{ margin: 0, fontSize: '.95rem' }}>Pilotage Agent IA</h3>
+                              {cfg.enabled ? (
+                                <span className={`aiModeBadge ${cfg.mode === 'autopilot' ? 'autopilot' : 'supervised'}`}>
+                                  {cfg.mode === 'autopilot' ? '🤖 Autopilote' : '👁 Supervisé'}
+                                </span>
+                              ) : (
+                                <span className="aiModeBadge manual">🖐 Manuel</span>
+                              )}
                             </div>
+                            <label className="checkRow" style={{ margin: 0, padding: '5px 10px', fontSize: '.78rem' }}>
+                              <input type="checkbox" checked={cfg.enabled} onChange={(e) => void updateAgentConfig(p.id, { enabled: e.target.checked })} />
+                              <span>Agent activé</span>
+                            </label>
                           </div>
+
                           {cfg.enabled ? (
-                            <div style={{ display: 'grid', gap: 10 }}>
+                            <div style={{ display: 'grid', gap: 13 }}>
+                              {/* Mode selector — 3-option visual */}
                               <div>
-                                <p style={{ margin: '0 0 6px', fontSize: '.78rem', color: 'var(--muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em' }}>Mode de pilotage</p>
-                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                <p style={{ margin: '0 0 8px', fontSize: '.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>Mode de pilotage</p>
+                                <div className="aiModeSelector">
                                   <button
-                                    className={cfg.mode === 'manual' ? 'tagButton active' : 'tagButton'}
+                                    className={`aiModeOption${cfg.mode === 'manual' ? ' active manual' : ''}`}
                                     onClick={() => void updateAgentConfig(p.id, { mode: 'manual' })}
                                     type="button"
                                   >
-                                    ✋ Mode manuel — validation humaine requise
+                                    <span>🖐</span>
+                                    <strong>Manuel</strong>
+                                    <small>Vous validez chaque ordre</small>
                                   </button>
                                   <button
-                                    className={cfg.mode === 'autopilot' ? 'tagButton active' : 'tagButton'}
+                                    className={`aiModeOption${cfg.mode !== 'manual' && cfg.mode !== 'autopilot' ? ' active supervised' : ''}`}
+                                    onClick={() => void updateAgentConfig(p.id, { mode: 'manual' })}
+                                    type="button"
+                                  >
+                                    <span>👁</span>
+                                    <strong>Supervisé</strong>
+                                    <small>IA propose, vous approuvez</small>
+                                  </button>
+                                  <button
+                                    className={`aiModeOption${cfg.mode === 'autopilot' ? ' active autopilot' : ''}`}
                                     onClick={() => void updateAgentConfig(p.id, { mode: 'autopilot' })}
                                     type="button"
-                                    style={cfg.mode === 'autopilot' ? { borderColor: 'var(--warn)', color: 'var(--warn)' } : {}}
                                   >
-                                    ⚡ Pilote automatique — IA exécute seule
+                                    <span>🤖</span>
+                                    <strong>Autopilote</strong>
+                                    <small>IA exécute dans vos limites</small>
                                   </button>
                                 </div>
                                 {cfg.mode === 'autopilot' ? (
-                                  <div className="infoPanel" style={{ marginTop: 8, padding: '8px 12px', background: 'var(--warn-soft)', border: '1px solid var(--warn-border)' }}>
-                                    <p style={{ margin: 0, fontSize: '.78rem' }}>⚠️ En pilote automatique, l agent IA exécute les transactions dans vos limites sans validation. Vérifiez vos quotas.</p>
+                                  <div className="infoPanel" style={{ marginTop: 8, padding: '9px 12px', background: 'var(--warn-soft)', border: '1px solid var(--warn-border)' }}>
+                                    <p style={{ margin: 0, fontSize: '.78rem', color: '#92400e' }}>⚠️ En autopilote, l agent IA exécute les transactions sans validation. Vos quotas ci-dessous constituent le seul garde-fou.</p>
                                   </div>
-                                ) : (
-                                  <p style={{ margin: '6px 0 0', fontSize: '.75rem', color: 'var(--muted)' }}>Chaque transaction vous sera proposée avant exécution.</p>
-                                )}
+                                ) : null}
                               </div>
-                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                                <label style={{ fontSize: '.82rem' }}>
-                                  Montant max / transaction (€)
-                                  <input
-                                    type="number" min={1}
-                                    value={cfg.max_amount}
-                                    onChange={(e) => void updateAgentConfig(p.id, { max_amount: Number(e.target.value) || 1 })}
-                                    style={{ marginTop: 4 }}
-                                  />
-                                </label>
-                                <label style={{ fontSize: '.82rem' }}>
-                                  Max transactions / jour
-                                  <input
-                                    type="number" min={1}
-                                    value={cfg.max_transactions_per_day}
-                                    onChange={(e) => void updateAgentConfig(p.id, { max_transactions_per_day: Number(e.target.value) || 1 })}
-                                    style={{ marginTop: 4 }}
-                                  />
-                                </label>
-                              </div>
+
+                              {/* Quotas */}
                               <div>
-                                <p style={{ margin: '0 0 6px', fontSize: '.78rem', color: 'var(--muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em' }}>Politique par domaine</p>
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: 8 }}>
+                                <p style={{ margin: '0 0 8px', fontSize: '.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>Limites & quotas</p>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                                  <label style={{ fontSize: '.82rem', display: 'grid', gap: 5 }}>
+                                    <span style={{ fontSize: '.72rem', textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)', fontWeight: 700 }}>Montant max / ordre (€)</span>
+                                    <input
+                                      type="number" min={1}
+                                      value={cfg.max_amount}
+                                      onChange={(e) => void updateAgentConfig(p.id, { max_amount: Number(e.target.value) || 1 })}
+                                      style={{ padding: '9px 11px', borderRadius: 10, border: '1.5px solid var(--border-md)', background: 'var(--surface)', fontSize: '.86rem' }}
+                                    />
+                                  </label>
+                                  <label style={{ fontSize: '.82rem', display: 'grid', gap: 5 }}>
+                                    <span style={{ fontSize: '.72rem', textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)', fontWeight: 700 }}>Max ordres / jour</span>
+                                    <input
+                                      type="number" min={1}
+                                      value={cfg.max_transactions_per_day}
+                                      onChange={(e) => void updateAgentConfig(p.id, { max_transactions_per_day: Number(e.target.value) || 1 })}
+                                      style={{ padding: '9px 11px', borderRadius: 10, border: '1.5px solid var(--border-md)', background: 'var(--surface)', fontSize: '.86rem' }}
+                                    />
+                                  </label>
+                                </div>
+                              </div>
+
+                              {/* Domain policies */}
+                              <div>
+                                <p style={{ margin: '0 0 8px', fontSize: '.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>Politique par classe d'actif</p>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(148px,1fr))', gap: 8 }}>
                                   {(['crypto', 'actions', 'etf', 'obligations'] as AgentDomain[]).map((domain) => (
-                                    <label key={`${p.id}-${domain}`} style={{ fontSize: '.8rem' }}>
-                                      {domain.charAt(0).toUpperCase() + domain.slice(1)}
+                                    <label key={`${p.id}-${domain}`} style={{ fontSize: '.78rem', display: 'grid', gap: 4 }}>
+                                      <span style={{ color: 'var(--muted)', fontWeight: 600, textTransform: 'capitalize' }}>{domain}</span>
                                       <select
                                         value={cfg.domain_policy[domain]}
                                         onChange={(e) => void updateAgentConfig(p.id, { domain_policy: { ...cfg.domain_policy, [domain]: e.target.value as AgentDomainPolicy } })}
-                                        style={{ marginTop: 4 }}
+                                        style={{ padding: '7px 10px', borderRadius: 8, border: '1.5px solid var(--border-md)', background: 'var(--surface)', fontSize: '.82rem' }}
                                       >
                                         <option value="prefer">Préférence</option>
                                         <option value="allow">Autoriser</option>
@@ -3672,7 +4485,7 @@ export default function PicsouApp() {
             </section>
           ) : null}
 
-          {appView === 'settings' ? (
+          {activeApp === 'finance' && appView === 'settings' ? (
             <section className="workspaceGrid settingsGrid">
               <article className="featureCard settingsIntroCard">
                 <div className="cardHeader">
@@ -3767,6 +4580,26 @@ export default function PicsouApp() {
                       <option value="direct">Direct</option>
                     </select>
                   </label>
+                  <label>
+                    Objectif net (après taxes) en €
+                    <input
+                      value={settingsForm.objectiveNetGain}
+                      onChange={(event) => setSettingsForm((state) => ({ ...state, objectiveNetGain: event.target.value }))}
+                      type="number"
+                      min={0}
+                      step="10"
+                    />
+                  </label>
+                  <label>
+                    Période de l objectif
+                    <select value={settingsForm.objectivePeriod} onChange={(event) => setSettingsForm((state) => ({ ...state, objectivePeriod: normalizeGoalPeriod(event.target.value) }))}>
+                      <option value="7d">7 jours</option>
+                      <option value="1m">1 mois</option>
+                      <option value="3m">3 mois</option>
+                      <option value="1y">1 an</option>
+                    </select>
+                  </label>
+                  <p className="helperText">La flèche du bandeau rejoint la cible 🎯 quand cet objectif net (gain après taxation estimée à 30%) est atteint sur la période choisie.</p>
                   <p className="helperText">Prefill navigateur: {clientContext.country || clientContext.locale} · {clientContext.time_zone}</p>
                   <button className="primaryButton" disabled={submitting} type="submit">
                     {submitting ? 'Enregistrement...' : 'Sauvegarder ma configuration'}
@@ -3802,7 +4635,7 @@ export default function PicsouApp() {
                   <div style={{ display: 'grid', gap: 12 }}>
                     <div className="infoPanel" style={{ background: 'rgba(250,200,40,.08)', border: '1px solid rgba(250,200,40,.3)', borderRadius: 8, padding: '10px 14px' }}>
                       <strong>Actif par défaut — aucune intégration requise</strong>
-                      <p style={{ margin: '4px 0 0', fontSize: '.8rem' }}>Picsou IA dispose d'un portefeuille bac à sable de <strong>100 €</strong> pour tester ses stratégies sans risque. Il est toujours disponible, même sans connecteur bancaire.</p>
+                      <p style={{ margin: '4px 0 0', fontSize: '.8rem' }}>Robin IA dispose d'un portefeuille bac à sable de <strong>100 €</strong> pour tester ses stratégies sans risque. Il est toujours disponible, même sans connecteur bancaire.</p>
                     </div>
                     {(() => {
                       const vp = allPortfolios.find((p) => p.type === 'virtual');
@@ -4155,7 +4988,7 @@ export default function PicsouApp() {
                                       src={mfaQrDataUrl}
                                       width={180}
                                     />
-                                    <a className="textLinkButton" href={mfaQrDataUrl} target="_blank" rel="noreferrer">Ouvrir le QR code en plein ecran</a>
+                                    <a className="textLinkButton" href={mfaQrDataUrl} target="_blank" rel="noopener noreferrer">Ouvrir le QR code en plein ecran</a>
                                   </>
                                 ) : (
                                   <p className="helperText">Generation du QR code en cours...</p>
@@ -4232,24 +5065,462 @@ export default function PicsouApp() {
             </section>
           ) : null}
 
+          {activeApp === 'betting' && !strategyDetailOpen && appView === 'dashboard' ? (
+            <>
+              {/* === BETTING COCKPIT — Hero KPI strip === */}
+              <div className="heroKpiStrip">
+                {(() => {
+                  const totalBankroll = bettingStrategies.reduce((s, st) => s + st.bankroll, 0);
+                  const avgRoi = bettingStrategies.length > 0 ? bettingStrategies.reduce((s, st) => s + st.roi, 0) / bettingStrategies.length : 0;
+                  const totalBets = bettingStrategies.reduce((s, st) => s + st.betsTotal, 0);
+                  const totalWon = bettingStrategies.reduce((s, st) => s + st.betsWon, 0);
+                  const globalWinRate = totalBets > 0 ? (totalWon / totalBets) * 100 : 0;
+                  const activeStrategies = bettingStrategies.filter((strategy) => strategy.enabled).length;
+                  return (
+                    <>
+                      <div className="heroKpiItem">
+                        <span>Bankroll totale</span>
+                        <strong>{totalBankroll.toLocaleString('fr-FR')} €</strong>
+                        <small style={{ color: 'var(--ok)' }}>{activeStrategies} stratégie(s) active(s)</small>
+                      </div>
+                      <div className="heroKpiItem">
+                        <span>ROI moyen</span>
+                        <strong className="up">+{avgRoi.toFixed(1)} %</strong>
+                        <small>sur toutes les stratégies</small>
+                      </div>
+                      <div className="heroKpiItem">
+                        <span>Win Rate global</span>
+                        <strong>{globalWinRate.toFixed(0)} %</strong>
+                        <small>{totalWon} / {totalBets} paris</small>
+                      </div>
+                      <div className="heroKpiItem">
+                        <span>Tipster IA</span>
+                        <strong style={{ color: 'var(--brand)' }}>{pendingTipsterSignals.length}</strong>
+                        <small>signaux en attente</small>
+                      </div>
+                      {emergencyStopActive ? (
+                        <div className="heroKpiItem" style={{ borderColor: 'var(--danger-border)' }}>
+                          <span>Kill Switch</span>
+                          <strong style={{ color: 'var(--danger)' }}>⚠️ ACTIF</strong>
+                          <small style={{ color: 'var(--danger)' }}>Paris bloqués</small>
+                        </div>
+                      ) : null}
+                    </>
+                  );
+                })()}
+              </div>
+
+              {/* === Betting alerts === */}
+              {emergencyStopActive ? (
+                <div className="alertStrip" style={{ background: 'var(--danger-soft)', border: '1px solid var(--danger-border)' }}>
+                  <div className="alertItem" style={{ color: 'var(--danger)' }}>
+                    <strong>🛑 Arrêt d urgence actif</strong> — Tous les paris automatiques sont bloqués.
+                  </div>
+                </div>
+              ) : null}
+              {bettingAlert ? (
+                <div className="alertStrip">
+                  <div className="alertItem">{bettingAlert}</div>
+                </div>
+              ) : null}
+
+              {/* === Tipster decision queue === */}
+              {pendingTipsterSignals.length > 0 ? (
+                <div className="decisionQueue">
+                  <div className="decisionQueueHeader">
+                    <h2 style={{ margin: 0, fontSize: '1rem' }}>🎯 Recommandations Tipster IA</h2>
+                    <span className="smallPill">{pendingTipsterSignals.length} en attente</span>
+                  </div>
+                  {pendingTipsterSignals.map((signal) => (
+                    <div className="decisionCard" key={signal.id}>
+                      <div className="decisionCardMeta">
+                        <span className="decisionCardBadge">{sportEmoji(signal.sport)} {signal.sport === 'football' ? 'Football' : signal.sport === 'tennis' ? 'Tennis' : signal.sport === 'basketball' ? 'Basketball' : signal.sport === 'rugby' ? 'Rugby' : 'Sport'}</span>
+                        <span className="decisionCardBadge" style={{ background: signal.risk === 'faible' ? 'var(--ok-soft)' : signal.risk === 'modere' ? 'var(--warn-soft)' : 'var(--danger-soft)', color: signal.risk === 'faible' ? 'var(--ok)' : signal.risk === 'modere' ? 'var(--warn)' : 'var(--danger)' }}>Risque {signal.risk}</span>
+                        <span className="decisionCardBadge" style={{ background: 'var(--brand-soft)', color: 'var(--brand)' }}>Value +{signal.value_pct.toFixed(1)}%</span>
+                        <span className="decisionCardBadge">📚 {signal.bookmaker}</span>
+                      </div>
+                      <strong style={{ fontSize: '.95rem' }}>{signal.event}</strong>
+                      <p style={{ margin: '4px 0 2px', fontSize: '.82rem', color: 'var(--muted)' }}>{signal.market} — Cote <strong style={{ color: 'var(--text)' }}>{signal.odds}</strong></p>
+                      <p style={{ margin: 0, fontSize: '.8rem', color: 'var(--text-2)' }}>{signal.rationale}</p>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+                        <div style={{ display: 'flex', gap: 3 }}>{Array.from({ length: 5 }).map((_, i) => (<span key={i} style={{ width: 7, height: 7, borderRadius: '50%', background: i < signal.confidence ? 'var(--brand)' : 'var(--border-md)' }} />))}</div>
+                        <span style={{ fontSize: '.72rem', color: 'var(--muted)' }}>Confiance {signal.confidence}/5</span>
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                        <button
+                          className="approveButton"
+                          disabled={emergencyStopActive}
+                          onClick={() => {
+                            approveTipsterSignal(signal, 'manual');
+                          }}
+                          type="button"
+                        >
+                          ✓ Valider le pari
+                        </button>
+                        <button
+                          className="rejectButton"
+                          onClick={() => {
+                            setTipsterSignals((prev) => prev.map((s) => s.id === signal.id ? { ...s, status: 'rejected' } : s));
+                          }}
+                          type="button"
+                        >
+                          ✕ Ignorer
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              {/* === Active bets list === */}
+              <article className="featureCard" style={{ gridColumn: '1 / -1' }}>
+                <div className="cardHeader">
+                  <h2>Paris actifs</h2>
+                  <span>{activeBettingBets.length} en cours · Exposition {activeBettingExposure.toFixed(0)} €</span>
+                </div>
+                {activeBettingBets.length === 0 ? (
+                  <div className="infoPanel mutedPanel">
+                    <strong>Aucun pari actif</strong>
+                    <p>Tous les paris sont clôturés pour le moment. Les nouveaux paris en cours apparaîtront ici automatiquement.</p>
+                  </div>
+                ) : (
+                  <table className="txLogTable">
+                    <thead><tr><th>Date & heure</th><th>Stratégie</th><th>Sport</th><th>Événement</th><th>Marché</th><th>Cote</th><th>Mise</th><th>Statut</th></tr></thead>
+                    <tbody>
+                      {activeBettingBets.slice(0, 15).map((bet) => (
+                        <tr key={bet.id}>
+                          <td>{formatDateTimeFr(bet.date)}</td>
+                          <td>{bet.strategyName}</td>
+                          <td>{sportEmoji(bet.sport)}</td>
+                          <td style={{ maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bet.event}</td>
+                          <td>{bet.market}</td>
+                          <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{bet.odds > 0 ? bet.odds.toFixed(2) : '—'}</td>
+                          <td>{bet.stake.toFixed(0)} €</td>
+                          <td><span className="statusBadge idle">En cours</span></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </article>
+
+              {/* === Recent bets table === */}
+              <article className="featureCard" style={{ gridColumn: '1 / -1' }}>
+                <div className="cardHeader"><h2>Paris récents</h2><span>Historique consolidé de toutes les stratégies</span></div>
+                <table className="txLogTable">
+                  <thead><tr><th>Date & heure</th><th>Sport</th><th>Événement</th><th>Marché</th><th>Cote</th><th>Mise</th><th>Résultat</th><th>Profit</th></tr></thead>
+                  <tbody>
+                    {recentBettingBets.map((bet) => (
+                      <tr key={bet.id}>
+                        <td>{formatDateTimeFr(bet.date)}</td>
+                        <td>{sportEmoji(bet.sport)}</td>
+                        <td style={{ maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bet.event}</td>
+                        <td>{bet.market}</td>
+                        <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{bet.odds > 0 ? bet.odds.toFixed(2) : '—'}</td>
+                        <td>{bet.stake.toFixed(0)} €</td>
+                        <td>
+                          <span className={bet.result === 'won' ? 'statusBadge ok' : bet.result === 'lost' ? 'statusBadge warn' : 'statusBadge idle'}>
+                            {bet.result === 'won' ? 'Gagné' : bet.result === 'lost' ? 'Perdu' : bet.result === 'pending' ? 'En cours' : 'Annulé'}
+                          </span>
+                        </td>
+                        <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: bet.profit > 0 ? 'var(--ok)' : bet.profit < 0 ? 'var(--danger)' : 'var(--muted)' }}>
+                          {bet.profit >= 0 ? '+' : ''}{bet.profit.toFixed(2)} €
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </article>
+            </>
+          ) : null}
+
+          {/* === BETTING STRATEGY DETAIL === */}
+          {activeApp === 'betting' && strategyDetailOpen && selectedStrategy ? (
+            <div style={{ display: 'grid', gap: 22 }}>
+              <nav className="breadcrumbNav">
+                <button className="breadcrumbBack" onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('strategies'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">← Retour</button>
+                <span className="breadcrumbSep">/</span><span className="breadcrumbCurrent">{selectedStrategy.name}</span>
+              </nav>
+              <section className="portfolioHero">
+                <div className="portfolioHeroInfo">
+                  <p className="sectionTag">{selectedStrategy.type === 'value_betting' ? 'Value Betting' : selectedStrategy.type === 'arbitrage' ? 'Arbitrage' : selectedStrategy.type === 'statistical' ? 'Statistique' : selectedStrategy.type === 'predictive' ? 'Prédictif' : 'Personnelle'}</p>
+                  <h1>{selectedStrategy.name}</h1>
+                  <p style={{ color: 'var(--muted)', fontSize: '.85rem', marginTop: 4 }}>{selectedStrategy.description}</p>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                    <span className="metaPill">Bankroll : {selectedStrategy.bankroll.toFixed(0)} €</span>
+                    <span className="metaPill" style={{ color: 'var(--ok)' }}>ROI : +{selectedStrategy.roi.toFixed(1)} %</span>
+                    <span className="metaPill">Win Rate : {selectedStrategy.winRate} %</span>
+                    <span className="metaPill">{selectedStrategy.betsTotal} paris ({selectedStrategy.betsWon} gagnés)</span>
+                  </div>
+                </div>
+                <div className="portfolioHeroChart">
+                  <Sparkline data={selectedStrategy.history} color="var(--ok)" />
+                </div>
+              </section>
+
+              {/* Tipster AI mode selector — same pattern as Robin Finance */}
+              <article className="featureCard">
+                <div className="cardHeader"><h2>Mode de pilotage</h2><span>Comment Tipster IA intervient sur cette stratégie</span></div>
+                <div className="compactRow" style={{ marginBottom: 10 }}>
+                  <span style={{ fontSize: '.82rem' }}>Portefeuille actif</span>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={selectedStrategy.enabled} onChange={(event) => updateBettingStrategy(selectedStrategy.id, { enabled: event.target.checked })} />
+                    <span style={{ fontSize: '.78rem', color: 'var(--muted)' }}>{selectedStrategy.enabled ? 'Actif' : 'Inactif'}</span>
+                  </label>
+                </div>
+                <div className="compactRow" style={{ marginBottom: 10 }}>
+                  <span style={{ fontSize: '.82rem' }}>Assistance IA</span>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={selectedStrategy.ai_enabled} onChange={(event) => updateBettingStrategy(selectedStrategy.id, { ai_enabled: event.target.checked })} />
+                    <span style={{ fontSize: '.78rem', color: 'var(--muted)' }}>{selectedStrategy.ai_enabled ? 'Activée' : 'Désactivée'}</span>
+                  </label>
+                </div>
+                <div className="aiModeSelector">
+                  <button
+                    className={`aiModeOption ${selectedStrategy.mode === 'manual' ? 'active' : ''}`}
+                    onClick={() => updateBettingStrategy(selectedStrategy.id, { mode: 'manual' })}
+                    type="button"
+                  >
+                    <span className="aiModeIcon">🖐</span>
+                    <strong>Manuel</strong>
+                    <small>Vous choisissez tous les paris</small>
+                  </button>
+                  <button
+                    className={`aiModeOption ${selectedStrategy.mode === 'supervised' ? 'active' : ''}`}
+                    onClick={() => updateBettingStrategy(selectedStrategy.id, { mode: 'supervised' })}
+                    type="button"
+                  >
+                    <span className="aiModeIcon">👁</span>
+                    <strong>Tipster IA + validation</strong>
+                    <small>L IA propose, vous validez</small>
+                  </button>
+                  <button
+                    className={`aiModeOption ${selectedStrategy.mode === 'autonomous' ? 'active' : ''}`}
+                    onClick={() => { if (!emergencyStopActive) { updateBettingStrategy(selectedStrategy.id, { mode: 'autonomous' }); } else { setBettingAlert('Kill switch actif — mode autonome indisponible.'); } }}
+                    type="button"
+                  >
+                    <span className="aiModeIcon">🤖</span>
+                    <strong>Tipster IA autonome</strong>
+                    <small>L IA parie automatiquement</small>
+                  </button>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: 10, marginTop: 12 }}>
+                  <label style={{ fontSize: '.78rem', color: 'var(--muted)', display: 'grid', gap: 4 }}>
+                    Mise max / pari
+                    <input type="number" min="1" value={selectedStrategy.max_stake} onChange={(event) => updateBettingStrategy(selectedStrategy.id, { max_stake: Math.max(1, Number(event.target.value || 1)) })} />
+                  </label>
+                  <label style={{ fontSize: '.78rem', color: 'var(--muted)', display: 'grid', gap: 4 }}>
+                    Paris max / jour
+                    <input type="number" min="1" value={selectedStrategy.max_bets_per_day} onChange={(event) => updateBettingStrategy(selectedStrategy.id, { max_bets_per_day: Math.max(1, Number(event.target.value || 1)) })} />
+                  </label>
+                </div>
+                {selectedStrategy.isVirtual ? (
+                  <div className="infoPanel" style={{ marginTop: 12, background: 'var(--indigo-soft)', border: '1px solid var(--indigo-border)' }}>
+                    <strong>⚗️ Portefeuille virtuel — simulation uniquement</strong>
+                    <p>Aucun trafic réel n est généré. Les paris sont simulés selon votre risque accepté.</p>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+                      <button className={`smallPill ${virtualRiskProfile === 'low' ? 'selectedPortfolioPill selected' : ''}`} onClick={() => { setVirtualRiskProfile('low'); updateBettingStrategy(selectedStrategy.id, { risk_profile: 'low' }); }} type="button">Risque faible · capital garanti</button>
+                      <button className={`smallPill ${virtualRiskProfile === 'medium' ? 'selectedPortfolioPill selected' : ''}`} onClick={() => { setVirtualRiskProfile('medium'); updateBettingStrategy(selectedStrategy.id, { risk_profile: 'medium' }); }} type="button">Risque moyen · perte max 30%</button>
+                      <button className={`smallPill ${virtualRiskProfile === 'high' ? 'selectedPortfolioPill selected' : ''}`} onClick={() => { setVirtualRiskProfile('high'); updateBettingStrategy(selectedStrategy.id, { risk_profile: 'high' }); }} type="button">Risque fort · perte max 70%</button>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                      <button className="secondaryButton" onClick={simulateVirtualBetCycle} type="button">Simuler un cycle</button>
+                      <button className="ghostButton" onClick={resetVirtualBettingPortfolio} type="button">Reset virtuel à 100 €</button>
+                    </div>
+                  </div>
+                ) : null}
+              </article>
+
+              {/* Paris récents de la stratégie */}
+              <article className="featureCard">
+                <div className="cardHeader"><h2>Paris de la stratégie</h2><span>Historique {selectedStrategy.name}</span></div>
+                {selectedStrategy.recentBets.length === 0 ? (
+                  <div className="emptyState"><span className="emptyStateIcon">📋</span><p className="emptyStateTitle">Aucun pari enregistré</p><p className="emptyStateText">Les paris validés via Tipster IA ou placés manuellement apparaîtront ici.</p></div>
+                ) : (
+                  <table className="txLogTable">
+                    <thead><tr><th>Date & heure</th><th>Sport</th><th>Événement</th><th>Marché</th><th>Livre</th><th>Cote</th><th>Mise</th><th>Statut</th><th>Profit</th></tr></thead>
+                    <tbody>
+                      {selectedStrategy.recentBets.map((bet) => (
+                        <tr key={bet.id}>
+                          <td>{formatDateTimeFr(bet.date)}</td>
+                          <td>{sportEmoji(bet.sport)}</td>
+                          <td>{bet.event}</td><td>{bet.market}</td><td>{bet.bookmaker}</td>
+                          <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{bet.odds > 0 ? bet.odds.toFixed(2) : '—'}</td>
+                          <td>{bet.stake.toFixed(0)} €</td>
+                          <td><span className={bet.result === 'won' ? 'statusBadge ok' : bet.result === 'lost' ? 'statusBadge warn' : 'statusBadge idle'}>{bet.result === 'won' ? 'Gagné' : bet.result === 'lost' ? 'Perdu' : bet.result === 'pending' ? 'En cours' : 'Annulé'}</span></td>
+                          <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: bet.profit > 0 ? 'var(--ok)' : bet.profit < 0 ? 'var(--danger)' : 'var(--muted)' }}>{bet.profit >= 0 ? '+' : ''}{bet.profit.toFixed(2)} €</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </article>
+            </div>
+          ) : null}
+
+          {/* === BETTING STRATEGIES LIST === */}
+          {activeApp === 'betting' && !strategyDetailOpen && appView === 'strategies' ? (
+            <section style={{ display: 'grid', gap: 22 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                <div>
+                  <p className="sectionTag" style={{ marginBottom: 4 }}>Paris Sportifs</p>
+                  <h1 style={{ fontSize: '1.5rem', margin: 0 }}>Portefeuilles &amp; stratégies</h1>
+                </div>
+                <button className="primaryButton" onClick={() => setBettingAlert('Création de stratégie — fonctionnalité bientôt disponible.')} type="button">+ Nouvelle stratégie</button>
+              </div>
+
+              {bettingStrategies.map((strategy) => {
+                const modeBadge = strategy.mode === 'autonomous' ? { label: '🤖 Autonome', cls: 'modeAutopilot' } : strategy.mode === 'supervised' ? { label: '👁 Supervisé', cls: 'modeSupervised' } : { label: '🖐 Manuel', cls: '' };
+                const typeLabels: Record<BettingStrategy['type'], string> = { value_betting: 'Value Betting', arbitrage: 'Arbitrage', statistical: 'Statistique', predictive: 'Prédictif', personal: 'Personnelle' };
+                return (
+                  <article className="featureCard portfolioCard" key={strategy.id} style={{ '--card-top-color': strategy.type === 'arbitrage' ? 'var(--ok)' : strategy.type === 'value_betting' ? 'var(--brand)' : 'var(--teal)' } as Record<string, string>}>
+                    <div className="portfolioCardHeader">
+                      <div>
+                        <p className="sectionTag" style={{ marginBottom: 2 }}>{strategy.isVirtual ? 'Portefeuille virtuel' : typeLabels[strategy.type]}</p>
+                        <h2 style={{ margin: 0, fontSize: '1.05rem' }}>{strategy.name}</h2>
+                        <p style={{ margin: '3px 0 0', fontSize: '.78rem', color: 'var(--muted)' }}>{strategy.description}</p>
+                      </div>
+                      <span className={`aiModeBadge ${modeBadge.cls}`}>{strategy.enabled ? modeBadge.label : '⏸ Inactif'}</span>
+                    </div>
+                    {strategy.isVirtual ? (
+                      <div className="infoPanel" style={{ marginBottom: 10, background: 'var(--indigo-soft)', border: '1px solid var(--indigo-border)' }}>
+                        <strong>Simulation locale uniquement</strong>
+                        <p style={{ margin: '4px 0 0' }}>Niveau actuel: {strategy.risk_profile === 'low' ? 'faible' : strategy.risk_profile === 'high' ? 'fort' : 'moyen'} · Aucun ordre réel n est envoyé.</p>
+                        <p style={{ margin: '4px 0 0' }}>État portefeuille: {strategy.enabled ? 'actif' : 'inactif'} · IA: {strategy.ai_enabled ? 'activée' : 'désactivée'}</p>
+                      </div>
+                    ) : null}
+                    <div className="heroKpiStrip" style={{ margin: '12px 0', padding: '10px 0', borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)', gap: 0 }}>
+                      <div className="heroKpiItem" style={{ borderRight: '1px solid var(--border)' }}>
+                        <span>Bankroll</span><strong>{strategy.bankroll.toLocaleString('fr-FR')} €</strong>
+                      </div>
+                      <div className="heroKpiItem" style={{ borderRight: '1px solid var(--border)' }}>
+                        <span>ROI</span><strong className="up">+{strategy.roi.toFixed(1)} %</strong>
+                      </div>
+                      <div className="heroKpiItem" style={{ borderRight: '1px solid var(--border)' }}>
+                        <span>Win Rate</span><strong>{strategy.winRate} %</strong>
+                      </div>
+                      <div className="heroKpiItem">
+                        <span>Variance</span><strong>{strategy.variance.toFixed(1)}</strong>
+                      </div>
+                    </div>
+                    <Sparkline data={strategy.history} color={strategy.type === 'arbitrage' ? 'var(--ok)' : strategy.type === 'value_betting' ? 'var(--brand)' : 'var(--teal)'} />
+                    <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                      <button className="primaryButton" onClick={() => { setSelectedStrategy(strategy); if (strategy.isVirtual) setVirtualRiskProfile((strategy.risk_profile ?? 'medium') as VirtualRiskProfile); setStrategyDetailOpen(true); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Voir le détail</button>
+                    </div>
+                  </article>
+                );
+              })}
+            </section>
+          ) : null}
+
+          {/* === BETTING SETTINGS === */}
+          {activeApp === 'betting' && appView === 'settings' ? (
+            <section className="workspaceGrid settingsGrid">
+              <article className="featureCard settingsIntroCard">
+                <div className="cardHeader">
+                  <h2>Configuration Paris Sportifs</h2>
+                  <span>Compte, bookmakers et alertes</span>
+                </div>
+                <p style={{ fontSize: '.85rem', color: 'var(--muted)', margin: 0 }}>Gérez votre profil, vos connexions aux bookmakers, vos limites de jeu responsable et vos préférences de notification.</p>
+              </article>
+
+              {/* Profil & jeu responsable */}
+              <article className="featureCard">
+                <div className="cardHeader"><h2>Profil &amp; Jeu responsable</h2><span>Limites et paramètres de sécurité</span></div>
+                <div style={{ display: 'grid', gap: 14 }}>
+                  <label style={{ fontSize: '.85rem', fontWeight: 600 }}>
+                    Mise maximale par pari (€)
+                    <input defaultValue="100" type="number" min="1" style={{ marginTop: 4 }} />
+                  </label>
+                  <label style={{ fontSize: '.85rem', fontWeight: 600 }}>
+                    Budget hebdomadaire maximum (€)
+                    <input defaultValue="500" type="number" min="1" style={{ marginTop: 4 }} />
+                  </label>
+                  <label style={{ fontSize: '.85rem', fontWeight: 600 }}>
+                    Perte journalière maximale (€)
+                    <input defaultValue="200" type="number" min="1" style={{ marginTop: 4 }} />
+                  </label>
+                  <div className="infoPanel" style={{ background: 'var(--warn-soft)', border: '1px solid var(--warn-border)' }}>
+                    <strong>⚠️ Jeu responsable</strong>
+                    <p>Ces limites sont appliquées par Robin en amont de tout pari automatique. Jouer comporte des risques. Fixez des limites adaptées à votre situation.</p>
+                  </div>
+                  <button className="primaryButton" onClick={() => setBettingAlert('Limites de jeu responsable sauvegardées.')} type="button">Enregistrer les limites</button>
+                </div>
+              </article>
+
+              {/* Bookmakers */}
+              <article className="featureCard">
+                <div className="cardHeader"><h2>Bookmakers connectés</h2><span>Intégrations API pour pari automatique</span></div>
+                <div style={{ display: 'grid', gap: 12 }}>
+                  {[
+                    { name: 'Winamax', status: 'available' },
+                    { name: 'Betclic', status: 'available' },
+                    { name: 'Unibet', status: 'available' },
+                    { name: 'Betway', status: 'available' },
+                  ].map((bk) => (
+                    <div key={bk.name} className="compactRow">
+                      <div>
+                        <strong style={{ fontSize: '.9rem' }}>{bk.name}</strong>
+                        <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>Connexion API pour automatisation ({bk.name.toLowerCase()}.fr)</p>
+                      </div>
+                      <span className="statusBadge idle">Non connecté</span>
+                    </div>
+                  ))}
+                  <p style={{ fontSize: '.78rem', color: 'var(--muted)', marginTop: 6 }}>Les connexions API bookmakers seront disponibles dans une prochaine version. En mode supervisé ou manuel, les paris sont placés manuellement sur le site du bookmaker.</p>
+                </div>
+              </article>
+
+              {/* Notifications */}
+              <article className="featureCard">
+                <div className="cardHeader"><h2>Notifications</h2><span>Alertes Tipster IA et bankroll</span></div>
+                <div style={{ display: 'grid', gap: 12 }}>
+                  {[
+                    { label: 'Nouvelles recommandations Tipster IA', key: 'tipster_signals' },
+                    { label: 'Alertes risque bankroll', key: 'bankroll_risk' },
+                    { label: 'Opportunités de paris détectées', key: 'opportunities' },
+                    { label: 'Résultats des paris', key: 'results' },
+                  ].map((notif) => (
+                    <div key={notif.key} className="compactRow">
+                      <span style={{ fontSize: '.85rem' }}>{notif.label}</span>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                        <input type="checkbox" defaultChecked />
+                        <span style={{ fontSize: '.78rem', color: 'var(--muted)' }}>Activé</span>
+                      </label>
+                    </div>
+                  ))}
+                  <button className="primaryButton" onClick={() => setBettingAlert('Préférences de notification sauvegardées.')} type="button">Enregistrer</button>
+                </div>
+              </article>
+            </section>
+          ) : null}
+
           {appView === 'admin' ? (
             <section className="workspaceGrid adminGrid">
-              {/* Emergency Stop Banner */}
-              <article className="featureCard" style={{ background: emergencyStopActive ? 'var(--danger-soft)' : 'var(--surface)', border: emergencyStopActive ? '2px solid var(--danger)' : 'var(--card-border)', gridColumn: '1 / -1' }}>
-                <div className="cardHeader">
-                  <div>
-                    <h2 style={{ margin: 0 }}>Contrôle des transactions</h2>
-                    <p style={{ margin: '4px 0 0', fontSize: '.82rem', color: 'var(--muted)' }}>Interrompez toutes les transactions en cours et à venir en cas d urgence.</p>
+              {/* === KILL SWITCH — redesigned prominent ===  */}
+              <div className={`killSwitchPanel ${emergencyStopActive ? 'active' : 'inactive'}`} style={{ gridColumn: '1 / -1' }}>
+                <div className="killSwitchHeader">
+                  <div className="killSwitchTitle">
+                    <span style={{ fontSize: '1.8rem', lineHeight: 1 }}>🛑</span>
+                    <div>
+                      <strong>Kill Switch — Arrêt d'urgence</strong>
+                      <p>Stoppe immédiatement toutes les transactions en cours et à venir, y compris le pilote automatique.</p>
+                    </div>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <span className={`killStatusPill ${emergencyStopActive ? 'active' : 'inactive'}`}>
+                    {emergencyStopActive ? '⚠️ ACTIF — Transactions bloquées' : '✓ Inactif — Opérationnel'}
+                  </span>
+                </div>
+                <div className="killSwitchBody">
+                  <p className="killSwitchDescription">
                     {emergencyStopActive ? (
-                      <span className="statusBadge warn"><span className="statusDot warn" />Arrêt d urgence actif — toutes transactions bloquées</span>
+                      <><strong>Le kill switch est actif.</strong> Toutes les transactions automatiques (pilote auto) sont suspendues. Les propositions manuelles sont bloquées. Le système reprendra normalement à la désactivation.</>
                     ) : (
-                      <span className="statusBadge ok"><span className="statusDot ok" />Transactions opérationnelles</span>
+                      <><strong>Action irréversible sans confirmation.</strong> Ce bouton stoppe toutes les décisions de l'agent IA — achats, ventes, propositions. À n'utiliser qu'en cas de comportement anormal de l'IA ou d'urgence de marché.</>
                     )}
+                  </p>
+                  <div className="killButtonWrap">
                     <button
-                      className={emergencyStopActive ? 'secondaryButton' : 'primaryButton'}
-                      style={emergencyStopActive ? { background: 'var(--ok)', color: 'white', borderColor: 'var(--ok)' } : { background: 'var(--danger)', color: 'white', borderColor: 'var(--danger)' }}
+                      className={`killButton ${emergencyStopActive ? 'release' : 'activate'}`}
                       onClick={() => {
                         const next = !emergencyStopActive;
                         setEmergencyStopActive(next);
@@ -4262,17 +5533,18 @@ export default function PicsouApp() {
                       }}
                       type="button"
                     >
-                      {emergencyStopActive ? '✅ Reprendre les transactions' : '🛑 Arrêt d urgence'}
+                      {emergencyStopActive ? '✅ Reprendre les transactions' : '🛑 Activer l\'arrêt d\'urgence'}
                     </button>
+                    <p className="killSafetyNote">🔒 Action auditée · MFA recommandée</p>
                   </div>
+                  {emergencyStopActive ? (
+                    <div className="infoPanel" style={{ background: 'rgba(239,68,68,.08)', border: '1px solid rgba(239,68,68,.2)', padding: '10px 14px' }}>
+                      <strong style={{ color: 'var(--danger)' }}>Système en arrêt d'urgence</strong>
+                      <p style={{ color: '#7f1d1d' }}>Désactivez le kill switch pour reprendre les opérations. Vérifiez les logs avant de reprendre.</p>
+                    </div>
+                  ) : null}
                 </div>
-                {emergencyStopActive ? (
-                  <div className="infoPanel" style={{ marginTop: 12, background: 'var(--danger-soft)', border: '1px solid var(--danger-border)' }}>
-                    <strong>Arrêt d urgence activé</strong>
-                    <p>Toutes les transactions automatiques (pilote auto) sont suspendues. Les propositions manuelles sont également bloquées. Désactivez le verrou pour reprendre.</p>
-                  </div>
-                ) : null}
-              </article>
+              </div>
 
               <article className="featureCard">
                 <div className="cardHeader">
@@ -4283,10 +5555,10 @@ export default function PicsouApp() {
                 {!user.mfa_enabled ? (
                   <div className="infoPanel">
                     <strong>MFA requise</strong>
-                    <p>Activez MFA dans Configuration puis reconnectez-vous pour administrer la plateforme.</p>
+                    <p>Activez MFA dans Configuration puis reconnectez-vous pour administrer la plateforme. Les données restent visibles ci-dessous, mais les actions sensibles peuvent être refusées.</p>
                   </div>
-                ) : (
-                  <>
+                ) : null}
+                <>
                     <div className="adminToolbar">
                       <input
                         aria-label="Rechercher un utilisateur"
@@ -4316,6 +5588,7 @@ export default function PicsouApp() {
                     {filteredAdminUsers.map((entry) => {
                       const roles = new Set(entry.assigned_roles);
                       const userConns = adminConnections[entry.id] ?? [];
+                      const adminActionsDisabled = !user.mfa_enabled;
                       return (
                         <div className="adminUserCard" key={entry.id}>
                           <div className="adminUserCardHeader">
@@ -4324,16 +5597,16 @@ export default function PicsouApp() {
                               <p>{entry.email}</p>
                             </div>
                             <div className="adminActions">
-                              <button className={roles.has('user') ? 'tagButton active' : 'tagButton'} onClick={() => updateAdminUser(entry, roles.has('admin') ? ['admin', 'user'] : ['user'], entry.is_active)} type="button">
+                              <button className={roles.has('user') ? 'tagButton active' : 'tagButton'} disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, roles.has('admin') ? ['admin', 'user'] : ['user'], entry.is_active)} type="button" title={adminActionsDisabled ? 'Activez MFA pour modifier les rôles.' : ''}>
                                 Utilisateur
                               </button>
-                              <button className={roles.has('admin') ? 'tagButton active' : 'tagButton'} onClick={() => updateAdminUser(entry, ['admin', 'user'], entry.is_active)} type="button">
+                              <button className={roles.has('admin') ? 'tagButton active' : 'tagButton'} disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, ['admin', 'user'], entry.is_active)} type="button" title={adminActionsDisabled ? 'Activez MFA pour modifier les rôles.' : ''}>
                                 Admin
                               </button>
-                              <button className={roles.has('banned') ? 'tagButton danger active' : 'tagButton'} onClick={() => updateAdminUser(entry, ['banned'], false)} type="button">
+                              <button className={roles.has('banned') ? 'tagButton danger active' : 'tagButton'} disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, ['banned'], false)} type="button" title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}>
                                 Banni
                               </button>
-                              <button className="ghostButton" onClick={() => updateAdminUser(entry, entry.assigned_roles, !entry.is_active)} type="button">
+                              <button className="ghostButton" disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, entry.assigned_roles, !entry.is_active)} type="button" title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}>
                                 {entry.is_active ? 'Desactiver' : 'Reactiver'}
                               </button>
                             </div>
@@ -4362,8 +5635,7 @@ export default function PicsouApp() {
                       );
                     })}
                     </div>
-                  </>
-                )}
+                </>
               </article>
 
               <article className="featureCard">

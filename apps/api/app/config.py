@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    app_name: str = "Picsou IA API"
+    app_name: str = "Robin IA API"
     environment: str = "development"
     postgres_dsn: str = "postgresql+psycopg://picsou:picsou@postgres:5432/picsou"
     redis_url: str = "redis://redis:6379/0"
@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     smtp_username: str | None = None
     smtp_password: str | None = None
     smtp_from_email: str | None = None
-    smtp_from_name: str = "Picsou IA"
+    smtp_from_name: str = "Robin IA"
     smtp_starttls: bool = True
     smtp_use_ssl: bool = False
     smtp_timeout_seconds: int = 10

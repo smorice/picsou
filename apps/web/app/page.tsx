@@ -1,5 +1,5 @@
-import PicsouApp from './picsou-app';
+import RobinApp from './picsou-app';
 
 export default function Page() {
-  return <PicsouApp />;
+  return <RobinApp />;
 }

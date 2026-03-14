@@ -1,4 +1,5 @@
 from decimal import Decimal
+from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field
@@ -17,6 +18,10 @@ class UserProfileResponse(BaseModel):
     full_name: str
     role: str
     assigned_roles: list[str]
+    access_profile: Literal["read", "write", "admin"]
+    app_access: list[Literal["finance", "betting"]]
+    birth_date: date | None = None
+    is_verified: bool
     is_active: bool
     mfa_enabled: bool
     personal_settings: dict
@@ -26,6 +31,10 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     full_name: str = Field(min_length=2, max_length=255)
     password: str = Field(min_length=14, max_length=128)
+    birth_date: date | None = None
+    access_profile: Literal["read", "write", "admin"] = "write"
+    app_access: list[Literal["finance", "betting"]] = Field(default_factory=lambda: ["finance", "betting"])
+    verification_channel: Literal["email", "sms"] = "email"
     personal_settings: dict = Field(default_factory=dict)
     client_context: ClientContext | None = None
 
@@ -221,6 +230,8 @@ class VirtualPortfolioResponse(BaseModel):
 class AdminUserUpdateRequest(BaseModel):
     full_name: str | None = Field(default=None, min_length=2, max_length=255)
     assigned_roles: list[str] | None = None
+    access_profile: Literal["read", "write", "admin"] | None = None
+    app_access: list[Literal["finance", "betting"]] | None = None
     is_active: bool | None = None
     personal_settings: dict | None = None
 
@@ -320,3 +331,26 @@ class TaxEstimateResponse(BaseModel):
     taxable_base: Decimal
     estimated_tax: Decimal
     regime: str
+
+
+class AccountVerificationRequest(BaseModel):
+    email: EmailStr
+    channel: Literal["email", "sms"] = "email"
+
+
+class AccountVerificationConfirmRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(min_length=6, max_length=8)
+
+
+class AccountVerificationResponse(BaseModel):
+    message: str
+    channel: Literal["email", "sms"]
+    preview_code: str | None = None
+
+
+class VirtualPortfolioResetResponse(BaseModel):
+    portfolio_id: str
+    current_value: Decimal
+    transaction_count: int
+    message: str

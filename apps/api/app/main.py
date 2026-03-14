@@ -1,8 +1,9 @@
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 import logging
+import random
 import secrets
 
 import orjson
@@ -40,8 +41,8 @@ from .auth import (
 from .coinbase_connector import sync_coinbase_read_only
 from .config import settings
 from .database import Base, SessionLocal, engine, get_db
-from .emailing import send_mfa_email_code, send_password_reset_email
-from .models import AgentDecision, AuditLog, BrokerConnection, IntegrationPosition, IntegrationSyncEvent, KillSwitchEvent, MfaDevice, OAuthIdentity, Portfolio, TradeProposal, User
+from .emailing import send_account_verification_email, send_mfa_email_code, send_password_reset_email
+from .models import AgentDecision, AuditLog, BrokerConnection, IntegrationPosition, IntegrationSyncEvent, KillSwitchEvent, MfaDevice, OAuthIdentity, Portfolio, TradeProposal, User, VirtualTransaction
 from .schemas import (
     BankIntegrationToggleRequest,
     BankIntegrationToggleResponse,
@@ -83,6 +84,10 @@ from .schemas import (
     UserProfileResponse,
     VirtualPortfolioResponse,
     AuditLogResponse,
+    AccountVerificationConfirmRequest,
+    AccountVerificationRequest,
+    AccountVerificationResponse,
+    VirtualPortfolioResetResponse,
 )
 
 redis_client = Redis.from_url(settings.redis_url, decode_responses=True)
@@ -181,6 +186,71 @@ def normalize_roles(roles: list[str] | None, fallback_role: str = "user") -> lis
     return cleaned
 
 
+def normalize_access_profile(profile: str | None) -> str:
+    value = (profile or "write").strip().lower()
+    if value not in {"read", "write", "admin"}:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unsupported access profile")
+    return value
+
+
+def normalize_app_access(apps: list[str] | None) -> list[str]:
+    cleaned: list[str] = []
+    for app in apps or ["finance", "betting"]:
+        normalized = app.strip().lower()
+        if normalized in {"finance", "betting"} and normalized not in cleaned:
+            cleaned.append(normalized)
+    if not cleaned:
+        cleaned = ["finance"]
+    return cleaned
+
+
+def require_app_access(user: User, app_name: str) -> None:
+    app_access = normalize_app_access(user.app_access if isinstance(user.app_access, list) else ["finance", "betting"])
+    if app_name not in app_access:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Access denied for application '{app_name}'")
+
+
+def require_write_access(user: User) -> None:
+    access_profile = normalize_access_profile(user.access_profile)
+    if access_profile not in {"write", "admin"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Write access required")
+
+
+def verification_key(email: str) -> str:
+    return f"auth:verify:{normalize_email(email)}"
+
+
+def create_account_verification_code(email: str) -> str:
+    code = f"{secrets.randbelow(900000) + 100000}"
+    ttl_seconds = settings.mfa_email_code_ttl_minutes * 60
+    payload = {
+        "email": normalize_email(email),
+        "code": code,
+        "issued_at": datetime.utcnow().isoformat(),
+    }
+    redis_client.setex(verification_key(email), ttl_seconds, orjson.dumps(payload))
+    return code
+
+
+def consume_account_verification_code(email: str, code: str) -> bool:
+    raw = redis_client.get(verification_key(email))
+    if not raw:
+        return False
+    payload = orjson.loads(raw)
+    if str(payload.get("code") or "") != str(code or "").strip():
+        return False
+    redis_client.delete(verification_key(email))
+    return True
+
+
+def calculate_age_years(birth_date: date) -> int:
+    today = date.today()
+    years = today.year - birth_date.year
+    if (today.month, today.day) < (birth_date.month, birth_date.day):
+        years -= 1
+    return years
+
+
 def primary_role_from_roles(roles: list[str]) -> str:
     if "admin" in roles:
         return "admin"
@@ -191,6 +261,8 @@ def primary_role_from_roles(roles: list[str]) -> str:
 
 def to_user_profile(user: User) -> UserProfileResponse:
     assigned_roles = normalize_roles(user.assigned_roles or [user.role], user.role)
+    access_profile = normalize_access_profile(getattr(user, "access_profile", "write"))
+    app_access = normalize_app_access(getattr(user, "app_access", ["finance", "betting"]))
     return UserProfileResponse(
         id=user.id,
         email=user.email,
@@ -198,6 +270,10 @@ def to_user_profile(user: User) -> UserProfileResponse:
         full_name=user.full_name,
         role=primary_role_from_roles(assigned_roles),
         assigned_roles=assigned_roles,
+        access_profile=access_profile,
+        app_access=app_access,
+        birth_date=getattr(user, "birth_date", None),
+        is_verified=bool(getattr(user, "is_verified", False)),
         is_active=user.is_active,
         mfa_enabled=user.mfa_enabled,
         personal_settings=user.personal_settings or {},
@@ -234,6 +310,56 @@ def merge_client_context_settings(existing: dict | None, client_context: dict[st
         merged.setdefault("initial_time_zone", client_context["time_zone"])
         merged["last_seen_time_zone"] = client_context["time_zone"]
     return merged
+
+
+def normalize_user_risk_profile(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"low", "prudent", "faible"}:
+        return "low"
+    if normalized in {"high", "offensive", "eleve"}:
+        return "high"
+    return "medium"
+
+
+def resolve_risk_based_trade_limits(user: User, requested_portfolio_id: str) -> tuple[Decimal, int]:
+    settings_payload = dict(user.personal_settings or {}) if isinstance(user.personal_settings, dict) else {}
+    risk_profile = normalize_user_risk_profile(
+        settings_payload.get("risk_profile")
+        or settings_payload.get("investor_risk_profile")
+        or settings_payload.get("portfolio_risk_profile")
+        or settings_payload.get("risk_level")
+    )
+
+    defaults_by_profile: dict[str, tuple[Decimal, int]] = {
+        "low": (Decimal("120"), 2),
+        "medium": (Decimal("250"), 3),
+        "high": (Decimal("600"), 8),
+    }
+    default_max_amount, default_max_daily = defaults_by_profile.get(risk_profile, defaults_by_profile["medium"])
+
+    quotas_payload = settings_payload.get("agent_quotas") if isinstance(settings_payload.get("agent_quotas"), dict) else {}
+    raw_portfolio_config = quotas_payload.get(requested_portfolio_id) if isinstance(quotas_payload, dict) else None
+    if not isinstance(raw_portfolio_config, dict):
+        return default_max_amount, default_max_daily
+
+    max_amount = default_max_amount
+    max_daily = default_max_daily
+
+    try:
+        parsed_max_amount = Decimal(str(raw_portfolio_config.get("max_amount", default_max_amount)))
+        if parsed_max_amount > 0:
+            max_amount = parsed_max_amount
+    except Exception:
+        max_amount = default_max_amount
+
+    try:
+        parsed_max_daily = int(raw_portfolio_config.get("max_transactions_per_day", default_max_daily))
+        if parsed_max_daily > 0:
+            max_daily = parsed_max_daily
+    except Exception:
+        max_daily = default_max_daily
+
+    return max_amount, max_daily
 
 
 def issue_email_mfa_code(user: User, purpose: str) -> tuple[str | None, str | None]:
@@ -298,6 +424,11 @@ def ensure_runtime_schema(db: Session) -> None:
     statements = [
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number VARCHAR(32)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_roles JSON DEFAULT '[]'::json",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS access_profile VARCHAR(16) DEFAULT 'write'",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS app_access JSON DEFAULT '[\"finance\",\"betting\"]'::json",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS birth_date DATE",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT false",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_channel VARCHAR(16)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS personal_settings JSON DEFAULT '{}'::json",
         "ALTER TABLE mfa_devices ADD COLUMN IF NOT EXISTS method VARCHAR(24) DEFAULT 'totp'",
         "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS severity VARCHAR(16) DEFAULT 'info'",
@@ -319,6 +450,9 @@ def ensure_runtime_schema(db: Session) -> None:
         db.execute(text(statement))
     db.commit()
     db.execute(text("UPDATE users SET assigned_roles = to_json(ARRAY[role]) WHERE assigned_roles IS NULL OR assigned_roles::text = 'null' OR assigned_roles::text = '[]'"))
+    db.execute(text("UPDATE users SET access_profile = 'write' WHERE access_profile IS NULL OR access_profile = ''"))
+    db.execute(text("UPDATE users SET app_access = '[\"finance\",\"betting\"]'::json WHERE app_access IS NULL OR app_access::text = 'null' OR app_access::text = '[]'"))
+    db.execute(text("UPDATE users SET is_verified = true WHERE is_verified IS NULL"))
     db.commit()
 
 
@@ -841,6 +975,11 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
+    if payload.birth_date:
+        age = calculate_age_years(payload.birth_date)
+        if age < 18:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inscription reservee aux personnes majeures (18+ en France)")
+
     client_context = normalize_client_context(payload.client_context)
     user = User(
         email=email,
@@ -849,6 +988,11 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
         password_hash=hash_password(payload.password),
         role="user",
         assigned_roles=["user"],
+        access_profile=normalize_access_profile(payload.access_profile),
+        app_access=normalize_app_access(payload.app_access),
+        birth_date=payload.birth_date,
+        is_verified=False,
+        verification_channel=payload.verification_channel,
         personal_settings=merge_client_context_settings(payload.personal_settings or {
             "dashboard_density": "comfortable",
             "currency": "EUR",
@@ -866,6 +1010,12 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
     db.refresh(user)
     db.add(Portfolio(owner_id=user.id, total_value=Decimal("0")))
     db.commit()
+
+    verification_code = create_account_verification_code(user.email)
+    if payload.verification_channel == "email":
+        delivered = send_account_verification_email(user.email, verification_code)
+        if not delivered:
+            logger.warning("Verification email not delivered for %s (SMTP config missing or invalid)", user.email)
     write_audit_log(db, user.id, "auth.registered", {"email": user.email, "assigned_roles": user.assigned_roles, "client_context": client_context}, ip_address=request.client.host if request.client else None)
     return to_user_profile(user)
 
@@ -1778,6 +1928,30 @@ def propose_order(payload: TradeProposalRequest, current_user: User = Depends(ge
         user_portfolio = Portfolio(owner_id=current_user.id, name="Portefeuille principal")
         db.add(user_portfolio)
         db.flush()
+
+    max_amount, max_transactions_per_day = resolve_risk_based_trade_limits(current_user, payload.portfolio_id)
+    requested_quantity = Decimal(str(payload.quantity))
+    if requested_quantity > max_amount:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Montant max par transaction depasse (profil risque): {max_amount}.",
+        )
+
+    day_start_utc = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_count = len(
+        db.scalars(
+            select(TradeProposal.id).where(
+                TradeProposal.portfolio_id == user_portfolio.id,
+                TradeProposal.provider_portfolio_id == payload.portfolio_id,
+                TradeProposal.created_at >= day_start_utc,
+            )
+        ).all()
+    )
+    if today_count >= max_transactions_per_day:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Quota quotidien atteint pour ce portefeuille ({max_transactions_per_day}/jour).",
+        )
 
     proposal = TradeProposal(
         portfolio_id=user_portfolio.id,

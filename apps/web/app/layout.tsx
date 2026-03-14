@@ -16,8 +16,12 @@ const mono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Picsou IA',
-  description: 'Assistant d’investissement long terme avec contrôle humain.',
+  metadataBase: new URL('https://nayonne.ovh'),
+  title: 'Robin IA',
+  description: 'Assistant d investissement long terme avec controle humain et objectif net.',
+  alternates: {
+    canonical: 'https://nayonne.ovh',
+  },
   icons: {
     icon: '/icon.svg',
     shortcut: '/icon.svg',

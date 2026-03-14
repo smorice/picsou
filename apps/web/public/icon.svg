@@ -1,30 +1,26 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Picsou IA duck icon">
-  <rect width="256" height="256" rx="52" fill="#e0f2fe"/>
-  <!-- Water -->
-  <ellipse cx="128" cy="226" rx="102" ry="24" fill="#7dd3fc" opacity="0.75"/>
-  <!-- Body -->
-  <ellipse cx="118" cy="158" rx="82" ry="68" fill="#FDE047"/>
-  <!-- Wing highlight -->
-  <ellipse cx="108" cy="174" rx="48" ry="32" fill="#EAB308" opacity="0.65"/>
-  <!-- Tail feather -->
-  <path d="M44 150 Q10 116 48 98 Q33 132 44 150Z" fill="#EAB308"/>
-  <!-- Head -->
-  <circle cx="178" cy="104" r="56" fill="#FDE047"/>
-  <!-- Eye -->
-  <circle cx="198" cy="90" r="13" fill="#111"/>
-  <circle cx="201" cy="87" r="5" fill="white"/>
-  <!-- Beak upper -->
-  <path d="M226 103 L256 92 L256 108 Z" fill="#F97316"/>
-  <!-- Beak lower -->
-  <path d="M226 108 L256 108 L256 120 Z" fill="#EA580C"/>
-  <!-- Feet -->
-  <path d="M96 222 Q80 242 70 238 Q82 234 92 238 Q96 220 106 224Z" fill="#F97316"/>
-  <path d="M134 222 Q118 242 108 238 Q120 234 130 238 Q134 220 144 224Z" fill="#F97316"/>
-  <!-- Top hat -->
-  <rect x="146" y="36" width="76" height="50" rx="6" fill="#1e293b"/>
-  <rect x="134" y="80" width="100" height="18" rx="9" fill="#1e293b"/>
-  <!-- Hat band in yellow -->
-  <rect x="146" y="56" width="76" height="16" fill="#FDE047"/>
-  <!-- Tiny star on hat -->
-  <text x="184" y="50" text-anchor="middle" font-size="18" fill="#FDE047">★</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Robin IA playful fox icon">
+  <rect width="256" height="256" rx="56" fill="#fff4e6"/>
+  <rect x="12" y="12" width="232" height="232" rx="48" fill="none" stroke="#7a3412" stroke-width="8"/>
+
+  <path d="M54 102 L86 42 L108 106 Z" fill="#fb923c" stroke="#9a3412" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M202 102 L170 42 L148 106 Z" fill="#fb923c" stroke="#9a3412" stroke-width="8" stroke-linejoin="round"/>
+
+  <path d="M50 136 C50 88 84 64 128 64 C172 64 206 88 206 136 C206 188 168 216 128 216 C88 216 50 188 50 136 Z" fill="#f97316"/>
+  <ellipse cx="128" cy="176" rx="56" ry="34" fill="#fff7ed"/>
+
+  <circle cx="100" cy="132" r="20" fill="#fff"/>
+  <circle cx="156" cy="132" r="20" fill="#fff"/>
+  <circle cx="104" cy="136" r="9" fill="#111827"/>
+  <circle cx="152" cy="136" r="9" fill="#111827"/>
+  <circle cx="107" cy="132" r="3" fill="#fff"/>
+  <circle cx="155" cy="132" r="3" fill="#fff"/>
+
+  <path d="M84 108 Q98 94 112 108" stroke="#7a3412" stroke-width="8" stroke-linecap="round"/>
+  <path d="M144 108 Q158 94 172 108" stroke="#7a3412" stroke-width="8" stroke-linecap="round"/>
+
+  <path d="M128 146 L143 162 L128 172 L113 162 Z" fill="#7a3412"/>
+  <path d="M112 184 Q128 200 144 184" stroke="#7a3412" stroke-width="8" stroke-linecap="round"/>
+
+  <circle cx="190" cy="74" r="20" fill="#86efac" stroke="#166534" stroke-width="6"/>
+  <path d="M182 74 L188 82 L199 67" stroke="#166534" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

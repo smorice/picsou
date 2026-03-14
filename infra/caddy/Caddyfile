@@ -56,17 +56,17 @@ https://79.137.75.219 {
 }
 
 http://www.nayonne.ovh {
-  redir https://www.nayonne.ovh{uri} permanent
+  redir https://nayonne.ovh{uri} permanent
 }
 
 https://www.nayonne.ovh {
-  import picsou_app
+  redir https://nayonne.ovh{uri} 308
 }
 
 http://nayonne.ovh {
-  redir https://www.nayonne.ovh{uri} permanent
+  redir https://nayonne.ovh{uri} permanent
 }
 
 https://nayonne.ovh {
-  redir https://www.nayonne.ovh{uri} 308
+  import picsou_app
 }
