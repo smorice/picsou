@@ -1758,9 +1758,9 @@ function Sparkline({ data, color = 'var(--brand)' }: { data: Array<{ value: numb
   );
 }
 
-const ACCESS_TOKEN_KEY = 'picsou_access_token';
-const REFRESH_TOKEN_KEY = 'picsou_refresh_token';
-const SESSION_LAST_ACTIVITY_AT_KEY = 'picsou_session_last_activity_at';
+const ACCESS_TOKEN_KEY = 'robin_access_token';
+const REFRESH_TOKEN_KEY = 'robin_refresh_token';
+const SESSION_LAST_ACTIVITY_AT_KEY = 'robin_session_last_activity_at';
 const SESSION_TIMEOUT_MS = 2 * 60 * 1000;
 const COOKIE_SESSION_MARKER = '__cookie_session__';
 const OTHER_COUNTRY_VALUE = '__OTHER__';
@@ -5979,6 +5979,32 @@ export default function RobinApp() {
     setBettingAlert('Portefeuille virtuel Paris en ligne réinitialisé à 100 € (historique simulé supprimé).');
   }
 
+  function resetVirtualRacingPortfolio() {
+    const virtual = racingStrategies.find((s) => s.isVirtual);
+    if (!virtual) return;
+    setRacingStrategies((prev) => prev.map((s) => s.id === virtual.id ? {
+      ...s,
+      bankroll: 100,
+      roi: 0,
+      winRate: 0,
+      betsTotal: 0,
+      betsWon: 0,
+      history: [{ date: new Date().toISOString().slice(0, 10), value: 100 }],
+      recentBets: [],
+    } : s));
+    setSelectedRacingStrategy((prev) => prev && prev.id === virtual.id ? {
+      ...prev,
+      bankroll: 100,
+      roi: 0,
+      winRate: 0,
+      betsTotal: 0,
+      betsWon: 0,
+      history: [{ date: new Date().toISOString().slice(0, 10), value: 100 }],
+      recentBets: [],
+    } : prev);
+    setBettingAlert('Portefeuille virtuel hippique réinitialisé à 100 € (historique simulé supprimé).');
+  }
+
   function simulateVirtualRacingCycle(sourceSignal: TipsterSignal, options: { silent?: boolean } = {}) {
     const virtual = racingStrategies.find((strategy) => strategy.isVirtual);
     if (!virtual || !virtual.enabled || !virtual.ai_enabled) {
@@ -6594,31 +6620,6 @@ export default function RobinApp() {
               >
                 Réels 24h: {evolution24h.value}
               </button>
-              <button
-                className="smallPill selectedPortfolioPill"
-                onClick={() => {
-                  if (decisionInsights.length > 0) {
-                    setSelectedInsight(decisionInsights[0]);
-                    window.scrollTo({ top: 120, behavior: 'smooth' });
-                  } else {
-                    setError('Aucune décision active pour le moment.');
-                  }
-                }}
-                type="button"
-              >
-                Décisions: {pendingDecisionCount}
-              </button>
-              <button
-                className={goalReached ? 'smallPill selectedPortfolioPill up' : 'smallPill selectedPortfolioPill'}
-                onClick={() => {
-                  setAppView('account');
-                  window.scrollTo({ top: 0, behavior: 'smooth' });
-                }}
-                type="button"
-                title={`Objectif net ${goalPeriodLabel} (après taxe estimée ${Math.round(ESTIMATED_TAX_RATE * 100)}%)`}
-              >
-                {goalReached ? '🎯 Objectif atteint' : `🎯 ${goalProgressText} (${goalPeriodLabel})`}
-              </button>
             </div>
           </div>
         </div>
@@ -6702,42 +6703,6 @@ export default function RobinApp() {
 
       {!user ? (
         <section className="landingCanvas">
-          <article className="landingStoryCard">
-            <p className="sectionTag">Votre cockpit d analyse</p>
-            <h1>Robin vous accompagne avec une IA explicable pour agir avec discipline et clarté.</h1>
-            <p className="bodyText">
-              Connectez-vous pour accéder à vos applications autorisées. Robin présente uniquement les espaces auxquels votre profil a droit.
-            </p>
-            <div className="marketPulseGrid">
-              <div className="pulseCard">
-                <span>Accès protégé</span>
-                <strong>Connexion requise</strong>
-                <p>Les espaces applicatifs ne sont jamais visibles ni accessibles sans authentification.</p>
-              </div>
-              <div className="pulseCard">
-                <span>Profils & permissions</span>
-                <strong>Droits stricts</strong>
-                <p>Chaque utilisateur voit uniquement les sections autorisées par son profil et ses accès.</p>
-              </div>
-              <div className="pulseCard">
-                <span>IA explicable</span>
-                <strong>Décision justifiée</strong>
-                <p>Chaque recommandation affiche le contexte, la confiance et le risque associé.</p>
-              </div>
-            </div>
-            <div className="coachStrip">
-              <div>
-                <span>Mode accompagnement</span>
-                <strong>Du premier euro jusqu aux arbitrages les plus avancés.</strong>
-              </div>
-              <div className="coachStats">
-                <span>Marche</span>
-                <span>Crypto</span>
-                <span>Budget risque</span>
-              </div>
-            </div>
-          </article>
-
           <article className="authExperienceCard">
             <div className="toggleRow">
               <button className={authMode === 'login' ? 'toggleButton active' : 'toggleButton'} onClick={() => setAuthMode('login')} type="button">
@@ -11298,6 +11263,55 @@ export default function RobinApp() {
                     />
                   </label>
                 </div>
+                {selectedRacingStrategy.isVirtual ? (
+                  <div className="infoPanel" style={{ marginTop: 12, background: 'var(--indigo-soft)', border: '1px solid var(--indigo-border)' }}>
+                    <strong>⚗️ Portefeuille virtuel — simulation uniquement</strong>
+                    <p>Aucun pari réel n est généré. Les courses sont simulées selon votre profil de risque accepté.</p>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+                      <button
+                        className={`smallPill ${(selectedRacingStrategy.risk_profile ?? 'medium') === 'low' ? 'selectedPortfolioPill selected' : ''}`}
+                        onClick={() => { setRacingStrategies((prev) => prev.map((s) => s.id === selectedRacingStrategy.id ? { ...s, risk_profile: 'low' } : s)); setSelectedRacingStrategy((prev) => prev && prev.id === selectedRacingStrategy.id ? { ...prev, risk_profile: 'low' } : prev); }}
+                        type="button"
+                      >Risque faible · capital garanti</button>
+                      <button
+                        className={`smallPill ${(selectedRacingStrategy.risk_profile ?? 'medium') === 'medium' ? 'selectedPortfolioPill selected' : ''}`}
+                        onClick={() => { setRacingStrategies((prev) => prev.map((s) => s.id === selectedRacingStrategy.id ? { ...s, risk_profile: 'medium' } : s)); setSelectedRacingStrategy((prev) => prev && prev.id === selectedRacingStrategy.id ? { ...prev, risk_profile: 'medium' } : prev); }}
+                        type="button"
+                      >Risque moyen · perte max 30%</button>
+                      <button
+                        className={`smallPill ${(selectedRacingStrategy.risk_profile ?? 'medium') === 'high' ? 'selectedPortfolioPill selected' : ''}`}
+                        onClick={() => { setRacingStrategies((prev) => prev.map((s) => s.id === selectedRacingStrategy.id ? { ...s, risk_profile: 'high' } : s)); setSelectedRacingStrategy((prev) => prev && prev.id === selectedRacingStrategy.id ? { ...prev, risk_profile: 'high' } : prev); }}
+                        type="button"
+                      >Risque fort · perte max 70%</button>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                      {selectedRacingStrategy.mode !== 'autonomous' ? (
+                        <button
+                          className="secondaryButton"
+                          disabled={emergencyStopActive}
+                          onClick={() => {
+                            if (emergencyStopActive) { setBettingAlert('Kill switch actif — pilote automatique indisponible.'); return; }
+                            setRacingStrategies((prev) => prev.map((s) => s.id === selectedRacingStrategy.id ? { ...s, mode: 'autonomous', enabled: true, ai_enabled: true } : s));
+                            setSelectedRacingStrategy((prev) => prev && prev.id === selectedRacingStrategy.id ? { ...prev, mode: 'autonomous', enabled: true, ai_enabled: true } : prev);
+                            setBettingAlert('⚡ Pilote automatique hippique activé — Robin IA va analyser les prochaines courses.');
+                          }}
+                          type="button"
+                        >⚡ Activer le pilote automatique</button>
+                      ) : (
+                        <button
+                          className="ghostButton"
+                          onClick={() => {
+                            setRacingStrategies((prev) => prev.map((s) => s.id === selectedRacingStrategy.id ? { ...s, mode: 'supervised' } : s));
+                            setSelectedRacingStrategy((prev) => prev && prev.id === selectedRacingStrategy.id ? { ...prev, mode: 'supervised' } : prev);
+                            setBettingAlert('⏸ Pilote automatique désactivé — mode supervisé activé.');
+                          }}
+                          type="button"
+                        >⏸ Désactiver le pilote automatique</button>
+                      )}
+                      <button className="ghostButton" onClick={resetVirtualRacingPortfolio} type="button">Reset virtuel à 100 €</button>
+                    </div>
+                  </div>
+                ) : null}
               </article>
 
               <article className="featureCard">
@@ -11624,6 +11638,38 @@ export default function RobinApp() {
                 </div>
               </article>
 
+              {lotteryPendingTickets.length > 0 ? (
+                <article className="featureCard lotoSecondaryCard">
+                  <div className="cardHeader">
+                    <h2>🎟️ Grilles en attente de tirage</h2>
+                    <span>{lotteryPendingTickets.length} ticket(s) simulé(s) en cours</span>
+                  </div>
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    {lotteryPendingTickets.slice(0, 10).map((ticket) => (
+                      <div key={ticket.id} className="compactRow" style={{ alignItems: 'center', gap: 10 }}>
+                        <div style={{ display: 'grid', gap: 3, flex: '1 1 auto' }}>
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                            <span className="sectionTag" style={{ margin: 0 }}>{ticket.game === 'loto' ? '🎯' : '🌟'} {LOTTERY_CONFIG[ticket.game].label}</span>
+                            <span style={{ fontSize: '.78rem', color: 'var(--muted)' }}>{formatDateTimeFr(ticket.drawDate)}</span>
+                            {ticket.subscriptionLabel ? <span className="metaPill">{ticket.subscriptionLabel}</span> : null}
+                          </div>
+                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                            {ticket.numbers.map((n) => <span key={`pt-n-${ticket.id}-${n}`} className="lotteryBall" style={{ fontSize: '.7rem', width: 22, height: 22 }}>{n}</span>)}
+                            {ticket.stars.map((s) => <span key={`pt-s-${ticket.id}-${s}`} className="lotteryBall star" style={{ fontSize: '.7rem', width: 22, height: 22 }}>{s}</span>)}
+                          </div>
+                        </div>
+                        <span className="statusBadge idle">En cours</span>
+                      </div>
+                    ))}
+                    {lotteryPendingTickets.length > 10 ? (
+                      <p style={{ margin: 0, fontSize: '.78rem', color: 'var(--muted)', textAlign: 'center' }}>
+                        + {lotteryPendingTickets.length - 10} ticket(s) supplémentaire(s) — <button className="ghostButton" style={{ display: 'inline', padding: '2px 6px' }} onClick={() => { setLotoPortfolioMenuSelection('loto-virtual'); setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Voir tout</button>
+                      </p>
+                    ) : null}
+                  </div>
+                </article>
+              ) : null}
+
               <article className="featureCard lotoPrimaryCard">
                 <div className="cardHeader">
                   <h2>Loto — Grilles probables</h2>
@@ -11758,10 +11804,43 @@ export default function RobinApp() {
                     <h2>Portefeuille fictif Loto</h2>
                     <span>{virtualAppsEnabled.loto ? 'Actif' : 'Inactif'} · Solde {lotteryVirtualPortfolio.bankroll.toFixed(2)} €</span>
                   </div>
-                  {lotteryVirtualPortfolio.tickets.length === 0 ? (
-                    <div className="infoPanel mutedPanel">
-                      <strong>Aucun ticket fictif</strong>
-                      <p>Activez le portefeuille fictif dans le cockpit Loto puis jouez vos grilles pour suivre les gains/pertes après tirage.</p>
+                  {!virtualAppsEnabled.loto ? (
+                    <div style={{ display: 'grid', gap: 12 }}>
+                      <div className="infoPanel" style={{ margin: 0, background: 'var(--warn-soft)', border: '1px solid var(--warn-border)' }}>
+                        <strong>Portefeuille fictif Loto inactif</strong>
+                        <p>Activez le portefeuille pour simuler des grilles et suivre vos gains/pertes après tirage.</p>
+                      </div>
+                      <label className="checkRow" style={{ margin: 0 }}>
+                        <input
+                          type="checkbox"
+                          checked={false}
+                          onChange={() => void updateVirtualAppPreference('loto', true)}
+                        />
+                        <span>Activer le portefeuille fictif Loto/Euromillions (50 € simulés)</span>
+                      </label>
+                      <div className="providerActions fullWidth">
+                        <button className="secondaryButton" onClick={() => void updateVirtualAppPreference('loto', true)} type="button">
+                          Activer maintenant
+                        </button>
+                        <button className="ghostButton" onClick={() => { setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                          Aller au cockpit
+                        </button>
+                      </div>
+                    </div>
+                  ) : lotteryVirtualPortfolio.tickets.length === 0 ? (
+                    <div style={{ display: 'grid', gap: 12 }}>
+                      <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
+                        <strong>Aucun ticket fictif</strong>
+                        <p>Jouez vos grilles depuis le cockpit ou confirmez une recommandation IA pour commencer.</p>
+                      </div>
+                      <div className="providerActions fullWidth">
+                        <button className="secondaryButton" onClick={() => { playLotteryVirtualTickets(lotteryGameFocus); }} type="button">
+                          Jouer une grille {LOTTERY_CONFIG[lotteryGameFocus].label}
+                        </button>
+                        <button className="ghostButton" onClick={() => { setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                          Voir cockpit &amp; grilles probables
+                        </button>
+                      </div>
                     </div>
                   ) : (
                     <div style={{ display: 'grid', gap: 12 }}>

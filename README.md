@@ -1,6 +1,6 @@
-# Picsou IA
+# Robin IA
 
-Picsou IA est une base deployable pour une plateforme d'assistance a l'investissement long terme avec controle humain, auditabilite et garde-fous de risque. Ce depot contient un socle monorepo pret a tourner sur un VPS avec Next.js, FastAPI, PostgreSQL, Redis et Caddy.
+Robin IA est une base deployable pour une plateforme d'assistance a l'investissement long terme avec controle humain, auditabilite et garde-fous de risque. Ce depot contient un socle monorepo pret a tourner sur un VPS avec Next.js, FastAPI, PostgreSQL, Redis et Caddy.
 
 ## Architecture livree
 

@@ -161,7 +161,7 @@ h1,h2,h3,p { margin:0; }
 .brandCluster p { font-size:.72rem; color:var(--muted); margin-top:1px; max-width:40ch; }
 .trendArrowTrack {
   position:relative;
-  width:250px;
+  width:480px;
   height:22px;
   border-radius:999px;
   overflow:hidden;
@@ -172,7 +172,7 @@ h1,h2,h3,p { margin:0; }
   position:absolute;
   left:8px;
   top:3px;
-  width:228px;
+  width:458px;
   height:14px;
   border-radius:999px;
   border:1px solid rgba(47,93,55,.35);
@@ -1455,7 +1455,7 @@ small.neutral { color: var(--muted); font-weight: 700; }
 @media(max-width:768px){
   .investShell { padding:0 14px 80px; }
   .heroTopbar { margin:0 -14px 28px; padding:12px 14px; }
-  .trendArrowTrack { width:210px; }
+  .trendArrowTrack { width:400px; }
   .topbarKpis .smallPill { font-size:.64rem; }
   .workspaceGrid,.marketPulseGrid,.providerGrid,.suggestionGrid,.adminToolbar { grid-template-columns:1fr; }
   .indicatorDeck { grid-template-columns:repeat(2,1fr); }

@@ -3,13 +3,13 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-picsou}
-      POSTGRES_USER: ${POSTGRES_USER:-picsou}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-picsou-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-robin}
+      POSTGRES_USER: ${POSTGRES_USER:-robin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-robin-change-me}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-picsou} -d ${POSTGRES_DB:-picsou}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-robin} -d ${POSTGRES_DB:-robin}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -55,7 +55,7 @@ services:
         condition: service_started
     environment:
       ENVIRONMENT: ${ENVIRONMENT:-production}
-      POSTGRES_DSN: postgresql+psycopg://${POSTGRES_USER:-picsou}:${POSTGRES_PASSWORD:-picsou-change-me}@postgres:5432/${POSTGRES_DB:-picsou}
+      POSTGRES_DSN: postgresql+psycopg://${POSTGRES_USER:-robin}:${POSTGRES_PASSWORD:-robin-change-me}@postgres:5432/${POSTGRES_DB:-robin}
       REDIS_URL: redis://redis:6379/0
       KILL_SWITCH_DEFAULT: ${KILL_SWITCH_DEFAULT:-false}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-development-only-change-me}
@@ -72,7 +72,7 @@ services:
       SMTP_USERNAME: ${SMTP_USERNAME:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-no-reply@nayonne.ovh}
-      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Picsou IA}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Robin IA}
       SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
       SMTP_USE_SSL: ${SMTP_USE_SSL:-false}
       SMTP_TIMEOUT_SECONDS: ${SMTP_TIMEOUT_SECONDS:-10}

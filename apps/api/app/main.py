@@ -112,8 +112,8 @@ logger = logging.getLogger(__name__)
 smtp_issue = email_delivery_issue_reason()
 if smtp_issue:
     logger.warning(smtp_issue)
-ACCESS_COOKIE_NAME = "picsou_access"
-REFRESH_COOKIE_NAME = "picsou_refresh"
+ACCESS_COOKIE_NAME = "robin_access"
+REFRESH_COOKIE_NAME = "robin_refresh"
 
 
 @asynccontextmanager
@@ -477,7 +477,7 @@ async def fetch_odds_with_cache(sport_key: str, regions: str, markets: str, ttl_
 
 def send_google_chat_test_message(webhook_url: str, user: User) -> tuple[bool, str]:
     message = {
-        "text": f"[Picsou IA] Test Google Chat valide pour {user.full_name} ({user.email})"
+        "text": f"[Robin IA] Test Google Chat valide pour {user.full_name} ({user.email})"
     }
     return post_json_with_retry(webhook_url, message, timeout_seconds=6.0, max_attempts=2)
 
@@ -486,7 +486,7 @@ def send_telegram_test_message(bot_token: str, chat_id: str, user: User) -> tupl
     endpoint = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     message = {
         "chat_id": chat_id,
-        "text": f"[Picsou IA] Test Telegram valide pour {user.full_name} ({user.email})",
+        "text": f"[Robin IA] Test Telegram valide pour {user.full_name} ({user.email})",
         "disable_notification": True,
     }
     return post_json_with_retry(endpoint, message, timeout_seconds=6.0, max_attempts=2)

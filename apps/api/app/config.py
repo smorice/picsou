@@ -6,7 +6,7 @@ class Settings(BaseSettings):
 
     app_name: str = "Robin IA API"
     environment: str = "development"
-    postgres_dsn: str = "postgresql+psycopg://picsou:picsou@postgres:5432/picsou"
+    postgres_dsn: str = "postgresql+psycopg://robin:robin@postgres:5432/robin"
     redis_url: str = "redis://redis:6379/0"
     kill_switch_default: bool = False
     jwt_secret_key: str = "development-only-change-me"
