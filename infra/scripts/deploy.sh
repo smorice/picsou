@@ -38,7 +38,13 @@ ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_HOST" "
   if [[ ! -f .env ]]; then
     cp .env.example .env
   fi
+  if ! grep -q '^PUBLIC_BASE_URL=' .env; then
+    printf '\nPUBLIC_BASE_URL=https://nayonne.ovh\n' >> .env
+  fi
   $SUDO docker compose pull caddy postgres redis || true
   $SUDO docker compose up -d --build
   $SUDO docker compose ps
 "
+
+printf '\nPublication publique par defaut: https://nayonne.ovh\n'
+printf 'Acces IP fusionne/redirige: https://79.137.75.219 -> https://nayonne.ovh\n'

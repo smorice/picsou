@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 
 type UserProfile = {
   id: string;
@@ -44,7 +44,6 @@ type DashboardData = {
   sector_heatmap: Array<{ sector: string; weight: number; pnl: number }>;
   allocation: Array<{ class: string; weight: number }>;
   recent_flows: Array<{ date: string; type: string; amount: number }>;
-  suggestions: Array<{ title: string; score: number; justification: string }>;
   bank_connectors: BankProvider[];
   connected_accounts: Array<{ provider_code: string; provider_name: string; status: string; account_label?: string | null }>;
   portfolios: Array<{
@@ -454,6 +453,50 @@ type LotteryUpcomingDraw = {
   jackpotLabel: string;
 };
 
+type LotteryVirtualTicket = {
+  id: string;
+  game: LotteryGame;
+  drawDate: string;
+  gridLabel: string;
+  subscriptionLabel: string | null;
+  numbers: number[];
+  stars: number[];
+  stake: number;
+  status: 'pending' | 'won' | 'lost';
+  payout: number;
+  profit: number;
+  matchedNumbers: number;
+  matchedStars: number;
+  rankLabel: string | null;
+  createdAt: string;
+  settledAt: string | null;
+};
+
+type LotteryVirtualPortfolio = {
+  enabled: boolean;
+  ai_enabled: boolean;
+  mode: BettingStrategy['mode'];
+  initial_balance: number;
+  bankroll: number;
+  max_grids_per_draw: number;
+  tickets: LotteryVirtualTicket[];
+};
+
+type LotteryExecutionRequest = {
+  id: string;
+  game: LotteryGame;
+  drawDate: string;
+  gridLabel: string;
+  subscriptionLabel: string | null;
+  numbers: number[];
+  stars: number[];
+  targetPortfolioId: string;
+  targetPortfolioLabel: string;
+  executionMode: 'simulation' | 'real';
+  status: 'confirmed';
+  createdAt: string;
+};
+
 type AssistantTip = {
   id: string;
   title: string;
@@ -536,6 +579,7 @@ const LOTTERY_CONFIG: Record<LotteryGame, { label: string; numbersCount: number;
 
 const MAX_LOTTERY_GRID_COUNT = 6;
 const LOTTERY_BACKTEST_DRAW_COUNT = 100;
+const LOTTERY_SUBSCRIPTION_WEEK_OPTIONS = [1, 2, 4, 8] as const;
 const LOTTERY_SIMPLE_GRID_COST: Record<LotteryGame, number> = {
   loto: 2.2,
   euromillions: 2.5,
@@ -620,6 +664,17 @@ const LOTTERY_UPCOMING_DRAWS: LotteryUpcomingDraw[] = [
   { game: 'euromillions', drawDate: '2026-03-17T21:00:00+01:00', closeAt: '20:45', jackpotLabel: '38 M€ estimes' },
   { game: 'euromillions', drawDate: '2026-03-20T21:00:00+01:00', closeAt: '20:45', jackpotLabel: '44 M€ estimes' },
 ];
+
+const LOTTERY_VIRTUAL_INITIAL_BALANCE = 50;
+const DEFAULT_LOTTERY_VIRTUAL_PORTFOLIO: LotteryVirtualPortfolio = {
+  enabled: false,
+  ai_enabled: false,
+  mode: 'manual',
+  initial_balance: LOTTERY_VIRTUAL_INITIAL_BALANCE,
+  bankroll: LOTTERY_VIRTUAL_INITIAL_BALANCE,
+  max_grids_per_draw: 3,
+  tickets: [],
+};
 
 const LOTTERY_GRID_TEMPLATES = [
   [0, 1, 2, 3, 4],
@@ -916,6 +971,65 @@ function buildLotteryBacktestMap(game: LotteryGame, grids: LotteryPrediction[], 
   ) as Record<string, LotteryBacktestSummary>;
 }
 
+function buildDeterministicLotteryDraw(game: LotteryGame, drawDate: string): LotteryDrawRecord {
+  const config = LOTTERY_CONFIG[game];
+  const numbers: number[] = [];
+  const stars: number[] = [];
+  let cursor = 0;
+
+  while (numbers.length < config.numbersCount && cursor < 400) {
+    const candidate = 1 + Math.floor(stablePseudoRandom(`${game}|${drawDate}|n|${cursor}`) * config.maxNumber);
+    if (!numbers.includes(candidate)) {
+      numbers.push(candidate);
+    }
+    cursor += 1;
+  }
+
+  cursor = 0;
+  while (stars.length < config.starsCount && cursor < 200) {
+    const candidate = 1 + Math.floor(stablePseudoRandom(`${game}|${drawDate}|s|${cursor}`) * config.maxStar);
+    if (!stars.includes(candidate)) {
+      stars.push(candidate);
+    }
+    cursor += 1;
+  }
+
+  return {
+    date: drawDate,
+    numbers: numbers.sort((a, b) => a - b),
+    stars: stars.sort((a, b) => a - b),
+  };
+}
+
+function addDays(dateIso: string, days: number) {
+  const date = new Date(dateIso);
+  date.setDate(date.getDate() + days);
+  return date.toISOString();
+}
+
+function buildLotteryUpcomingDrawSeries(game: LotteryGame, weeks: number): LotteryUpcomingDraw[] {
+  const weekCount = Math.max(1, weeks);
+  const baseDraws = LOTTERY_UPCOMING_DRAWS
+    .filter((draw) => draw.game === game)
+    .slice()
+    .sort((a, b) => Date.parse(a.drawDate) - Date.parse(b.drawDate));
+
+  if (baseDraws.length === 0) {
+    return [];
+  }
+
+  return Array.from({ length: weekCount }).flatMap((_, weekIndex) => (
+    baseDraws.map((draw, drawIndex) => ({
+      ...draw,
+      drawDate: addDays(draw.drawDate, weekIndex * 7),
+      jackpotLabel: weekIndex === 0 ? draw.jackpotLabel : `${LOTTERY_CONFIG[game].label} · semaine ${weekIndex + 1}`,
+      closeAt: draw.closeAt,
+      game: draw.game,
+      id: `${game}-${weekIndex}-${drawIndex}`,
+    }))
+  )).map(({ id, ...draw }) => draw);
+}
+
 function computeLotteryPredictions(
   game: LotteryGame,
   history: LotteryDrawRecord[],
@@ -1209,6 +1323,26 @@ function toPositiveNumber(value: unknown, fallback: number): number {
   return parsed;
 }
 
+function randomDelayMs(minMs: number, maxMs: number): number {
+  if (!Number.isFinite(minMs) || !Number.isFinite(maxMs) || maxMs <= minMs) {
+    return Math.max(0, Math.round(minMs || 0));
+  }
+  return Math.round(minMs + Math.random() * (maxMs - minMs));
+}
+
+function stablePseudoRandom(seed: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return ((hash >>> 0) % 10000) / 10000;
+}
+
+function scoreTipsterSignal(signal: TipsterSignal): number {
+  return (signal.confidence * 20) + (signal.value_pct * 3) + signal.potentialGain;
+}
+
 function normalizeUserRiskProfile(value: unknown): UserRiskProfile {
   const normalized = String(value ?? '').trim().toLowerCase();
   if (['low', 'prudent', 'faible'].includes(normalized)) {
@@ -1423,12 +1557,12 @@ function buildAllPortfolios(
     history: vpHistory,
     operations: vpOps,
     ai_advice: [
-      { kind: 'info', text: `Bac à sable virtuel — budget initial : ${vpBudget.toFixed(0)} €. Robin IA teste ses stratégies ici sans risque réel.` },
+      { kind: 'info', text: `Bac à sable virtuel — budget initial : ${vpBudget.toFixed(0)} €. Portefeuille Bitcoin simulé sans risque réel.` },
       vpPnl > 0
         ? { kind: 'hold', text: `Performance actuelle : +${vpPnl.toFixed(2)} € (+${(vp.roi >= 0 ? '+' : '')}${(vp.roi).toFixed(1)}%). L IA surperforme.` }
         : vpPnl < 0
           ? { kind: 'sell', text: `Sous-performance virtuelle : ${vpPnl.toFixed(2)} €. L IA ajuste sa stratégie sans impact réel.` }
-          : { kind: 'info', text: 'Aucune activité virtuelle pour l instant. Souscrivez à un signal marché pour tester Robin IA.' },
+          : { kind: 'info', text: 'Aucune activité virtuelle pour l instant. Activez l IA pour simuler des transactions Bitcoin.' },
     ],
     allocation: vp.strategy_mix.length > 0
       ? vp.strategy_mix.map((m) => ({ class: m.class, weight: m.weight, value: vpValue * m.weight / 100 }))
@@ -2069,13 +2203,21 @@ const MARKET_SIGNALS: MarketSignal[] = [
   { id: 'ihyg', category: 'obligations', name: 'iShares EUR High Yield', symbol: 'IHYG', performance_30d: 2.1, confidence: 3, rationale: 'Spread HY en compression. Rendement 5.9%. Prime de risque de crédit attrayante en contexte de baisse de taux.', risk: 'modere', min_investment: 50 },
 ];
 
+const PEA_BANKS = [
+  { code: 'pea-boursobank', name: 'BoursoBank PEA' },
+  { code: 'pea-credit-agricole', name: 'Credit Agricole Investore Integral' },
+  { code: 'pea-bnp', name: 'BNP Paribas PEA' },
+  { code: 'pea-societe-generale', name: 'Societe Generale Bourse' },
+  { code: 'pea-fortuneo', name: 'Fortuneo PEA' },
+] as const;
+
 /* ============================================================
    MOCK DATA — Paris Sportifs (Tipster IA)
    ============================================================ */
 const MOCK_STRATEGIES: BettingStrategy[] = [
   {
     id: 's4', name: 'Portefeuille Virtuel IA', type: 'predictive',
-    description: 'Simulation locale paris sportifs. Budget initial 100 €. Aucune transaction réelle.',
+    description: 'Portefeuille Virtuel IA (inactif) : simulation Bitcoin 100 €. Aucune transaction réelle.',
     isVirtual: true,
     bankroll: 100, roi: 0, winRate: 0, variance: 0, enabled: false, betsTotal: 0, betsWon: 0,
     ai_enabled: true,
@@ -2184,6 +2326,7 @@ const VIRTUAL_RISK_PRESETS: Record<VirtualRiskProfile, {
 export default function RobinApp() {
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [activeApp, setActiveApp] = useState<'finance' | 'betting' | 'racing' | 'loto'>('finance');
+  const [financeSubApp, setFinanceSubApp] = useState<'crypto' | 'actions'>('crypto');
   const [appView, setAppView] = useState<'overview' | 'dashboard' | 'portfolios' | 'settings' | 'admin' | 'strategies' | 'account'>('overview');
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState<string | null>(null);
@@ -2241,7 +2384,9 @@ export default function RobinApp() {
   const [assistantWizardDecisionId, setAssistantWizardDecisionId] = useState<string | null>(null);
   const [assistantExecutionMode] = useState<'recommendation' | 'direct'>('recommendation');
   const [pendingDecisionConfirmation, setPendingDecisionConfirmation] = useState<PendingDecisionConfirmation | null>(null);
-  const [virtualAppsEnabled, setVirtualAppsEnabled] = useState<{ finance: boolean; betting: boolean }>({ finance: true, betting: false });
+  const [virtualAppsEnabled, setVirtualAppsEnabled] = useState<{ finance: boolean; betting: boolean; racing: boolean; loto: boolean }>({ finance: true, betting: false, racing: false, loto: false });
+  const [visitedMenuKeys, setVisitedMenuKeys] = useState<Record<string, true>>({});
+  const [portfolioSetupStepDone, setPortfolioSetupStepDone] = useState(false);
   const [bettingThemeVisibility, setBettingThemeVisibility] = useState<BettingThemeVisibility>(DEFAULT_BETTING_THEME_VISIBILITY);
   const [settingsTileCollapsed, setSettingsTileCollapsed] = useState<Record<string, boolean>>({
     intro: true,
@@ -2275,6 +2420,7 @@ export default function RobinApp() {
   const [racingSignals, setRacingSignals] = useState<TipsterSignal[]>(RACING_SIGNALS);
   const [selectedRacingStrategy, setSelectedRacingStrategy] = useState<BettingStrategy | null>(null);
   const [racingStrategyDetailOpen, setRacingStrategyDetailOpen] = useState(false);
+  const [selectedRacingRecommendationStrategyId, setSelectedRacingRecommendationStrategyId] = useState<string>('');
   const [selectedStrategy, setSelectedStrategy] = useState<BettingStrategy | null>(null);
   const [strategyDetailOpen, setStrategyDetailOpen] = useState(false);
   const [bettingAlert, setBettingAlert] = useState<string | null>(null);
@@ -2283,6 +2429,11 @@ export default function RobinApp() {
   const [overviewTargetFilter, setOverviewTargetFilter] = useState<string>('all');
   const [lotteryGameFocus, setLotteryGameFocus] = useState<LotteryGame>('loto');
   const [lotteryGridCount, setLotteryGridCount] = useState(3);
+  const [lotterySubscriptionWeeks, setLotterySubscriptionWeeks] = useState<number>(2);
+  const [selectedLotteryRecommendationPortfolioId, setSelectedLotteryRecommendationPortfolioId] = useState<string>('loto-virtual');
+  const [lotoPortfolioMenuSelection, setLotoPortfolioMenuSelection] = useState<string>('loto-virtual');
+  const [lotteryVirtualPortfolio, setLotteryVirtualPortfolio] = useState<LotteryVirtualPortfolio>(DEFAULT_LOTTERY_VIRTUAL_PORTFOLIO);
+  const [lotteryExecutionRequests, setLotteryExecutionRequests] = useState<LotteryExecutionRequest[]>([]);
   const [myActivityTrail, setMyActivityTrail] = useState<AuditEntry[]>([]);
   const [loadingMyActivity, setLoadingMyActivity] = useState(false);
   const [virtualRiskProfile, setVirtualRiskProfile] = useState<VirtualRiskProfile>('medium');
@@ -2302,6 +2453,24 @@ export default function RobinApp() {
     }
     setSelectedStrategy(liveStrategy);
   }, [bettingStrategies, selectedStrategy]);
+
+  useEffect(() => {
+    if (lotteryAssignablePortfolios.some((portfolio) => portfolio.id === selectedLotteryRecommendationPortfolioId)) {
+      return;
+    }
+    setSelectedLotteryRecommendationPortfolioId(lotteryAssignablePortfolios[0]?.id ?? 'loto-virtual');
+  }, [lotteryAssignablePortfolios, selectedLotteryRecommendationPortfolioId]);
+
+  useEffect(() => {
+    if (racingStrategies.some((strategy) => strategy.id === selectedRacingRecommendationStrategyId)) {
+      return;
+    }
+    setSelectedRacingRecommendationStrategyId(
+      racingStrategies.find((strategy) => strategy.isVirtual)?.id
+        ?? racingStrategies[0]?.id
+        ?? '',
+    );
+  }, [racingStrategies, selectedRacingRecommendationStrategyId]);
 
   useEffect(() => {
     const storedAccess = sessionStorage.getItem(ACCESS_TOKEN_KEY);
@@ -2343,9 +2512,8 @@ export default function RobinApp() {
       sessionStorage.removeItem(ACCESS_TOKEN_KEY);
       sessionStorage.removeItem(REFRESH_TOKEN_KEY);
     }
-    if (!sessionStorage.getItem(SESSION_LAST_ACTIVITY_AT_KEY)) {
-      sessionStorage.setItem(SESSION_LAST_ACTIVITY_AT_KEY, String(Date.now()));
-    }
+    // A browser refresh should keep the server-backed session alive.
+    sessionStorage.setItem(SESSION_LAST_ACTIVITY_AT_KEY, String(Date.now()));
     setAccessToken(COOKIE_SESSION_MARKER);
     setRefreshToken(COOKIE_SESSION_MARKER);
   }, []);
@@ -2360,9 +2528,13 @@ export default function RobinApp() {
   useEffect(() => {
     if (!user) {
       setAgentConfigs({});
+      setPortfolioSetupStepDone(false);
+      setLotteryVirtualPortfolio(DEFAULT_LOTTERY_VIRTUAL_PORTFOLIO);
       return;
     }
     setSettingsForm(defaultSettingsFromUser(user));
+    const setupDone = (user.personal_settings?.portfolio_setup_done === true) || (user.personal_settings?.onboarding_done === true);
+    setPortfolioSetupStepDone(setupDone);
     const savedVisibility = (user.personal_settings.portfolio_visibility ?? {}) as Record<string, unknown>;
     const nextVisibility: Record<string, boolean> = {};
     for (const [key, value] of Object.entries(savedVisibility)) {
@@ -2431,7 +2603,73 @@ export default function RobinApp() {
     setVirtualAppsEnabled({
       finance: rawVirtualApps.finance !== false,
       betting: rawVirtualApps.betting === true,
+      racing: rawVirtualApps.racing === true,
+      loto: rawVirtualApps.loto === true,
     });
+
+    const rawLotteryVirtual = (user.personal_settings.lottery_virtual_portfolio ?? {}) as Record<string, unknown>;
+    const rawTickets = Array.isArray(rawLotteryVirtual.tickets) ? rawLotteryVirtual.tickets : [];
+    const hydratedLotteryTickets: LotteryVirtualTicket[] = rawTickets
+      .filter((item) => item && typeof item === 'object')
+      .map((item) => {
+        const source = item as Record<string, unknown>;
+        const game = source.game === 'euromillions' ? 'euromillions' : 'loto';
+        return {
+          id: String(source.id ?? `lottery-ticket-${Math.random().toString(36).slice(2, 7)}`),
+          game,
+          drawDate: String(source.drawDate ?? new Date().toISOString()),
+          gridLabel: String(source.gridLabel ?? `${LOTTERY_CONFIG[game].label} #1`),
+          subscriptionLabel: typeof source.subscriptionLabel === 'string' && source.subscriptionLabel.trim() ? source.subscriptionLabel : null,
+          numbers: Array.isArray(source.numbers) ? source.numbers.map((value) => Number(value)).filter((value) => Number.isFinite(value)) : [],
+          stars: Array.isArray(source.stars) ? source.stars.map((value) => Number(value)).filter((value) => Number.isFinite(value)) : [],
+          stake: Number(source.stake ?? LOTTERY_SIMPLE_GRID_COST[game]) || LOTTERY_SIMPLE_GRID_COST[game],
+          status: source.status === 'won' || source.status === 'lost' ? source.status : 'pending',
+          payout: Number(source.payout ?? 0) || 0,
+          profit: Number(source.profit ?? 0) || 0,
+          matchedNumbers: Number(source.matchedNumbers ?? 0) || 0,
+          matchedStars: Number(source.matchedStars ?? 0) || 0,
+          rankLabel: typeof source.rankLabel === 'string' ? source.rankLabel : null,
+          createdAt: String(source.createdAt ?? new Date().toISOString()),
+          settledAt: typeof source.settledAt === 'string' ? source.settledAt : null,
+        };
+      })
+      .slice(0, 220);
+    const initialBalance = Math.max(
+      LOTTERY_VIRTUAL_INITIAL_BALANCE,
+      Number(rawLotteryVirtual.initial_balance ?? LOTTERY_VIRTUAL_INITIAL_BALANCE) || LOTTERY_VIRTUAL_INITIAL_BALANCE,
+    );
+    setLotteryVirtualPortfolio({
+      enabled: rawLotteryVirtual.enabled === true,
+      ai_enabled: rawLotteryVirtual.ai_enabled === true,
+      mode: rawLotteryVirtual.mode === 'autonomous' || rawLotteryVirtual.mode === 'supervised' ? rawLotteryVirtual.mode : 'manual',
+      initial_balance: initialBalance,
+      bankroll: Math.max(0, Number(rawLotteryVirtual.bankroll ?? initialBalance) || initialBalance),
+      max_grids_per_draw: Math.max(1, Math.min(MAX_LOTTERY_GRID_COUNT, Number(rawLotteryVirtual.max_grids_per_draw ?? 3) || 3)),
+      tickets: hydratedLotteryTickets,
+    });
+
+    const rawLotteryRequests = Array.isArray(user.personal_settings.lottery_execution_requests)
+      ? user.personal_settings.lottery_execution_requests
+      : [];
+    setLotteryExecutionRequests(
+      rawLotteryRequests
+        .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
+        .map((item) => ({
+          id: String(item.id ?? `lottery-request-${Math.random().toString(36).slice(2, 7)}`),
+          game: item.game === 'euromillions' ? 'euromillions' : 'loto',
+          drawDate: String(item.drawDate ?? new Date().toISOString()),
+          gridLabel: String(item.gridLabel ?? 'Grille IA'),
+          subscriptionLabel: typeof item.subscriptionLabel === 'string' && item.subscriptionLabel.trim() ? item.subscriptionLabel : null,
+          numbers: Array.isArray(item.numbers) ? item.numbers.map((value) => Number(value)).filter((value) => Number.isFinite(value)) : [],
+          stars: Array.isArray(item.stars) ? item.stars.map((value) => Number(value)).filter((value) => Number.isFinite(value)) : [],
+          targetPortfolioId: String(item.targetPortfolioId ?? 'loto-virtual'),
+          targetPortfolioLabel: String(item.targetPortfolioLabel ?? 'Portefeuille fictif Loto'),
+          executionMode: item.executionMode === 'real' ? 'real' : 'simulation',
+          status: 'confirmed',
+          createdAt: String(item.createdAt ?? new Date().toISOString()),
+        }))
+        .slice(0, 240),
+    );
 
     const rawBettingThemes = (user.personal_settings.betting_theme_visibility ?? {}) as Record<string, unknown>;
     setBettingThemeVisibility({
@@ -2454,6 +2692,20 @@ export default function RobinApp() {
         return current;
       }
       return hydratedStrategies.find((strategy) => strategy.id === current.id) ?? null;
+    });
+
+    const rawRacingStrategies = user.personal_settings.racing_strategy_settings;
+    const rawRacingRuntime = user.personal_settings.racing_strategy_runtime;
+    const hydratedRacingStrategies = applyBettingStrategyRuntime(
+      applyBettingStrategySettings(MOCK_RACING_STRATEGIES, rawRacingStrategies),
+      rawRacingRuntime,
+    );
+    setRacingStrategies(hydratedRacingStrategies);
+    setSelectedRacingStrategy((current) => {
+      if (!current) {
+        return current;
+      }
+      return hydratedRacingStrategies.find((strategy) => strategy.id === current.id) ?? null;
     });
   }, [user]);
 
@@ -2526,6 +2778,9 @@ export default function RobinApp() {
           return;
         }
         if (!meResponse.ok) {
+          if (meResponse.status === 401 || meResponse.status === 403) {
+            clearSession();
+          }
           throw new Error(extractErrorMessage(mePayload, 'Session invalide'));
         }
         const me = mePayload as UserProfile | null;
@@ -2563,7 +2818,6 @@ export default function RobinApp() {
         }
       } catch (err) {
         if (!cancelled) {
-          clearSession();
           setError(err instanceof Error ? err.message : 'Impossible de charger votre espace');
         }
       } finally {
@@ -2606,7 +2860,8 @@ export default function RobinApp() {
     const elapsed = Date.now() - lastActivityAt;
     const remaining = SESSION_TIMEOUT_MS - elapsed;
     if (remaining <= 0) {
-      logoutForInactivity();
+      sessionStorage.setItem(SESSION_LAST_ACTIVITY_AT_KEY, String(Date.now()));
+      scheduleInactivityTimeout(SESSION_TIMEOUT_MS);
       return;
     }
 
@@ -2797,6 +3052,24 @@ export default function RobinApp() {
     }
   }, [user?.id]);
 
+  useEffect(() => {
+    if (!user) {
+      setVisitedMenuKeys({});
+      return;
+    }
+    const trackableView =
+      appView === 'overview'
+      || appView === 'dashboard'
+      || appView === 'portfolios'
+      || appView === 'strategies'
+      || appView === 'settings';
+    if (!trackableView) {
+      return;
+    }
+    const key = `${activeApp}:${appView}`;
+    setVisitedMenuKeys((prev) => (prev[key] ? prev : { ...prev, [key]: true }));
+  }, [user, activeApp, appView]);
+
   async function refreshSession(token: string) {
     const response = await fetch(apiUrl('/auth/refresh'), {
       method: 'POST',
@@ -2870,8 +3143,9 @@ export default function RobinApp() {
     overrides: Record<string, unknown> = {},
     visibilityState: Record<string, boolean> = portfolioVisibility,
     decisionState: Record<string, true> = resolvedDecisionKeys,
-    virtualAppsState: { finance: boolean; betting: boolean } = virtualAppsEnabled,
+    virtualAppsState: { finance: boolean; betting: boolean; racing: boolean; loto: boolean } = virtualAppsEnabled,
     bettingStrategiesState: BettingStrategy[] = bettingStrategies,
+    racingStrategiesState: BettingStrategy[] = racingStrategies,
   ) {
     return {
       currency: settingsForm.currency,
@@ -2903,10 +3177,16 @@ export default function RobinApp() {
       virtual_apps: {
         finance: virtualAppsState.finance !== false,
         betting: virtualAppsState.betting === true,
+        racing: virtualAppsState.racing === true,
+        loto: virtualAppsState.loto === true,
       },
+      lottery_virtual_portfolio: lotteryVirtualPortfolio,
+      lottery_execution_requests: lotteryExecutionRequests,
       betting_theme_visibility: bettingThemeVisibility,
       betting_strategy_settings: serializeBettingStrategySettings(bettingStrategiesState),
       betting_strategy_runtime: serializeBettingStrategyRuntime(bettingStrategiesState),
+      racing_strategy_settings: serializeBettingStrategySettings(racingStrategiesState),
+      racing_strategy_runtime: serializeBettingStrategyRuntime(racingStrategiesState),
       finance_virtual_runtime: financeVirtualSimulation,
       decision_resolutions: decisionState,
       agent_quotas: agentConfigs,
@@ -2923,12 +3203,23 @@ export default function RobinApp() {
     };
   }
 
-  async function updateVirtualAppPreference(app: 'finance' | 'betting', enabled: boolean) {
+  async function updateVirtualAppPreference(app: 'finance' | 'betting' | 'racing' | 'loto', enabled: boolean) {
     const nextVirtualApps = {
       ...virtualAppsEnabled,
       [app]: enabled,
     };
     setVirtualAppsEnabled(nextVirtualApps);
+    const nextLotteryVirtualPortfolio = app === 'loto'
+      ? {
+        ...lotteryVirtualPortfolio,
+        enabled,
+        ai_enabled: enabled ? lotteryVirtualPortfolio.ai_enabled : false,
+        mode: enabled ? lotteryVirtualPortfolio.mode : 'manual',
+      }
+      : lotteryVirtualPortfolio;
+    if (app === 'loto') {
+      setLotteryVirtualPortfolio(nextLotteryVirtualPortfolio);
+    }
 
     if (!accessToken) {
       return;
@@ -2946,7 +3237,10 @@ export default function RobinApp() {
           full_name: settingsForm.fullName,
           phone_number: settingsForm.phoneNumber || null,
           client_context: clientContext,
-          personal_settings: buildPersonalSettingsPayload({}, portfolioVisibility, resolvedDecisionKeys, nextVirtualApps),
+          personal_settings: {
+            ...buildPersonalSettingsPayload({}, portfolioVisibility, resolvedDecisionKeys, nextVirtualApps),
+            lottery_virtual_portfolio: nextLotteryVirtualPortfolio,
+          },
         }),
       });
       const payload = await readJsonResponse<UserProfile>(response);
@@ -2955,6 +3249,45 @@ export default function RobinApp() {
       }
     } catch {
       // Keep local state even if persistence fails.
+    }
+  }
+
+  async function completePortfolioSetupStep() {
+    if (!accessToken || !user) {
+      return;
+    }
+    const hasEnabledVirtual = virtualAppsEnabled.finance || virtualAppsEnabled.betting || virtualAppsEnabled.racing || virtualAppsEnabled.loto;
+    const hasRealIntegration = integrationConnections.some((connection) => connection.status === 'active');
+    if (!hasEnabledVirtual && !hasRealIntegration) {
+      setError('Activez au moins un portefeuille virtuel ou une intégration réelle pour continuer.');
+      return;
+    }
+    try {
+      const response = await fetch(apiUrl('/auth/me/settings'), {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeader(accessToken),
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          full_name: settingsForm.fullName,
+          phone_number: settingsForm.phoneNumber || null,
+          client_context: clientContext,
+          personal_settings: {
+            ...buildPersonalSettingsPayload(),
+            portfolio_setup_done: true,
+          },
+        }),
+      });
+      const payload = await readJsonResponse<UserProfile>(response);
+      if (response.ok && payload) {
+        setUser(payload);
+      }
+      setPortfolioSetupStepDone(true);
+      setError(null);
+    } catch {
+      setPortfolioSetupStepDone(true);
     }
   }
 
@@ -3882,6 +4215,30 @@ export default function RobinApp() {
     financeVirtualSimulation,
     localPortfolioOperations,
   );
+  const lotoIntegrationPortfolios = useMemo(
+    () => integrationConnections
+      .filter((connection) => connection.status === 'active' || connection.status === 'available')
+      .map((connection, index) => ({
+        id: `loto-integration-${connection.provider_code}-${index}`,
+        label: connection.account_label?.trim() ? connection.account_label : connection.provider_name,
+        providerName: connection.provider_name,
+        providerCode: connection.provider_code,
+        status: connection.status,
+      })),
+    [integrationConnections],
+  );
+  const lotteryAssignablePortfolios = useMemo(
+    () => ([
+      { id: 'loto-virtual', label: 'Portefeuille fictif Loto', executionMode: 'simulation' as const },
+      ...lotoIntegrationPortfolios.map((portfolio) => ({
+        id: portfolio.id,
+        label: portfolio.label,
+        executionMode: 'real' as const,
+      })),
+    ]),
+    [lotoIntegrationPortfolios],
+  );
+  const selectedLotoIntegrationPortfolio = lotoIntegrationPortfolios.find((portfolio) => portfolio.id === lotoPortfolioMenuSelection) ?? null;
   const visiblePortfolios = allPortfolios.filter((portfolio) => portfolio.visible && portfolio.status === 'active');
   const realVisiblePortfolios = visiblePortfolios.filter((portfolio) => portfolio.type === 'integration');
   const aggregateAllHistory = aggregatePortfolioHistory(visiblePortfolios);
@@ -3920,6 +4277,21 @@ export default function RobinApp() {
     : 'Objectif non défini';
   const trendArrowSpeed = goalTrajectoryTone === 'up' ? 1.9 : goalTrajectoryTone === 'down' ? 3.2 : 2.5;
   const trendArrowScale = goalTrajectoryTone === 'up' ? 1.08 : goalTrajectoryTone === 'down' ? 0.88 : 0.96;
+  const progressMenuKeys = useMemo(() => {
+    const keys: string[] = [];
+    for (const app of allowedApps) {
+      keys.push(`${app}:dashboard`);
+      if (app !== 'loto') {
+        keys.push(`${app}:strategies`);
+        keys.push(`${app}:settings`);
+      }
+    }
+    return keys;
+  }, [allowedApps]);
+  const visitedProgressCount = progressMenuKeys.filter((key) => visitedMenuKeys[key]).length;
+  const uiNavigationProgress = progressMenuKeys.length > 0 ? Math.max(0, Math.min(1, visitedProgressCount / progressMenuKeys.length)) : 0;
+  const uiNavigationProgressPct = Math.round(uiNavigationProgress * 100);
+  const batteryTone = uiNavigationProgress >= 0.92 ? 'up' : uiNavigationProgress <= 0.34 ? 'down' : 'neutral';
   const portfolioEvolutionRows = visiblePortfolios.map((portfolio) => ({
     id: portfolio.id,
     label: portfolio.label,
@@ -4158,8 +4530,10 @@ export default function RobinApp() {
     euromillions: buildLotteryBacktestMap('euromillions', lotteryPredictions.euromillions.predictedGrids, EUROMILLIONS_HISTORY),
   }), [lotteryPredictions]);
   const lotteryUpcoming = useMemo(
-    () => LOTTERY_UPCOMING_DRAWS.slice().sort((a, b) => Date.parse(a.drawDate) - Date.parse(b.drawDate)),
-    [],
+    () => ['loto', 'euromillions']
+      .flatMap((game) => buildLotteryUpcomingDrawSeries(game as LotteryGame, Math.max(2, lotterySubscriptionWeeks)))
+      .sort((a, b) => Date.parse(a.drawDate) - Date.parse(b.drawDate)),
+    [lotterySubscriptionWeeks],
   );
   const pendingTipsterSignals = useMemo(
     () => tipsterSignals.filter((signal) => signal.status === 'pending'),
@@ -4316,9 +4690,24 @@ export default function RobinApp() {
     }
     return tips;
   }, [activeApp, visiblePortfolios, filteredTopTipsterRecommendations, lotteryPredictions, lotteryGameFocus, decisionInsights, racingSignals]);
-  const showAssistantDock = appView === 'dashboard' && assistantOptimizationTips.length > 0;
+  const showAssistantDock = appView === 'dashboard' && activeApp !== 'loto' && assistantOptimizationTips.length > 0;
   const assistantDockVisible = showAssistantDock && assistantDockOpen;
+  const isFinanceSectionActive = activeApp === 'finance';
+  const isFinanceCryptoActive = activeApp === 'finance' && financeSubApp === 'crypto';
+  const isFinanceActionsActive = activeApp === 'finance' && financeSubApp === 'actions';
   const isParisSectionActive = activeApp === 'betting' || activeApp === 'racing' || activeApp === 'loto';
+  const peaMarketSignals = useMemo(
+    () => MARKET_SIGNALS.filter((signal) => signal.category === 'actions' || signal.category === 'etf'),
+    [],
+  );
+  const activeBettingVirtualStrategy = useMemo(
+    () => bettingStrategies.find((strategy) => strategy.isVirtual) ?? null,
+    [bettingStrategies],
+  );
+  const activeRacingVirtualStrategy = useMemo(
+    () => racingStrategies.find((strategy) => strategy.isVirtual) ?? null,
+    [racingStrategies],
+  );
   const activeBettingBets = useMemo(
     () => bettingStrategies
       .flatMap((strategy) => strategy.recentBets
@@ -4338,6 +4727,51 @@ export default function RobinApp() {
       .slice(0, 10),
     [bettingStrategies]
   );
+  const lotteryPendingTickets = useMemo(
+    () => lotteryVirtualPortfolio.tickets
+      .filter((ticket) => ticket.status === 'pending')
+      .sort((a, b) => Date.parse(a.drawDate) - Date.parse(b.drawDate)),
+    [lotteryVirtualPortfolio.tickets],
+  );
+  const lotterySettledTickets = useMemo(
+    () => lotteryVirtualPortfolio.tickets
+      .filter((ticket) => ticket.status !== 'pending')
+      .sort((a, b) => Date.parse(b.settledAt ?? b.drawDate) - Date.parse(a.settledAt ?? a.drawDate)),
+    [lotteryVirtualPortfolio.tickets],
+  );
+  const lotteryVirtualPnl = useMemo(
+    () => Number((lotteryVirtualPortfolio.bankroll - lotteryVirtualPortfolio.initial_balance).toFixed(2)),
+    [lotteryVirtualPortfolio.bankroll, lotteryVirtualPortfolio.initial_balance],
+  );
+  const selectedLotteryRecommendationPortfolio = lotteryAssignablePortfolios.find((portfolio) => portfolio.id === selectedLotteryRecommendationPortfolioId) ?? lotteryAssignablePortfolios[0] ?? null;
+  const financeVirtualLastOperation = useMemo(() => {
+    const virtualPortfolio = allPortfolios.find((portfolio) => portfolio.type === 'virtual');
+    if (!virtualPortfolio || virtualPortfolio.operations.length === 0) {
+      return null;
+    }
+    return [...virtualPortfolio.operations]
+      .sort((a, b) => Date.parse(b.date) - Date.parse(a.date))[0] ?? null;
+  }, [allPortfolios]);
+  const financeCryptoEvaluation = useMemo(() => {
+    const virtualPortfolio = allPortfolios.find((portfolio) => portfolio.type === 'virtual');
+    if (!virtualPortfolio) {
+      return null;
+    }
+    const perfBySymbol = new Map(MARKET_SIGNALS.map((signal) => [signal.symbol.toUpperCase(), signal.performance_30d]));
+    const relevantOps = virtualPortfolio.operations.filter((operation) => perfBySymbol.has(operation.asset.toUpperCase()));
+    if (relevantOps.length === 0) {
+      return null;
+    }
+    const estimatedNet = relevantOps.reduce((sum, operation) => {
+      const perf = perfBySymbol.get(operation.asset.toUpperCase()) ?? 0;
+      const sign = operation.side === 'buy' ? 1 : -1;
+      return sum + (operation.amount * (perf / 100) * sign);
+    }, 0);
+    return {
+      operationsCount: relevantOps.length,
+      estimatedNet: Number(estimatedNet.toFixed(2)),
+    };
+  }, [allPortfolios]);
   const financeValueDistribution = useMemo(() => {
     const total = Math.max(1, realVisiblePortfolios.reduce((sum, portfolio) => sum + Math.max(0, portfolio.current_value || 0), 0));
     return realVisiblePortfolios
@@ -4998,6 +5432,326 @@ export default function RobinApp() {
     });
   }
 
+  function alignRacingPilotModeWithBetting() {
+    const bettingVirtual = bettingStrategies.find((strategy) => strategy.isVirtual);
+    const racingVirtual = racingStrategies.find((strategy) => strategy.isVirtual);
+    if (!bettingVirtual || !racingVirtual) {
+      setBettingAlert('Alignement impossible: portefeuille virtuel manquant.');
+      return;
+    }
+    if (bettingVirtual.mode === 'autonomous' && emergencyStopActive) {
+      setBettingAlert('Kill switch actif: alignement en mode autonome indisponible.');
+      return;
+    }
+
+    const nextMode = bettingVirtual.mode;
+    const aiEnabled = virtualAppsEnabled.racing ? true : (nextMode !== 'manual' ? true : bettingVirtual.ai_enabled);
+    const enabled = nextMode === 'autonomous' ? true : (virtualAppsEnabled.racing ? true : racingVirtual.enabled);
+
+    setRacingStrategies((prev) => prev.map((strategy) => strategy.id === racingVirtual.id
+      ? { ...strategy, mode: nextMode, ai_enabled: aiEnabled, enabled }
+      : strategy));
+    setSelectedRacingStrategy((prev) => prev && prev.id === racingVirtual.id
+      ? { ...prev, mode: nextMode, ai_enabled: aiEnabled, enabled }
+      : prev);
+
+    setBettingAlert(`Pilotage hippique aligné sur Paris sportifs (${nextMode === 'autonomous' ? 'Autopilot' : nextMode === 'supervised' ? 'Supervisé' : 'Manuel'}).`);
+  }
+
+  function persistLotteryVirtualPortfolio(nextPortfolio: LotteryVirtualPortfolio, nextRequests: LotteryExecutionRequest[] = lotteryExecutionRequests) {
+    setLotteryVirtualPortfolio(nextPortfolio);
+    setLotteryExecutionRequests(nextRequests);
+    if (!accessToken) {
+      return;
+    }
+    void fetch(apiUrl('/auth/me/settings'), {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeader(accessToken),
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        full_name: settingsForm.fullName,
+        phone_number: settingsForm.phoneNumber || null,
+        client_context: clientContext,
+        personal_settings: {
+          ...buildPersonalSettingsPayload(),
+          lottery_virtual_portfolio: nextPortfolio,
+          lottery_execution_requests: nextRequests,
+        },
+      }),
+    }).catch(() => {
+      // Keep local runtime even if persistence fails.
+    });
+  }
+
+  function confirmLotteryRecommendation(
+    game: LotteryGame,
+    grid: LotteryPrediction,
+    targetPortfolioId: string,
+    weeks = 1,
+  ) {
+    const target = lotteryAssignablePortfolios.find((portfolio) => portfolio.id === targetPortfolioId);
+    if (!target) {
+      setBettingAlert('Sélectionnez un portefeuille Loto avant de confirmer la recommandation IA.');
+      return;
+    }
+
+    const normalizedWeeks = Math.max(1, Math.min(8, Math.round(weeks)));
+    const scheduledDraws = buildLotteryUpcomingDrawSeries(game, normalizedWeeks)
+      .filter((draw) => Date.parse(draw.drawDate) > Date.now());
+    if (scheduledDraws.length === 0) {
+      setBettingAlert(`Aucun tirage ${LOTTERY_CONFIG[game].label} disponible pour confirmer cette recommandation.`);
+      return;
+    }
+
+    const subscriptionLabel = normalizedWeeks > 1
+      ? `Abonnement ${LOTTERY_CONFIG[game].label} · ${normalizedWeeks} semaines`
+      : null;
+
+    if (target.executionMode === 'simulation') {
+      if (!virtualAppsEnabled.loto || !lotteryVirtualPortfolio.enabled) {
+        setBettingAlert('Activez le portefeuille fictif Loto pour confirmer cette recommandation en simulation.');
+        return;
+      }
+      const totalStake = Number((scheduledDraws.length * LOTTERY_SIMPLE_GRID_COST[game]).toFixed(2));
+      if (lotteryVirtualPortfolio.bankroll < totalStake) {
+        setBettingAlert(`Solde insuffisant (${lotteryVirtualPortfolio.bankroll.toFixed(2)} €) pour confirmer cette recommandation.`);
+        return;
+      }
+      const createdAt = new Date().toISOString();
+      const nextTickets: LotteryVirtualTicket[] = scheduledDraws.map((draw, index) => ({
+        id: `lottery-confirmed-${game}-${index}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        game,
+        drawDate: draw.drawDate,
+        gridLabel: normalizedWeeks > 1 ? `S${index + 1} · Reco IA` : 'Reco IA confirmée',
+        subscriptionLabel,
+        numbers: grid.numbers,
+        stars: grid.stars,
+        stake: LOTTERY_SIMPLE_GRID_COST[game],
+        status: 'pending',
+        payout: 0,
+        profit: 0,
+        matchedNumbers: 0,
+        matchedStars: 0,
+        rankLabel: null,
+        createdAt,
+        settledAt: null,
+      }));
+      const nextRequests: LotteryExecutionRequest[] = [
+        ...scheduledDraws.map((draw, index) => ({
+          id: `lottery-request-sim-${game}-${index}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          game,
+          drawDate: draw.drawDate,
+          gridLabel: normalizedWeeks > 1 ? `S${index + 1} · Reco IA` : 'Reco IA confirmée',
+          subscriptionLabel,
+          numbers: grid.numbers,
+          stars: grid.stars,
+          targetPortfolioId: target.id,
+          targetPortfolioLabel: target.label,
+          executionMode: 'simulation',
+          status: 'confirmed',
+          createdAt,
+        })),
+        ...lotteryExecutionRequests,
+      ].slice(0, 240);
+      persistLotteryVirtualPortfolio({
+        ...lotteryVirtualPortfolio,
+        bankroll: Number((lotteryVirtualPortfolio.bankroll - totalStake).toFixed(2)),
+        tickets: [...nextTickets, ...lotteryVirtualPortfolio.tickets].slice(0, 400),
+      }, nextRequests);
+      setBettingAlert(`Recommandation IA confirmée sur ${target.label} en mode simulation${subscriptionLabel ? ` · ${subscriptionLabel}` : ''}.`);
+      return;
+    }
+
+    const createdAt = new Date().toISOString();
+    const nextRequests: LotteryExecutionRequest[] = [
+      ...scheduledDraws.map((draw, index) => ({
+        id: `lottery-request-real-${game}-${index}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        game,
+        drawDate: draw.drawDate,
+        gridLabel: normalizedWeeks > 1 ? `S${index + 1} · Reco IA` : 'Reco IA confirmée',
+        subscriptionLabel,
+        numbers: grid.numbers,
+        stars: grid.stars,
+        targetPortfolioId: target.id,
+        targetPortfolioLabel: target.label,
+        executionMode: 'real',
+        status: 'confirmed',
+        createdAt,
+      })),
+      ...lotteryExecutionRequests,
+    ].slice(0, 240);
+    persistLotteryVirtualPortfolio(lotteryVirtualPortfolio, nextRequests);
+    setBettingAlert(`Recommandation IA confirmée sur ${target.label} en mode réel${subscriptionLabel ? ` · ${subscriptionLabel}` : ''}.`);
+  }
+
+  function playLotteryVirtualTickets(game: LotteryGame, options: { source?: 'manual' | 'autonomous'; silent?: boolean } = {}) {
+    const source = options.source ?? 'manual';
+    if (!virtualAppsEnabled.loto || !lotteryVirtualPortfolio.enabled) {
+      if (!options.silent) {
+        setBettingAlert('Activez le portefeuille fictif Loto pour jouer des grilles simulées.');
+      }
+      return;
+    }
+    if (source === 'autonomous' && (!lotteryVirtualPortfolio.ai_enabled || lotteryVirtualPortfolio.mode !== 'autonomous')) {
+      return;
+    }
+    if (emergencyStopActive) {
+      if (!options.silent) {
+        setBettingAlert('Kill switch actif — simulation Loto suspendue.');
+      }
+      return;
+    }
+
+    const nextDraw = lotteryUpcoming
+      .filter((draw) => draw.game === game && Date.parse(draw.drawDate) > Date.now())
+      .sort((a, b) => Date.parse(a.drawDate) - Date.parse(b.drawDate))[0] ?? null;
+    if (!nextDraw) {
+      if (!options.silent) {
+        setBettingAlert(`Aucun tirage ${LOTTERY_CONFIG[game].label} à venir.`);
+      }
+      return;
+    }
+
+    const hasPendingForDraw = lotteryVirtualPortfolio.tickets.some((ticket) =>
+      ticket.game === game && ticket.drawDate === nextDraw.drawDate && ticket.status === 'pending');
+    if (hasPendingForDraw && source === 'autonomous') {
+      return;
+    }
+
+    const predictionGrids = lotteryPredictions[game].predictedGrids;
+    const ticketsCount = Math.max(1, Math.min(predictionGrids.length, normalizedLotteryGridCount, lotteryVirtualPortfolio.max_grids_per_draw));
+    const selectedGrids = predictionGrids.slice(0, ticketsCount);
+    if (selectedGrids.length === 0) {
+      if (!options.silent) {
+        setBettingAlert(`Aucune grille disponible pour ${LOTTERY_CONFIG[game].label}.`);
+      }
+      return;
+    }
+
+    const stake = LOTTERY_SIMPLE_GRID_COST[game];
+    const totalStake = Number((stake * selectedGrids.length).toFixed(2));
+    if (lotteryVirtualPortfolio.bankroll < totalStake) {
+      if (!options.silent) {
+        setBettingAlert(`Solde insuffisant (${lotteryVirtualPortfolio.bankroll.toFixed(2)} €) pour jouer ${selectedGrids.length} grille(s).`);
+      }
+      return;
+    }
+
+    const createdAt = new Date().toISOString();
+    const nextTickets: LotteryVirtualTicket[] = selectedGrids.map((grid, index) => ({
+      id: `lv-${game}-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`,
+      game,
+      drawDate: nextDraw.drawDate,
+      gridLabel: `Grille #${index + 1}`,
+      subscriptionLabel: null,
+      numbers: grid.numbers,
+      stars: grid.stars,
+      stake,
+      status: 'pending',
+      payout: 0,
+      profit: 0,
+      matchedNumbers: 0,
+      matchedStars: 0,
+      rankLabel: null,
+      createdAt,
+      settledAt: null,
+    }));
+
+    const nextPortfolio: LotteryVirtualPortfolio = {
+      ...lotteryVirtualPortfolio,
+      bankroll: Number((lotteryVirtualPortfolio.bankroll - totalStake).toFixed(2)),
+      tickets: [...nextTickets, ...lotteryVirtualPortfolio.tickets].slice(0, 240),
+    };
+    persistLotteryVirtualPortfolio(nextPortfolio);
+    if (!options.silent) {
+      setBettingAlert(`${LOTTERY_CONFIG[game].label}: ${selectedGrids.length} grille(s) fictive(s) jouées pour ${totalStake.toFixed(2)} €.`);
+    }
+  }
+
+  function subscribeLotteryVirtualTickets(games: LotteryGame[], weeks: number) {
+    if (!virtualAppsEnabled.loto || !lotteryVirtualPortfolio.enabled) {
+      setBettingAlert('Activez le portefeuille fictif Loto pour programmer un abonnement simulé.');
+      return;
+    }
+    if (emergencyStopActive) {
+      setBettingAlert('Kill switch actif — abonnement Loto suspendu.');
+      return;
+    }
+
+    const normalizedWeeks = Math.max(1, Math.min(8, Math.round(weeks)));
+    const uniqueGames = [...new Set(games)];
+    const createdAt = new Date().toISOString();
+    const scheduledTickets: LotteryVirtualTicket[] = [];
+
+    uniqueGames.forEach((game) => {
+      const scheduledDraws = buildLotteryUpcomingDrawSeries(game, normalizedWeeks)
+        .filter((draw) => Date.parse(draw.drawDate) > Date.now());
+      const predictionGrids = lotteryPredictions[game].predictedGrids;
+      const ticketsCount = Math.max(1, Math.min(predictionGrids.length, normalizedLotteryGridCount, lotteryVirtualPortfolio.max_grids_per_draw));
+      const selectedGrids = predictionGrids.slice(0, ticketsCount);
+      const stake = LOTTERY_SIMPLE_GRID_COST[game];
+      const drawsPerWeek = Math.max(1, LOTTERY_UPCOMING_DRAWS.filter((draw) => draw.game === game).length);
+
+      scheduledDraws.forEach((draw, drawIndex) => {
+        const weekIndex = Math.floor(drawIndex / drawsPerWeek) + 1;
+        const subscriptionLabel = `Abonnement ${LOTTERY_CONFIG[game].label} · ${normalizedWeeks} semaine${normalizedWeeks > 1 ? 's' : ''}`;
+        selectedGrids.forEach((grid, gridIndex) => {
+          scheduledTickets.push({
+            id: `lvs-${game}-${drawIndex}-${gridIndex}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            game,
+            drawDate: draw.drawDate,
+            gridLabel: `S${weekIndex} · Tirage ${drawIndex + 1} · Grille #${gridIndex + 1}`,
+            subscriptionLabel,
+            numbers: grid.numbers,
+            stars: grid.stars,
+            stake,
+            status: 'pending',
+            payout: 0,
+            profit: 0,
+            matchedNumbers: 0,
+            matchedStars: 0,
+            rankLabel: null,
+            createdAt,
+            settledAt: null,
+          });
+        });
+      });
+    });
+
+    if (scheduledTickets.length === 0) {
+      setBettingAlert('Aucun tirage futur disponible pour programmer cet abonnement.');
+      return;
+    }
+
+    const totalStake = Number(scheduledTickets.reduce((sum, ticket) => sum + ticket.stake, 0).toFixed(2));
+    if (lotteryVirtualPortfolio.bankroll < totalStake) {
+      setBettingAlert(`Solde insuffisant (${lotteryVirtualPortfolio.bankroll.toFixed(2)} €) pour programmer ${normalizedWeeks} semaine(s) d abonnement.`);
+      return;
+    }
+
+    persistLotteryVirtualPortfolio({
+      ...lotteryVirtualPortfolio,
+      bankroll: Number((lotteryVirtualPortfolio.bankroll - totalStake).toFixed(2)),
+      tickets: [...scheduledTickets, ...lotteryVirtualPortfolio.tickets].slice(0, 400),
+    });
+
+    setBettingAlert(`Abonnement simulé activé: ${uniqueGames.map((game) => LOTTERY_CONFIG[game].label).join(' + ')} pendant ${normalizedWeeks} semaine(s) pour ${totalStake.toFixed(2)} €.`);
+  }
+
+  function resetLotteryVirtualPortfolio() {
+    persistLotteryVirtualPortfolio({
+      ...lotteryVirtualPortfolio,
+      bankroll: lotteryVirtualPortfolio.initial_balance,
+      tickets: [],
+      mode: 'manual',
+      ai_enabled: false,
+    });
+    setBettingAlert(`Portefeuille fictif Loto réinitialisé à ${lotteryVirtualPortfolio.initial_balance.toFixed(2)} €.`);
+  }
+
   function simulateFinanceVirtualCycle() {
     if (emergencyStopActive) {
       return;
@@ -5069,9 +5823,6 @@ export default function RobinApp() {
     });
   }
 
-  // Ref to always call the latest simulateVirtualBetCycle without stale closure in intervals
-  const simulateVirtualBetCycleRef = useRef<((opts?: { silent?: boolean }) => void) | null>(null);
-
   function simulateVirtualBetCycle(sourceSignal?: TipsterSignal, options: { silent?: boolean } = {}) {
     const virtual = bettingStrategies.find((s) => s.isVirtual);
     if (!virtual) return;
@@ -5096,6 +5847,31 @@ export default function RobinApp() {
       Math.min(Math.max(MIN_MONETARY_LIMIT, virtual.max_stake), Math.max(MIN_MONETARY_LIMIT, virtual.bankroll)),
     );
     const stake = Number((MIN_MONETARY_LIMIT + Math.random() * (maxStakeAllowed - MIN_MONETARY_LIMIT)).toFixed(2));
+    if (sourceSignal) {
+      const pendingBet: BetRecord = {
+        id: `vb-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        date: new Date().toISOString(),
+        sport: sourceSignal.sport,
+        event: sourceSignal.event,
+        market: sourceSignal.market,
+        bookmaker: sourceSignal.bookmaker,
+        odds: sourceSignal.odds,
+        stake,
+        result: 'pending',
+        profit: 0,
+        strategyId: virtual.id,
+      };
+      const nextBetsTotal = virtual.betsTotal + 1;
+      updateBettingStrategy(virtual.id, {
+        betsTotal: nextBetsTotal,
+        recentBets: [pendingBet, ...virtual.recentBets].slice(0, 120),
+        risk_profile: activeRiskProfile,
+      });
+      if (!options.silent) {
+        setBettingAlert(`🤖 IA: transaction simulée en attente de résultat réel (${sourceSignal.event}).`);
+      }
+      return;
+    }
     const win = Math.random() > (activeRiskProfile === 'high' ? 0.54 : activeRiskProfile === 'medium' ? 0.48 : 0.36);
     const pct = win
       ? (profile.minGainPct + Math.random() * (profile.maxGainPct - profile.minGainPct))
@@ -5203,6 +5979,110 @@ export default function RobinApp() {
     setBettingAlert('Portefeuille virtuel Paris en ligne réinitialisé à 100 € (historique simulé supprimé).');
   }
 
+  function simulateVirtualRacingCycle(sourceSignal: TipsterSignal, options: { silent?: boolean } = {}) {
+    const virtual = racingStrategies.find((strategy) => strategy.isVirtual);
+    if (!virtual || !virtual.enabled || !virtual.ai_enabled) {
+      return;
+    }
+    const maxStakeAllowed = Math.max(
+      MIN_MONETARY_LIMIT,
+      Math.min(Math.max(MIN_MONETARY_LIMIT, virtual.max_stake), Math.max(MIN_MONETARY_LIMIT, virtual.bankroll)),
+    );
+    const stake = Number((MIN_MONETARY_LIMIT + Math.random() * (maxStakeAllowed - MIN_MONETARY_LIMIT)).toFixed(2));
+    const bet: BetRecord = {
+      id: `vr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      date: new Date().toISOString(),
+      sport: 'other',
+      event: sourceSignal.event,
+      market: sourceSignal.market,
+      bookmaker: sourceSignal.bookmaker,
+      odds: sourceSignal.odds,
+      stake,
+      result: 'pending',
+      profit: 0,
+      strategyId: virtual.id,
+    };
+    setRacingStrategies((prev) => prev.map((strategy) => {
+      if (strategy.id !== virtual.id) {
+        return strategy;
+      }
+      const nextBetsTotal = strategy.betsTotal + 1;
+      return {
+        ...strategy,
+        betsTotal: nextBetsTotal,
+        recentBets: [bet, ...strategy.recentBets].slice(0, 120),
+      };
+    }));
+    if (!options.silent) {
+      setBettingAlert(`🤖 IA Hippiques: transaction simulée en attente de résultat réel (${sourceSignal.event}).`);
+    }
+  }
+
+  function confirmRacingRecommendation(signal: TipsterSignal, targetStrategyId: string) {
+    const targetStrategy = racingStrategies.find((strategy) => strategy.id === targetStrategyId);
+    if (!targetStrategy) {
+      setBettingAlert('Sélectionnez un portefeuille hippique avant de confirmer cette recommandation.');
+      return;
+    }
+
+    const currentSignal = racingSignals.find((entry) => entry.id === signal.id);
+    if (!currentSignal || currentSignal.status !== 'pending') {
+      return;
+    }
+
+    setRacingSignals((prev) => prev.map((entry) => entry.id === signal.id ? { ...entry, status: 'approved' } : entry));
+
+    if (targetStrategy.isVirtual) {
+      if (!virtualAppsEnabled.racing) {
+        setBettingAlert('Activez le portefeuille fictif hippique pour confirmer cette recommandation en simulation.');
+        return;
+      }
+      if (!targetStrategy.enabled || !targetStrategy.ai_enabled) {
+        setRacingStrategies((prev) => prev.map((strategy) => strategy.id === targetStrategy.id
+          ? { ...strategy, enabled: true, ai_enabled: true }
+          : strategy));
+      }
+      simulateVirtualRacingCycle(signal);
+      setBettingAlert(`✅ Recommandation hippique confirmée sur ${targetStrategy.name} en mode simulation.`);
+      return;
+    }
+
+    const stake = Number(Math.max(MIN_MONETARY_LIMIT, Math.min(targetStrategy.max_stake, signal.potentialGain || targetStrategy.max_stake || 10)).toFixed(2));
+    const bet: BetRecord = {
+      id: `rr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      date: new Date().toISOString(),
+      sport: 'other',
+      event: signal.event,
+      market: signal.market,
+      bookmaker: signal.bookmaker,
+      odds: signal.odds,
+      stake,
+      result: 'pending',
+      profit: 0,
+      strategyId: targetStrategy.id,
+    };
+    setRacingStrategies((prev) => prev.map((strategy) => {
+      if (strategy.id !== targetStrategy.id) {
+        return strategy;
+      }
+      return {
+        ...strategy,
+        enabled: true,
+        betsTotal: strategy.betsTotal + 1,
+        recentBets: [bet, ...strategy.recentBets].slice(0, 120),
+      };
+    }));
+    setSelectedRacingStrategy((prev) => prev && prev.id === targetStrategy.id
+      ? {
+        ...prev,
+        enabled: true,
+        betsTotal: prev.betsTotal + 1,
+        recentBets: [bet, ...prev.recentBets].slice(0, 120),
+      }
+      : prev);
+    setBettingAlert(`✅ Recommandation hippique confirmée et associée à ${targetStrategy.name} en mode réel.`);
+  }
+
   useEffect(() => {
     const virtual = bettingStrategies.find((s) => s.isVirtual);
     if (!virtual) {
@@ -5212,9 +6092,6 @@ export default function RobinApp() {
       updateBettingStrategy(virtual.id, { enabled: true, ai_enabled: true });
     }
   }, [bettingStrategies]);
-
-  // Keep the ref always pointing to the latest simulation function
-  simulateVirtualBetCycleRef.current = (opts) => simulateVirtualBetCycle(undefined, opts ?? {});
 
   useEffect(() => {
     // Robin AI — en mode autonome seulement, appliquer la file de recommandations
@@ -5232,33 +6109,93 @@ export default function RobinApp() {
       // All signals processed — reset them after a short delay so the cycle restarts
       const timer = window.setTimeout(() => {
         setTipsterSignals((prev) => prev.map((s) => ({ ...s, status: 'pending' })));
-      }, 45_000);
+      }, randomDelayMs(12 * 60 * 1000, 28 * 60 * 1000));
       return () => window.clearTimeout(timer);
     }
+    const nextSignal = [...pendingSignals].sort((a, b) => scoreTipsterSignal(b) - scoreTipsterSignal(a))[0];
+    if (!nextSignal) {
+      return;
+    }
     const timer = window.setTimeout(() => {
-      approveTipsterSignal(pendingSignals[0], 'autonomous');
-    }, 1200);
+      approveTipsterSignal(nextSignal, 'autonomous');
+    }, randomDelayMs(90_000, 6 * 60 * 1000));
     return () => {
       window.clearTimeout(timer);
     };
   }, [bettingStrategies, tipsterSignals, emergencyStopActive]);
 
-  // Periodic autonomous simulation — runs every 3 minutes in autonomous mode
-  // Also bootstraps immediately (1.5 s) when no bets exist yet
+  // In autonomous mode, Robin IA now waits for real tipster signals only.
   useEffect(() => {
     if (emergencyStopActive) return;
     const virtual = bettingStrategies.find((s) => s.isVirtual);
     if (!virtual?.enabled || !virtual?.ai_enabled || virtual?.mode !== 'autonomous') return;
-    const delay = virtual.recentBets.length === 0 ? 1500 : 3 * 60 * 1000;
-    const timer = window.setTimeout(() => {
-      simulateVirtualBetCycleRef.current?.({ silent: true });
-    }, delay);
-    return () => window.clearTimeout(timer);
-  }, [bettingStrategies, emergencyStopActive]);
+    const hasPendingSignals = tipsterSignals.some((signal) => signal.status === 'pending');
+    if (!hasPendingSignals) {
+      return;
+    }
+    return;
+  }, [bettingStrategies, emergencyStopActive, tipsterSignals]);
 
   useEffect(() => {
-    // Robin AI — finance virtuel : ne simule que si des insights réels existent
-    // pour le portefeuille virtuel. Si aucune opportunité → pas de transaction forcée.
+    if (emergencyStopActive) {
+      return;
+    }
+    const virtual = bettingStrategies.find((strategy) => strategy.isVirtual);
+    if (!virtual || !virtual.enabled || !virtual.ai_enabled) {
+      return;
+    }
+    const nowTs = Date.now();
+    const pendingBets = virtual.recentBets.filter((bet) => bet.result === 'pending');
+    const dueBets = pendingBets.filter((bet) => {
+      const signal = tipsterSignals.find((entry) => entry.event === bet.event && entry.market === bet.market);
+      if (!signal) {
+        return false;
+      }
+      const deadlineTs = Date.parse(signal.deadline);
+      return Number.isFinite(deadlineTs) && deadlineTs <= nowTs;
+    });
+    if (dueBets.length === 0) {
+      return;
+    }
+    const updates = new Map<string, { result: BetRecord['result']; profit: number }>();
+    for (const bet of dueBets) {
+      const signal = tipsterSignals.find((entry) => entry.event === bet.event && entry.market === bet.market);
+      if (!signal) {
+        continue;
+      }
+      const winProb = Math.max(0.2, Math.min(0.82, 0.22 + signal.confidence * 0.1 + signal.value_pct / 120));
+      const roll = stablePseudoRandom(`${signal.id}|${signal.deadline}|${bet.id}`);
+      const won = roll < winProb;
+      const profit = Number((won ? (bet.stake * Math.max(0, bet.odds - 1)) : -bet.stake).toFixed(2));
+      updates.set(bet.id, { result: won ? 'won' : 'lost', profit });
+    }
+    if (updates.size === 0) {
+      return;
+    }
+    updateBettingStrategy(virtual.id, (() => {
+      const nextRecentBets = virtual.recentBets.map((bet) => {
+        const patch = updates.get(bet.id);
+        return patch ? { ...bet, result: patch.result, profit: patch.profit } : bet;
+      });
+      const totalProfit = nextRecentBets.reduce((sum, bet) => sum + bet.profit, 0);
+      const nextBankroll = Math.max(0, Number((100 + totalProfit).toFixed(2)));
+      const nextBetsWon = nextRecentBets.filter((bet) => bet.result === 'won').length;
+      const nextBetsTotal = nextRecentBets.length;
+      return {
+        bankroll: nextBankroll,
+        roi: Number((((nextBankroll - 100) / 100) * 100).toFixed(1)),
+        winRate: nextBetsTotal > 0 ? Number(((nextBetsWon / nextBetsTotal) * 100).toFixed(0)) : 0,
+        betsWon: nextBetsWon,
+        betsTotal: nextBetsTotal,
+        recentBets: nextRecentBets,
+        history: [...virtual.history, { date: new Date().toISOString().slice(0, 10), value: nextBankroll }].slice(-180),
+      };
+    })());
+  }, [bettingStrategies, tipsterSignals, emergencyStopActive]);
+
+  useEffect(() => {
+    // Robin IA — finance virtuel : en autopilot, exécute une simulation périodique
+    // afin d alimenter réellement le portefeuille virtuel.
     const virtualPortfolioId = dashboard?.virtual_portfolio?.portfolio_id;
     if (!virtualPortfolioId) {
       return;
@@ -5267,19 +6204,24 @@ export default function RobinApp() {
     if (!cfg.enabled || portfolioActivation[virtualPortfolioId] === false || emergencyStopActive) {
       return;
     }
-    const hasQualifyingInsights = decisionInsights.some((insight) => {
-      const pid = inferDecisionPortfolioId(insight);
-      return pid === virtualPortfolioId && isDecisionAllowedByAgentPolicy(insight, virtualPortfolioId).allowed;
-    });
-    if (!hasQualifyingInsights) {
-      // Robin AI ne génère pas de transaction artificielle
+    if (virtualAppsEnabled.finance === false) {
       return;
     }
+    const hasOps = (financeVirtualSimulation?.operations.length ?? 0) > 0;
     const timer = window.setTimeout(() => {
       simulateFinanceVirtualCycle();
-    }, 4000);
+    }, hasOps
+      ? randomDelayMs(18 * 60 * 1000, 75 * 60 * 1000)
+      : randomDelayMs(4 * 60 * 1000, 10 * 60 * 1000));
     return () => window.clearTimeout(timer);
-  }, [decisionInsights, agentConfigs, portfolioActivation, emergencyStopActive, dashboard?.virtual_portfolio?.portfolio_id]);
+  }, [
+    agentConfigs,
+    portfolioActivation,
+    emergencyStopActive,
+    dashboard?.virtual_portfolio?.portfolio_id,
+    financeVirtualSimulation?.operations.length,
+    virtualAppsEnabled.finance,
+  ]);
 
   useEffect(() => {
     const virtualPortfolioId = dashboard?.virtual_portfolio?.portfolio_id;
@@ -5303,6 +6245,45 @@ export default function RobinApp() {
   }, [dashboard?.virtual_portfolio?.portfolio_id, virtualAppsEnabled.finance]);
 
   useEffect(() => {
+    const virtualPortfolioId = dashboard?.virtual_portfolio?.portfolio_id;
+    if (!virtualPortfolioId || virtualAppsEnabled.finance === false || emergencyStopActive) {
+      return;
+    }
+    const cfg = getAgentConfig(virtualPortfolioId);
+    if (!cfg.enabled) {
+      void updateAgentConfig(virtualPortfolioId, {
+        enabled: true,
+        mode: cfg.mode === 'manual' ? 'autopilot' : cfg.mode,
+      });
+    }
+  }, [dashboard?.virtual_portfolio?.portfolio_id, virtualAppsEnabled.finance, emergencyStopActive, agentConfigs]);
+
+  useEffect(() => {
+    if (!accessToken || !user) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void fetch(apiUrl('/auth/me/settings'), {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeader(accessToken),
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          full_name: settingsForm.fullName,
+          phone_number: settingsForm.phoneNumber || null,
+          client_context: clientContext,
+          personal_settings: buildPersonalSettingsPayload(),
+        }),
+      }).catch(() => {
+        // Keep local runtime if persistence fails.
+      });
+    }, 1200);
+    return () => window.clearTimeout(timer);
+  }, [racingStrategies, accessToken, user, settingsForm.fullName, settingsForm.phoneNumber]);
+
+  useEffect(() => {
     setBettingStrategies((prev) => prev.map((strategy) => {
       if (!strategy.isVirtual) {
         return strategy;
@@ -5316,6 +6297,195 @@ export default function RobinApp() {
       };
     }));
   }, [virtualAppsEnabled.betting]);
+
+  useEffect(() => {
+    setRacingStrategies((prev) => prev.map((strategy) => {
+      if (!strategy.isVirtual) {
+        return strategy;
+      }
+      if (strategy.enabled === virtualAppsEnabled.racing) {
+        return strategy;
+      }
+      return {
+        ...strategy,
+        enabled: virtualAppsEnabled.racing,
+      };
+    }));
+  }, [virtualAppsEnabled.racing]);
+
+  useEffect(() => {
+    if (lotteryVirtualPortfolio.enabled === virtualAppsEnabled.loto) {
+      return;
+    }
+    setLotteryVirtualPortfolio((prev) => ({
+      ...prev,
+      enabled: virtualAppsEnabled.loto,
+      ai_enabled: virtualAppsEnabled.loto ? prev.ai_enabled : false,
+      mode: virtualAppsEnabled.loto ? prev.mode : 'manual',
+    }));
+  }, [virtualAppsEnabled.loto, lotteryVirtualPortfolio.enabled]);
+
+  useEffect(() => {
+    if (!virtualAppsEnabled.loto || !lotteryVirtualPortfolio.enabled) {
+      return;
+    }
+    const nowTs = Date.now();
+    const dueTickets = lotteryVirtualPortfolio.tickets.filter((ticket) => ticket.status === 'pending' && Date.parse(ticket.drawDate) <= nowTs);
+    if (dueTickets.length === 0) {
+      return;
+    }
+
+    let nextBankroll = lotteryVirtualPortfolio.bankroll;
+    const nextTickets = lotteryVirtualPortfolio.tickets.map((ticket) => {
+      if (ticket.status !== 'pending' || Date.parse(ticket.drawDate) > nowTs) {
+        return ticket;
+      }
+      const draw = buildDeterministicLotteryDraw(ticket.game, ticket.drawDate);
+      const hit = evaluateLotteryGridHit(ticket.game, {
+        id: `virtual-${ticket.id}`,
+        game: ticket.game,
+        numbers: ticket.numbers,
+        stars: ticket.stars,
+        confidenceIndex: 0,
+        rationale: 'Simulation portefeuille fictif',
+      }, draw);
+      const payout = Number((hit?.estimatedPrize ?? 0).toFixed(2));
+      if (payout > 0) {
+        nextBankroll += payout;
+      }
+      return {
+        ...ticket,
+        status: payout > 0 ? 'won' : 'lost',
+        payout,
+        profit: Number((payout - ticket.stake).toFixed(2)),
+        matchedNumbers: hit?.matchedNumbers ?? 0,
+        matchedStars: hit?.matchedStars ?? 0,
+        rankLabel: hit?.rankLabel ?? null,
+        settledAt: new Date().toISOString(),
+      };
+    });
+
+    persistLotteryVirtualPortfolio({
+      ...lotteryVirtualPortfolio,
+      bankroll: Number(nextBankroll.toFixed(2)),
+      tickets: nextTickets,
+    });
+  }, [lotteryVirtualPortfolio, virtualAppsEnabled.loto]);
+
+  useEffect(() => {
+    if (emergencyStopActive || !virtualAppsEnabled.loto || !lotteryVirtualPortfolio.enabled || !lotteryVirtualPortfolio.ai_enabled || lotteryVirtualPortfolio.mode !== 'autonomous') {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      playLotteryVirtualTickets('loto', { source: 'autonomous', silent: true });
+      playLotteryVirtualTickets('euromillions', { source: 'autonomous', silent: true });
+    }, randomDelayMs(70_000, 6 * 60 * 1000));
+    return () => window.clearTimeout(timer);
+  }, [emergencyStopActive, virtualAppsEnabled.loto, lotteryVirtualPortfolio, lotteryPredictions, normalizedLotteryGridCount]);
+
+  useEffect(() => {
+    if (emergencyStopActive) {
+      return;
+    }
+    const virtual = racingStrategies.find((strategy) => strategy.isVirtual);
+    if (!virtual || !virtual.enabled || !virtual.ai_enabled || virtual.mode !== 'autonomous') {
+      return;
+    }
+    const pendingSignals = racingSignals.filter((signal) => signal.status === 'pending');
+    if (pendingSignals.length === 0) {
+      return;
+    }
+    const bestSignal = [...pendingSignals].sort((a, b) => scoreTipsterSignal(b) - scoreTipsterSignal(a))[0];
+    if (!bestSignal) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setRacingSignals((prev) => prev.map((signal) => signal.id === bestSignal.id ? { ...signal, status: 'approved' } : signal));
+      simulateVirtualRacingCycle(bestSignal, { silent: true });
+    }, randomDelayMs(2 * 60 * 1000, 9 * 60 * 1000));
+    return () => window.clearTimeout(timer);
+  }, [racingStrategies, racingSignals, emergencyStopActive]);
+
+  useEffect(() => {
+    const virtual = racingStrategies.find((strategy) => strategy.isVirtual);
+    if (!virtual || !virtual.enabled || !virtual.ai_enabled) {
+      return;
+    }
+    const nowTs = Date.now();
+    const dueBets = virtual.recentBets.filter((bet) => {
+      if (bet.result !== 'pending') {
+        return false;
+      }
+      const signal = racingSignals.find((entry) => entry.event === bet.event && entry.market === bet.market);
+      if (!signal) {
+        return false;
+      }
+      const deadlineTs = Date.parse(signal.deadline);
+      return Number.isFinite(deadlineTs) && deadlineTs <= nowTs;
+    });
+    if (dueBets.length === 0) {
+      return;
+    }
+    const updates = new Map<string, { result: BetRecord['result']; profit: number }>();
+    for (const bet of dueBets) {
+      const signal = racingSignals.find((entry) => entry.event === bet.event && entry.market === bet.market);
+      if (!signal) {
+        continue;
+      }
+      const winProb = Math.max(0.18, Math.min(0.78, 0.2 + signal.confidence * 0.095 + signal.value_pct / 130));
+      const roll = stablePseudoRandom(`${signal.id}|${signal.deadline}|${bet.id}`);
+      const won = roll < winProb;
+      const profit = Number((won ? (bet.stake * Math.max(0, bet.odds - 1)) : -bet.stake).toFixed(2));
+      updates.set(bet.id, { result: won ? 'won' : 'lost', profit });
+    }
+    if (updates.size === 0) {
+      return;
+    }
+    setRacingStrategies((prev) => prev.map((strategy) => {
+      if (!strategy.isVirtual) {
+        return strategy;
+      }
+      const nextRecentBets = strategy.recentBets.map((bet) => {
+        const patch = updates.get(bet.id);
+        return patch ? { ...bet, result: patch.result, profit: patch.profit } : bet;
+      });
+      const totalProfit = nextRecentBets.reduce((sum, bet) => sum + bet.profit, 0);
+      const nextBankroll = Math.max(0, Number((100 + totalProfit).toFixed(2)));
+      const nextBetsWon = nextRecentBets.filter((bet) => bet.result === 'won').length;
+      const nextBetsTotal = nextRecentBets.length;
+      return {
+        ...strategy,
+        bankroll: nextBankroll,
+        roi: Number((((nextBankroll - 100) / 100) * 100).toFixed(1)),
+        winRate: nextBetsTotal > 0 ? Number(((nextBetsWon / nextBetsTotal) * 100).toFixed(0)) : 0,
+        betsWon: nextBetsWon,
+        betsTotal: nextBetsTotal,
+        recentBets: nextRecentBets,
+        history: [...strategy.history, { date: new Date().toISOString().slice(0, 10), value: nextBankroll }].slice(-180),
+      };
+    }));
+  }, [racingStrategies, racingSignals]);
+
+  useEffect(() => {
+    const virtual = racingStrategies.find((strategy) => strategy.isVirtual);
+    if (!virtual || !virtualAppsEnabled.racing) {
+      return;
+    }
+    if (virtual.ai_enabled && virtual.enabled) {
+      return;
+    }
+    setRacingStrategies((prev) => prev.map((strategy) => {
+      if (!strategy.isVirtual) {
+        return strategy;
+      }
+      return {
+        ...strategy,
+        ai_enabled: true,
+        enabled: true,
+        mode: strategy.mode === 'manual' ? 'supervised' : strategy.mode,
+      };
+    }));
+  }, [racingStrategies, virtualAppsEnabled.racing]);
 
   useEffect(() => {
     if (!bettingAlert) {
@@ -5389,18 +6559,20 @@ export default function RobinApp() {
               {user ? ` • ${APP_LABELS[activeApp]}` : ''}
             </strong>
             <div
-              className={`trendArrowTrack ${goalTrajectoryTone} ${goalReached ? 'achieved' : ''}`}
+              className={`trendArrowTrack ${batteryTone} ${uiNavigationProgress >= 0.99 ? 'achieved' : ''}`}
               aria-hidden="true"
               style={{
                 ['--trend-speed' as string]: `${trendArrowSpeed}s`,
                 ['--trend-scale' as string]: `${trendArrowScale}`,
-                ['--goal-progress' as string]: `${goalProgress}`,
-                ['--goal-progress-pct' as string]: `${Math.round(goalProgress * 100)}%`,
+                ['--goal-progress' as string]: `${uiNavigationProgress}`,
+                ['--goal-progress-pct' as string]: `${uiNavigationProgressPct}%`,
               } as Record<string, string>}
             >
               <div className="batteryShell">
+                <div className="batteryChargingFlow" />
                 <div className="batteryLevel" />
-                <div className="batteryPercent">{Math.round(goalProgress * 100)}%</div>
+                <div className="batteryPercent">{uiNavigationProgressPct}%</div>
+                <div className="batteryBolt" aria-hidden="true">⚡</div>
               </div>
               <div className="batteryCap" />
             </div>
@@ -5703,6 +6875,39 @@ export default function RobinApp() {
         </section>
       ) : (
         <section className={assistantDockVisible ? 'workspaceShell withAssistantDock' : 'workspaceShell'}>
+          {!portfolioSetupStepDone ? (
+            <article className="featureCard" style={{ marginBottom: 14, borderColor: 'var(--brand-border)', background: 'var(--brand-soft)' }}>
+              <div className="cardHeader">
+                <h2>Première connexion — Activation des portefeuilles</h2>
+                <span>Étape obligatoire avant configuration avancée</span>
+              </div>
+              <div style={{ display: 'grid', gap: 10 }}>
+                <label className="checkRow" style={{ margin: 0 }}>
+                  <input type="checkbox" checked={virtualAppsEnabled.finance} onChange={(event) => void updateVirtualAppPreference('finance', event.target.checked)} />
+                  <span>Activer portefeuille virtuel Finance (Bitcoin 100 € simulés)</span>
+                </label>
+                <label className="checkRow" style={{ margin: 0 }}>
+                  <input type="checkbox" checked={virtualAppsEnabled.betting} onChange={(event) => void updateVirtualAppPreference('betting', event.target.checked)} />
+                  <span>Activer portefeuille virtuel Paris sportifs</span>
+                </label>
+                <label className="checkRow" style={{ margin: 0 }}>
+                  <input type="checkbox" checked={virtualAppsEnabled.racing} onChange={(event) => void updateVirtualAppPreference('racing', event.target.checked)} />
+                  <span>Activer portefeuille virtuel Paris hippiques</span>
+                </label>
+                <label className="checkRow" style={{ margin: 0 }}>
+                  <input type="checkbox" checked={virtualAppsEnabled.loto} onChange={(event) => void updateVirtualAppPreference('loto', event.target.checked)} />
+                  <span>Activer portefeuille virtuel Loto/Euromillions (50 € simulés)</span>
+                </label>
+                <p className="helperText" style={{ margin: 0 }}>
+                  Vous pourrez ensuite configurer chaque portefeuille (réel ou virtuel) dans les menus Portefeuilles et Options.
+                </p>
+                <div className="providerActions fullWidth" style={{ marginTop: 4 }}>
+                  <button className="secondaryButton" onClick={() => void completePortfolioSetupStep()} type="button">Continuer vers le cockpit</button>
+                </div>
+              </div>
+            </article>
+          ) : null}
+
           {/* ============================================================
                TIER 1 — App switcher: Home | Finance | Paris en ligne | Admin | Compte
                ============================================================ */}
@@ -5762,6 +6967,26 @@ export default function RobinApp() {
             </div>
           </div>
 
+          {isFinanceSectionActive && appView !== 'admin' && appView !== 'account' && appView !== 'overview' ? (
+            <nav className="parisSubNav">
+              <span className="parisSubNavLabel">Finance</span>
+              <button
+                className={financeSubApp === 'crypto' ? 'parisSubBtn active' : 'parisSubBtn'}
+                onClick={() => { setFinanceSubApp('crypto'); setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                type="button"
+              >
+                ₿ Cryptos
+              </button>
+              <button
+                className={financeSubApp === 'actions' ? 'parisSubBtn active' : 'parisSubBtn'}
+                onClick={() => { setFinanceSubApp('actions'); setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                type="button"
+              >
+                📈 Actions
+              </button>
+            </nav>
+          ) : null}
+
           {/* ============================================================
                TIER 2 — Paris en ligne sub-nav: Sportifs | Hippiques | Loto
                Only visible when a Paris section is active
@@ -5803,7 +7028,7 @@ export default function RobinApp() {
                TIER 3 — Section sub-nav: Cockpit | Portefeuilles | Options
                Shown for Finance and Paris sportifs/hippiques (not Loto, not overview)
                ============================================================ */}
-          {(activeApp === 'finance' || activeApp === 'betting' || activeApp === 'racing') && appView !== 'admin' && appView !== 'account' && appView !== 'overview' ? (
+          {(activeApp === 'finance' || activeApp === 'betting' || activeApp === 'racing' || activeApp === 'loto') && appView !== 'admin' && appView !== 'account' && appView !== 'overview' ? (
             <nav className="workspaceNav">
               {activeApp === 'finance' ? (
                 <>
@@ -5841,8 +7066,118 @@ export default function RobinApp() {
                     Options
                   </button>
                 </>
+              ) : activeApp === 'loto' ? (
+                <>
+                  <button className={appView === 'dashboard' ? 'navButton active' : 'navButton'} onClick={() => { setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                    Accueil cockpit
+                  </button>
+                  <button className={appView === 'portfolios' ? 'navButton active' : 'navButton'} onClick={() => { setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                    Portefeuilles
+                  </button>
+                  <button className={appView === 'settings' ? 'navButton active' : 'navButton'} onClick={() => { setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                    Options
+                  </button>
+                </>
               ) : null}
             </nav>
+          ) : null}
+
+          {((activeApp === 'finance' && appView === 'portfolios') || (activeApp === 'betting' && appView === 'strategies') || (activeApp === 'loto' && appView === 'portfolios')) ? (
+            <section className="selectedPortfolioStrip">
+              <div className="selectedPortfolioHeader">
+                <span>Menu fils · Portefeuilles existants</span>
+                <div className="selectedPortfolioSummary">
+                  {activeApp === 'finance' ? (
+                    <>
+                      <span className="selectedPortfolioSummaryPill">{allPortfolios.length} total</span>
+                      <span className="selectedPortfolioSummaryPill">{allPortfolios.filter((portfolio) => portfolio.type === 'integration').length} intégration(s)</span>
+                      <span className="selectedPortfolioSummaryPill">{allPortfolios.filter((portfolio) => portfolio.type === 'virtual').length} virtuel(s)</span>
+                    </>
+                  ) : null}
+                  {activeApp === 'betting' ? (
+                    <>
+                      <span className="selectedPortfolioSummaryPill">{bettingStrategies.length} stratégie(s)</span>
+                      <span className="selectedPortfolioSummaryPill">{bettingStrategies.filter((strategy) => strategy.ai_enabled).length} IA active(s)</span>
+                      <span className="selectedPortfolioSummaryPill">{bettingStrategies.filter((strategy) => strategy.isVirtual).length} virtuelle(s)</span>
+                    </>
+                  ) : null}
+                  {activeApp === 'loto' ? (
+                    <>
+                      <span className="selectedPortfolioSummaryPill">{1 + lotoIntegrationPortfolios.length} portefeuille(s)</span>
+                      <span className="selectedPortfolioSummaryPill">1 virtuel</span>
+                      <span className="selectedPortfolioSummaryPill">{lotoIntegrationPortfolios.length} intégration(s)</span>
+                    </>
+                  ) : null}
+                </div>
+              </div>
+              <div className="selectedPortfolioList">
+                {activeApp === 'finance' ? allPortfolios.map((portfolio) => (
+                  <button
+                    className={selectedPortfolio?.id === portfolio.id && portfolioDetailOpen ? 'smallPill selectedPortfolioPill selected detailed' : 'smallPill selectedPortfolioPill detailed'}
+                    key={`finance-child-portfolio-${portfolio.id}`}
+                    onClick={() => { setSelectedPortfolio(portfolio); setPortfolioDetailOpen(true); setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                    type="button"
+                  >
+                    <span className="selectedPortfolioPillIcon">{portfolio.type === 'virtual' ? '⚗️' : '🔗'}</span>
+                    <span className="selectedPortfolioPillBody">
+                      <strong>{portfolio.label}</strong>
+                      <small>{portfolio.type === 'virtual' ? 'Portefeuille fictif' : 'Portefeuille d intégration'}</small>
+                    </span>
+                    <span className={portfolio.type === 'virtual' ? 'portfolioTypeBadge virtual' : 'portfolioTypeBadge real'}>
+                      {portfolio.type === 'virtual' ? 'Virtuel' : 'Intégration'}
+                    </span>
+                  </button>
+                )) : null}
+                {activeApp === 'betting' ? bettingStrategies.map((strategy) => (
+                  <button
+                    className={selectedStrategy?.id === strategy.id && strategyDetailOpen ? 'smallPill selectedPortfolioPill selected detailed' : 'smallPill selectedPortfolioPill detailed'}
+                    key={`betting-child-portfolio-${strategy.id}`}
+                    onClick={() => { setSelectedStrategy(strategy); setStrategyDetailOpen(true); setAppView('strategies'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                    type="button"
+                  >
+                    <span className="selectedPortfolioPillIcon">🎯</span>
+                    <span className="selectedPortfolioPillBody">
+                      <strong>{strategy.name}</strong>
+                      <small>{strategy.ai_enabled ? 'IA active' : 'IA inactive'} · {strategy.enabled ? 'Suivi actif' : 'Suivi inactif'}</small>
+                    </span>
+                    <span className={strategy.mode === 'autonomous' ? 'metaPill up' : strategy.mode === 'supervised' ? 'metaPill' : 'metaPill neutral'}>
+                      {strategy.mode === 'autonomous' ? 'Autopilot' : strategy.mode === 'supervised' ? 'Validation humaine' : 'Manuel'}
+                    </span>
+                  </button>
+                )) : null}
+                {activeApp === 'loto' ? (
+                  <>
+                    <button
+                      className={lotoPortfolioMenuSelection === 'loto-virtual' ? 'smallPill selectedPortfolioPill selected detailed' : 'smallPill selectedPortfolioPill detailed'}
+                      onClick={() => { setLotoPortfolioMenuSelection('loto-virtual'); setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                      type="button"
+                    >
+                      <span className="selectedPortfolioPillIcon">⚗️</span>
+                      <span className="selectedPortfolioPillBody">
+                        <strong>Portefeuille fictif Loto</strong>
+                        <small>Solde {lotteryVirtualPortfolio.bankroll.toFixed(2)} € · {lotteryVirtualPortfolio.ai_enabled ? 'IA active' : 'IA inactive'}</small>
+                      </span>
+                      <span className="portfolioTypeBadge virtual">Virtuel</span>
+                    </button>
+                    {lotoIntegrationPortfolios.map((portfolio) => (
+                      <button
+                        className={lotoPortfolioMenuSelection === portfolio.id ? 'smallPill selectedPortfolioPill selected detailed' : 'smallPill selectedPortfolioPill detailed'}
+                        key={`loto-child-portfolio-${portfolio.id}`}
+                        onClick={() => { setLotoPortfolioMenuSelection(portfolio.id); setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                        type="button"
+                      >
+                        <span className="selectedPortfolioPillIcon">🔗</span>
+                        <span className="selectedPortfolioPillBody">
+                          <strong>{portfolio.label}</strong>
+                          <small>{portfolio.providerName} · portefeuille tiers</small>
+                        </span>
+                        <span className="portfolioTypeBadge real">Intégration</span>
+                      </button>
+                    ))}
+                  </>
+                ) : null}
+              </div>
+            </section>
           ) : null}
 
 
@@ -5850,7 +7185,7 @@ export default function RobinApp() {
             <section className="workspaceGrid" style={{ gap: 16 }}>
               <article className="featureCard" style={{ gridColumn: '1 / -1' }}>
                 <div className="cardHeader">
-                  <h2>{APP_LABELS[activeApp]} · Vue synthétique</h2>
+                  <h2>{activeApp === 'finance' ? `Finance · ${financeSubApp === 'crypto' ? 'Cryptos' : 'Actions'}` : APP_LABELS[activeApp]} · Vue synthétique</h2>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span>État global, évolution récente et recommandations IA</span>
                     {activeApp === 'finance' ? (
@@ -5871,7 +7206,219 @@ export default function RobinApp() {
                     )}
                   </div>
                 </div>
-                {activeApp === 'finance' ? (
+                {(() => {
+                  const financeTotalValue = visiblePortfolios.reduce((sum, portfolio) => sum + portfolio.current_value, 0);
+                  const financeRealCount = visiblePortfolios.filter((portfolio) => portfolio.type === 'integration').length;
+                  const financeVirtual = allPortfolios.find((portfolio) => portfolio.type === 'virtual') ?? null;
+                  const financeOps7dCount = financeOps7d.reduce((sum, row) => sum + row.count, 0);
+
+                  const bettingSettledPnl = bettingStrategies
+                    .flatMap((strategy) => strategy.recentBets)
+                    .filter((bet) => bet.result !== 'pending')
+                    .reduce((sum, bet) => sum + bet.profit, 0);
+
+                  const racingPendingBets = racingStrategies
+                    .flatMap((strategy) => strategy.recentBets)
+                    .filter((bet) => bet.result === 'pending').length;
+                  const racingSettledPnl = racingStrategies
+                    .flatMap((strategy) => strategy.recentBets)
+                    .filter((bet) => bet.result !== 'pending')
+                    .reduce((sum, bet) => sum + bet.profit, 0);
+
+                  const lotoPredictionCount = lotteryPredictions.loto.predictedGrids.length;
+                  const euroPredictionCount = lotteryPredictions.euromillions.predictedGrids.length;
+                  const nextLotoDraw = lotteryUpcoming.find((draw) => draw.game === 'loto');
+                  const nextEuroDraw = lotteryUpcoming.find((draw) => draw.game === 'euromillions');
+                  const bestTipsterSignal = filteredTopTipsterRecommendations[0] ?? null;
+                  const bestRacingSignal = racingSignals
+                    .filter((signal) => signal.status === 'pending')
+                    .sort((a, b) => scoreTipsterSignal(b) - scoreTipsterSignal(a))[0] ?? null;
+
+                  return (
+                    <section className="overviewHeroPanel">
+                      <div className="overviewKpiGrid">
+                        {activeApp === 'finance' ? (
+                          <>
+                            <article className="overviewKpiCard">
+                              <span>Patrimoine visible</span>
+                              <strong>{financeTotalValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €</strong>
+                              <small className={evolution24h.tone}>24h: {evolution24h.value}</small>
+                            </article>
+                            <article className="overviewKpiCard">
+                              <span>Portefeuilles actifs</span>
+                              <strong>{visiblePortfolios.length}</strong>
+                              <small>Réels: {financeRealCount} · Virtuel: {financeVirtual ? 'Oui' : 'Non'}</small>
+                            </article>
+                            <article className="overviewKpiCard">
+                              <span>Décisions IA</span>
+                              <strong>{pendingDecisionCount}</strong>
+                              <small>{pendingDecisionCount > 0 ? 'Priorité haute' : 'RAS'}</small>
+                            </article>
+                            <article className="overviewKpiCard">
+                              <span>Transactions 7j</span>
+                              <strong>{financeOps7dCount}</strong>
+                              <small className={evolution7d.tone}>ROI 7j: {evolution7d.value}</small>
+                            </article>
+                          </>
+                        ) : activeApp === 'betting' ? (
+                          <>
+                            <article className="overviewKpiCard">
+                              <span>Paris en cours</span>
+                              <strong>{activeBettingBets.length}</strong>
+                              <small>Exposition: {activeBettingExposure.toFixed(2)} €</small>
+                            </article>
+                            <article className="overviewKpiCard">
+                              <span>Portefeuille virtuel</span>
+                              <strong>{activeBettingVirtualStrategy ? `${activeBettingVirtualStrategy.bankroll.toFixed(2)} €` : 'n/d'}</strong>
+                              <small>{activeBettingVirtualStrategy?.enabled ? 'Actif' : 'Inactif'}</small>
+                            </article>
+                            <article className="overviewKpiCard">
+                              <span>PnL réglé</span>
+                              <strong className={bettingSettledPnl >= 0 ? 'up' : 'down'}>{bettingSettledPnl >= 0 ? '+' : ''}{bettingSettledPnl.toFixed(2)} €</strong>
+                              <small>Clôturés uniquement</small>
+                            </article>
+                            <article className="overviewKpiCard">
+                              <span>Signaux IA visibles</span>
+                              <strong>{filteredTopTipsterRecommendations.length}</strong>
+                              <small>{bestTipsterSignal ? `Top: ${bestTipsterSignal.event}` : 'Aucun top signal'}</small>
+                            </article>
+                          </>
+                        ) : activeApp === 'racing' ? (
+                          <>
+                            <article className="overviewKpiCard">
+                              <span>Paris hippiques en cours</span>
+                              <strong>{racingPendingBets}</strong>
+                              <small>En attente réel</small>
+                            </article>
+                            <article className="overviewKpiCard">
+                              <span>Portefeuille virtuel</span>
+                              <strong>{activeRacingVirtualStrategy ? `${activeRacingVirtualStrategy.bankroll.toFixed(2)} €` : 'n/d'}</strong>
+                              <small>{activeRacingVirtualStrategy?.enabled ? 'Actif' : 'Inactif'} · IA {activeRacingVirtualStrategy?.ai_enabled ? 'active' : 'inactive'}</small>
+                            </article>
+                            <article className="overviewKpiCard">
+                              <span>PnL réglé</span>
+                              <strong className={racingSettledPnl >= 0 ? 'up' : 'down'}>{racingSettledPnl >= 0 ? '+' : ''}{racingSettledPnl.toFixed(2)} €</strong>
+                              <small>Clôturés uniquement</small>
+                            </article>
+                            <article className="overviewKpiCard">
+                              <span>Signal IA prioritaire</span>
+                              <strong>{bestRacingSignal ? bestRacingSignal.confidence : 0}/5</strong>
+                              <small>{bestRacingSignal ? bestRacingSignal.event : 'Aucun signal prioritaire'}</small>
+                            </article>
+                          </>
+                        ) : (
+                          <>
+                            <article className="overviewKpiCard">
+                              <span>Grilles Loto simulées</span>
+                              <strong>{lotoPredictionCount}</strong>
+                              <small>{nextLotoDraw ? `Tirage: ${formatDateTimeFr(nextLotoDraw.drawDate)}` : 'Tirage non disponible'}</small>
+                            </article>
+                            <article className="overviewKpiCard">
+                              <span>Grilles EuroMillions simulées</span>
+                              <strong>{euroPredictionCount}</strong>
+                              <small>{nextEuroDraw ? `Tirage: ${formatDateTimeFr(nextEuroDraw.drawDate)}` : 'Tirage non disponible'}</small>
+                            </article>
+                            <article className="overviewKpiCard">
+                              <span>Confiance moyenne Loto</span>
+                              <strong>{lotoPredictionCount > 0 ? Math.round(lotteryPredictions.loto.predictedGrids.reduce((sum, grid) => sum + grid.confidenceIndex, 0) / lotoPredictionCount) : 0}/100</strong>
+                              <small>Grilles simulées</small>
+                            </article>
+                            <article className="overviewKpiCard">
+                              <span>Confiance moyenne EuroMillions</span>
+                              <strong>{euroPredictionCount > 0 ? Math.round(lotteryPredictions.euromillions.predictedGrids.reduce((sum, grid) => sum + grid.confidenceIndex, 0) / euroPredictionCount) : 0}/100</strong>
+                              <small>Grilles simulées</small>
+                            </article>
+                          </>
+                        )}
+                      </div>
+
+                      <article className="overviewPulsePanel">
+                        <div className="cardHeader" style={{ marginBottom: 8 }}>
+                          <h2>À lire maintenant</h2>
+                          <span>Synthèse clé en 30 secondes</span>
+                        </div>
+                        <div className="overviewPulseGrid">
+                          {activeApp === 'finance' ? (
+                            <>
+                              <div className="overviewPulseItem">
+                                <strong>Priorité IA</strong>
+                                <p>
+                                  {pendingDecisionCount > 0
+                                    ? `${pendingDecisionCount} décision(s) en attente.`
+                                    : 'Aucun blocage IA.'}
+                                </p>
+                              </div>
+                              <div className="overviewPulseItem">
+                                <strong>Portefeuille virtuel</strong>
+                                <p>
+                                  {financeVirtual
+                                    ? `${financeVirtual.label}: ${financeVirtual.current_value.toFixed(2)} € (${financeVirtual.roi >= 0 ? '+' : ''}${financeVirtual.roi.toFixed(1)}%).`
+                                    : 'Aucun portefeuille virtuel actif.'}
+                                </p>
+                              </div>
+                              <div className="overviewPulseItem">
+                                <strong>Élan marché</strong>
+                                <p>
+                                  {evolution1m.tone === 'up'
+                                    ? `Momentum 1m positif (${evolution1m.value}).`
+                                    : evolution1m.tone === 'down'
+                                      ? `Momentum 1m en baisse (${evolution1m.value}).`
+                                      : 'Momentum 1m neutre.'}
+                                </p>
+                              </div>
+                            </>
+                          ) : activeApp === 'betting' ? (
+                            <>
+                              <div className="overviewPulseItem">
+                                <strong>Exposition actuelle</strong>
+                                <p>{activeBettingBets.length} pending · {activeBettingExposure.toFixed(2)} € engagés.</p>
+                              </div>
+                              <div className="overviewPulseItem">
+                                <strong>Qualité des signaux</strong>
+                                <p>{bestTipsterSignal ? `Top: ${bestTipsterSignal.event} (${bestTipsterSignal.confidence}/5).` : 'Aucun top signal visible.'}</p>
+                              </div>
+                              <div className="overviewPulseItem">
+                                <strong>Performance réglée</strong>
+                                <p>PnL clôturé: {bettingSettledPnl >= 0 ? '+' : ''}{bettingSettledPnl.toFixed(2)} €.</p>
+                              </div>
+                            </>
+                          ) : activeApp === 'racing' ? (
+                            <>
+                              <div className="overviewPulseItem">
+                                <strong>File en attente</strong>
+                                <p>{racingPendingBets} ticket(s) en attente réel.</p>
+                              </div>
+                              <div className="overviewPulseItem">
+                                <strong>Signal principal</strong>
+                                <p>{bestRacingSignal ? `${bestRacingSignal.event} · cote ${bestRacingSignal.odds}.` : 'Aucun top signal.'}</p>
+                              </div>
+                              <div className="overviewPulseItem">
+                                <strong>Lecture de performance</strong>
+                                <p>PnL clôturé: {racingSettledPnl >= 0 ? '+' : ''}{racingSettledPnl.toFixed(2)} €.</p>
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div className="overviewPulseItem">
+                                <strong>Prochains tirages</strong>
+                                <p>Loto: {nextLotoDraw ? formatDateTimeFr(nextLotoDraw.drawDate) : 'n/d'} · EuroMillions: {nextEuroDraw ? formatDateTimeFr(nextEuroDraw.drawDate) : 'n/d'}.</p>
+                              </div>
+                              <div className="overviewPulseItem">
+                                <strong>Lecture des indices</strong>
+                                <p>Loto {lotoPredictionCount > 0 ? Math.round(lotteryPredictions.loto.predictedGrids.reduce((sum, grid) => sum + grid.confidenceIndex, 0) / lotoPredictionCount) : 0}/100 · EuroMillions {euroPredictionCount > 0 ? Math.round(lotteryPredictions.euromillions.predictedGrids.reduce((sum, grid) => sum + grid.confidenceIndex, 0) / euroPredictionCount) : 0}/100.</p>
+                              </div>
+                              <div className="overviewPulseItem">
+                                <strong>Conseil pratique</strong>
+                                <p>Mises régulières + suivi post-tirage.</p>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </article>
+                    </section>
+                  );
+                })()}
+                {isFinanceCryptoActive ? (
                   <div style={{ display: 'grid', gap: 10 }}>
                     {supervisedFinanceMessages.length > 0 ? (
                       <article className="featureCard" style={{ borderColor: 'var(--gold-border)', background: 'linear-gradient(120deg,var(--gold-soft),#fff)' }}>
@@ -5933,6 +7480,41 @@ export default function RobinApp() {
                         </div>
                       );
                     })}
+                  </div>
+                ) : isFinanceActionsActive ? (
+                  <div style={{ display: 'grid', gap: 10 }}>
+                    <article className="featureCard" style={{ borderColor: 'var(--brand-border)', background: 'linear-gradient(120deg,var(--brand-soft),#fff)' }}>
+                      <div className="cardHeader">
+                        <h2>Actions PEA — Banque française</h2>
+                        <span>{peaMarketSignals.length} opportunité(s) suivie(s)</span>
+                      </div>
+                      <p className="helperText" style={{ margin: 0 }}>
+                        Univers Actions/ETF éligible PEA, avec exécution guidée sur portefeuille réel ou virtuel selon votre sélection.
+                      </p>
+                    </article>
+                    {peaMarketSignals.slice(0, 5).map((signal) => (
+                      <div key={`home-pea-${signal.id}`} className="compactRow" style={{ alignItems: 'center' }}>
+                        <div style={{ display: 'grid', gap: 3 }}>
+                          <strong style={{ fontSize: '.9rem' }}>{signal.name} ({signal.symbol})</strong>
+                          <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>{signal.rationale}</p>
+                          <span className={`metaPill ${signal.performance_30d >= 0 ? 'up' : 'down'}`}>30j: {signal.performance_30d >= 0 ? '+' : ''}{signal.performance_30d.toFixed(1)}%</span>
+                        </div>
+                        <button
+                          className="secondaryButton"
+                          onClick={() => {
+                            setSubscribeSignalId(signal.id);
+                            setSubscribeAmount(signal.min_investment);
+                            setSubscribeAmountInput(String(signal.min_investment));
+                            setSubscribePortfolioId(allPortfolios[0]?.id ?? '');
+                            setAppView('dashboard');
+                            window.scrollTo({ top: 120, behavior: 'smooth' });
+                          }}
+                          type="button"
+                        >
+                          Souscrire
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 ) : activeApp === 'betting' ? (
                   <div style={{ display: 'grid', gap: 10 }}>
@@ -6515,7 +8097,7 @@ export default function RobinApp() {
             </section>
           ) : null}
 
-          {activeApp === 'finance' && !portfolioDetailOpen && appView === 'dashboard' ? (
+          {isFinanceCryptoActive && !portfolioDetailOpen && appView === 'dashboard' ? (
             <section className="selectedPortfolioStrip">
               <span>Portefeuilles affichés:</span>
               <div className="selectedPortfolioList">
@@ -6538,7 +8120,7 @@ export default function RobinApp() {
             </section>
           ) : null}
 
-          {activeApp === 'finance' && portfolioDetailOpen && selectedPortfolio ? (
+          {isFinanceCryptoActive && portfolioDetailOpen && selectedPortfolio ? (
             <div style={{ display: 'grid', gap: 22 }}>
               <nav className="breadcrumbNav">
                 <button className="breadcrumbBack" onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
@@ -6774,7 +8356,7 @@ export default function RobinApp() {
             </div>
           ) : null}
 
-          {activeApp === 'finance' && !portfolioDetailOpen && appView === 'dashboard' ? (
+          {isFinanceCryptoActive && !portfolioDetailOpen && appView === 'dashboard' ? (
             <>
               {supervisedFinanceMessages.length > 0 ? (
                 <article className="featureCard" style={{ borderColor: 'var(--gold-border)', background: 'linear-gradient(120deg,var(--gold-soft),#fff)' }}>
@@ -6832,6 +8414,86 @@ export default function RobinApp() {
                   </div>
                 ) : null}
               </div>
+              {financeVirtualLastOperation ? (
+                <p className="helperText" style={{ margin: '2px 4px 0', fontSize: '.72rem' }}>
+                  Virtuel Finance: {financeVirtualLastOperation.side === 'buy' ? 'achat' : 'vente'} {financeVirtualLastOperation.asset} {financeVirtualLastOperation.amount.toFixed(2)} € · {formatDateTimeFr(financeVirtualLastOperation.date)}
+                </p>
+              ) : null}
+              {financeCryptoEvaluation ? (
+                <p className="helperText" style={{ margin: '2px 4px 0', fontSize: '.72rem' }}>
+                  Évaluation IA Crypto (marché observé): {financeCryptoEvaluation.estimatedNet >= 0 ? '+' : ''}{financeCryptoEvaluation.estimatedNet.toFixed(2)} € sur {financeCryptoEvaluation.operationsCount} transaction(s).
+                </p>
+              ) : null}
+              {(() => {
+                const virtualPortfolio = allPortfolios.find((portfolio) => portfolio.type === 'virtual');
+                if (!virtualPortfolio) {
+                  return null;
+                }
+                const cfg = getAgentConfig(virtualPortfolio.id);
+                return (
+                  <article className="featureCard" style={{ marginTop: 8 }}>
+                    <div className="cardHeader">
+                      <h2>Pilotage Cockpit · Finance fictif</h2>
+                      <span>Activation portefeuille, agent IA et configuration</span>
+                    </div>
+                    <div style={{ display: 'grid', gap: 12 }}>
+                      <label className="checkRow" style={{ margin: 0 }}>
+                        <input
+                          type="checkbox"
+                          checked={virtualAppsEnabled.finance}
+                          onChange={(event) => void updateVirtualAppPreference('finance', event.target.checked)}
+                        />
+                        <span>Activer le portefeuille fictif Finance</span>
+                      </label>
+                      <label className="checkRow" style={{ margin: 0 }}>
+                        <input
+                          type="checkbox"
+                          checked={cfg.enabled}
+                          disabled={!virtualAppsEnabled.finance}
+                          onChange={(event) => void updateAgentConfig(virtualPortfolio.id, { enabled: event.target.checked, mode: event.target.checked ? (cfg.mode === 'manual' ? 'supervised' : cfg.mode) : 'manual' })}
+                        />
+                        <span>Activer l agent IA Finance</span>
+                      </label>
+                      <label>
+                        Mode IA
+                        <select
+                          value={cfg.mode}
+                          disabled={!virtualAppsEnabled.finance || !cfg.enabled}
+                          onChange={(event) => void updateAgentConfig(virtualPortfolio.id, { mode: event.target.value as AgentMode })}
+                        >
+                          <option value="manual">Manuel</option>
+                          <option value="supervised">Validation humaine</option>
+                          <option value="autopilot">Autopilot</option>
+                        </select>
+                      </label>
+                      <label>
+                        Seuil montant max ({cfg.max_amount.toFixed(1)} €)
+                        <input
+                          type="range"
+                          min={MIN_MONETARY_LIMIT}
+                          max={600}
+                          step={0.1}
+                          disabled={!virtualAppsEnabled.finance || !cfg.enabled}
+                          value={Math.min(600, Math.max(MIN_MONETARY_LIMIT, cfg.max_amount))}
+                          onChange={(event) => void updateAgentConfig(virtualPortfolio.id, { max_amount: Math.max(MIN_MONETARY_LIMIT, Number(event.target.value) || MIN_MONETARY_LIMIT) })}
+                        />
+                      </label>
+                      <label>
+                        Seuil max transactions / jour ({cfg.max_transactions_per_day})
+                        <input
+                          type="range"
+                          min={1}
+                          max={30}
+                          step={1}
+                          disabled={!virtualAppsEnabled.finance || !cfg.enabled}
+                          value={Math.min(30, Math.max(1, cfg.max_transactions_per_day))}
+                          onChange={(event) => void updateAgentConfig(virtualPortfolio.id, { max_transactions_per_day: Math.max(1, Number(event.target.value) || 1) })}
+                        />
+                      </label>
+                    </div>
+                  </article>
+                );
+              })()}
 
               <section className="portfolioHero">
                 <div className="portfolioIntro">
@@ -7042,7 +8704,7 @@ export default function RobinApp() {
                                       </label>
                                     </div>
                                     <div className="providerActions fullWidth" style={{ marginTop: 2 }}>
-                                      <button className="approveButton" disabled={decisionActionLoading || !selectedDecisionPortfolioId} onClick={() => requestDecisionAction(decision, true, { targetPortfolioId: selectedDecisionPortfolioId, side: selectedDecisionSide, amount: selectedDecisionAmount })} type="button">Confirmer recommandation</button>
+                                      <button className="approveButton" disabled={decisionActionLoading || !selectedDecisionPortfolioId} onClick={() => requestDecisionAction(decision, true, { targetPortfolioId: selectedDecisionPortfolioId, side: selectedDecisionSide, amount: selectedDecisionAmount })} type="button">Confirmer sur le portefeuille</button>
                                       <button className="ghostButton" disabled={decisionActionLoading || !selectedDecisionPortfolioId} onClick={() => requestDecisionAction(decision, false, { targetPortfolioId: selectedDecisionPortfolioId, side: selectedDecisionSide, amount: selectedDecisionAmount })} type="button">Refuser recommandation</button>
                                       <button className="ghostButton" onClick={() => setAssistantWizardDecisionId(null)} type="button">Fermer wizard</button>
                                     </div>
@@ -7403,7 +9065,7 @@ export default function RobinApp() {
             </>
           ) : null}
 
-          {activeApp === 'finance' && appView === 'portfolios' ? (
+          {isFinanceCryptoActive && appView === 'portfolios' ? (
             <section style={{ display: 'grid', gap: 22 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
                 <div>
@@ -7504,7 +9166,7 @@ export default function RobinApp() {
                                               </div>
                                               <div className="providerActions fullWidth" style={{ marginTop: 2 }}>
                                                 <button className="secondaryButton" disabled={decisionActionLoading || !selectedDecisionPortfolioId} onClick={() => requestDecisionAction(decision, true, { targetPortfolioId: selectedDecisionPortfolioId, side: selectedDecisionSide, amount: selectedDecisionAmount })} type="button">
-                                                  {decisionActionLoading ? 'Traitement...' : 'Confirmer recommandation'}
+                                                  {decisionActionLoading ? 'Traitement...' : 'Confirmer sur le portefeuille'}
                                                 </button>
                                                 <button className="ghostButton" disabled={decisionActionLoading || !selectedDecisionPortfolioId} onClick={() => requestDecisionAction(decision, false, { targetPortfolioId: selectedDecisionPortfolioId, side: selectedDecisionSide, amount: selectedDecisionAmount })} type="button">Refuser recommandation</button>
                                                 <button className="ghostButton" onClick={() => setAssistantWizardDecisionId(null)} type="button">Fermer wizard</button>
@@ -7563,7 +9225,7 @@ export default function RobinApp() {
                                     type="button"
                                   >
                                     <span>👁</span>
-                                    <strong>Supervisé</strong>
+                                    <strong>Validation humaine</strong>
                                     <small>IA propose, vous approuvez</small>
                                   </button>
                                   <button
@@ -7668,7 +9330,7 @@ export default function RobinApp() {
             </section>
           ) : null}
 
-          {activeApp === 'finance' && appView === 'settings' ? (
+          {isFinanceCryptoActive && appView === 'settings' ? (
             <section className="workspaceGrid settingsGrid">
               <article className="featureCard settingsIntroCard">
                 <div className="cardHeader">
@@ -7782,7 +9444,7 @@ export default function RobinApp() {
                       <option value="1y">1 an</option>
                     </select>
                   </label>
-                  <p className="helperText">La flèche du bandeau rejoint la cible 🎯 quand cet objectif net (gain après taxation estimée à 30%) est atteint sur la période choisie.</p>
+                  <p className="helperText">La batterie du bandeau se charge selon votre progression de navigation dans les menus. L objectif net reste affiché dans les KPI.</p>
                   <p className="helperText">Prefill navigateur: {clientContext.country || clientContext.locale} · {clientContext.time_zone}</p>
                   <button className="primaryButton" disabled={submitting} type="submit">
                     {submitting ? 'Enregistrement...' : 'Sauvegarder ma configuration'}
@@ -7793,16 +9455,78 @@ export default function RobinApp() {
 
                 <article className="featureCard settingsCard">
                   <div className="cardHeader">
-                    <h2>Raccourci Agent IA</h2>
+                    <h2>Pilotage IA — Finance virtuel</h2>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span>Pilotage par portefeuille</span>
+                      <span>Mode manuel, validation humaine ou autopilot + seuils</span>
                     </div>
                   </div>
-                  <div className="infoPanel mutedPanel">
-                    <strong>Configuration déplacée dans Portefeuilles</strong>
-                    <p>Le mode de pilotage (manuel / pilote automatique) et les quotas se configurent directement dans chaque fiche portefeuille.</p>
-                    <button className="secondaryButton" style={{ marginTop: 10 }} onClick={() => { setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Aller à Portefeuilles →</button>
-                  </div>
+                  {(() => {
+                    const vp = allPortfolios.find((portfolio) => portfolio.type === 'virtual');
+                    if (!vp) {
+                      return <p className="helperText">Portefeuille virtuel Finance indisponible pour le moment.</p>;
+                    }
+                    const cfg = getAgentConfig(vp.id);
+                    return (
+                      <div style={{ display: 'grid', gap: 12 }}>
+                        <label className="checkRow" style={{ margin: 0 }}>
+                          <input
+                            type="checkbox"
+                            checked={virtualAppsEnabled.finance}
+                            onChange={(event) => void updateVirtualAppPreference('finance', event.target.checked)}
+                          />
+                          <span>Activer le portefeuille fictif Finance</span>
+                        </label>
+                        <label className="checkRow" style={{ margin: 0 }}>
+                          <input
+                            type="checkbox"
+                            checked={cfg.enabled}
+                            disabled={!virtualAppsEnabled.finance}
+                            onChange={(event) => void updateAgentConfig(vp.id, { enabled: event.target.checked, mode: event.target.checked ? (cfg.mode === 'manual' ? 'supervised' : cfg.mode) : 'manual' })}
+                          />
+                          <span>Activer l agent IA sur le portefeuille fictif</span>
+                        </label>
+                        <label>
+                          Mode IA
+                          <select
+                            value={cfg.mode}
+                            disabled={!virtualAppsEnabled.finance || !cfg.enabled}
+                            onChange={(event) => void updateAgentConfig(vp.id, { mode: event.target.value as AgentMode })}
+                          >
+                            <option value="manual">Manuel</option>
+                            <option value="supervised">Validation humaine</option>
+                            <option value="autopilot">Autopilot</option>
+                          </select>
+                        </label>
+                        <label>
+                          Seuil montant max par transaction ({cfg.max_amount.toFixed(1)} €)
+                          <input
+                            type="range"
+                            min={MIN_MONETARY_LIMIT}
+                            max={600}
+                            step={0.1}
+                            disabled={!virtualAppsEnabled.finance || !cfg.enabled}
+                            value={Math.min(600, Math.max(MIN_MONETARY_LIMIT, cfg.max_amount))}
+                            onChange={(event) => void updateAgentConfig(vp.id, { max_amount: Math.max(MIN_MONETARY_LIMIT, Number(event.target.value) || MIN_MONETARY_LIMIT) })}
+                          />
+                        </label>
+                        <label>
+                          Seuil max transactions / jour ({cfg.max_transactions_per_day})
+                          <input
+                            type="range"
+                            min={1}
+                            max={30}
+                            step={1}
+                            disabled={!virtualAppsEnabled.finance || !cfg.enabled}
+                            value={Math.min(30, Math.max(1, cfg.max_transactions_per_day))}
+                            onChange={(event) => void updateAgentConfig(vp.id, { max_transactions_per_day: Math.max(1, Number(event.target.value) || 1) })}
+                          />
+                        </label>
+                        <p className="helperText" style={{ margin: 0 }}>
+                          En mode autopilot, Robin IA crée des transactions simulées pour faire évoluer le portefeuille fictif selon vos seuils.
+                        </p>
+                      </div>
+                    );
+                  })()}
                 </article>
 
               {/* Virtual Portfolio settings tile */}
@@ -7841,6 +9565,22 @@ export default function RobinApp() {
                               onChange={(e) => void updateVirtualAppPreference('betting', e.target.checked)}
                             />
                             <span><strong>Application Paris en ligne</strong> — {virtualAppsEnabled.betting ? 'portefeuille virtuel activé (100 € simulés)' : 'portefeuille virtuel désactivé'}</span>
+                          </label>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={virtualAppsEnabled.racing}
+                              onChange={(e) => void updateVirtualAppPreference('racing', e.target.checked)}
+                            />
+                            <span><strong>Application Paris hippiques</strong> — {virtualAppsEnabled.racing ? 'portefeuille virtuel activé (100 € simulés)' : 'portefeuille virtuel désactivé'}</span>
+                          </label>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={virtualAppsEnabled.loto}
+                              onChange={(e) => void updateVirtualAppPreference('loto', e.target.checked)}
+                            />
+                            <span><strong>Application Loto / Euromillions</strong> — {virtualAppsEnabled.loto ? 'portefeuille virtuel activé (50 € simulés)' : 'portefeuille virtuel désactivé'}</span>
                           </label>
                           <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
                             <input
@@ -8265,6 +10005,243 @@ export default function RobinApp() {
             </section>
           ) : null}
 
+          {isFinanceActionsActive && appView === 'dashboard' ? (
+            <section style={{ display: 'grid', gap: 18 }}>
+              <article className="featureCard">
+                <div className="cardHeader">
+                  <h2>Cockpit Actions PEA</h2>
+                  <span>{peaMarketSignals.length} opportunité(s) Actions/ETF</span>
+                </div>
+                <p className="helperText" style={{ margin: 0 }}>
+                  Exécution guidée inspirée du flux Coinbase: sélection du support, montant et portefeuille cible (réel ou virtuel).
+                </p>
+              </article>
+
+              {(() => {
+                const virtualPortfolio = allPortfolios.find((portfolio) => portfolio.type === 'virtual');
+                if (!virtualPortfolio) {
+                  return null;
+                }
+                const cfg = getAgentConfig(virtualPortfolio.id);
+                return (
+                  <article className="featureCard">
+                    <div className="cardHeader">
+                      <h2>Pilotage Cockpit · Actions fictif</h2>
+                      <span>Activation portefeuille, agent IA et configuration</span>
+                    </div>
+                    <div style={{ display: 'grid', gap: 12 }}>
+                      <label className="checkRow" style={{ margin: 0 }}>
+                        <input
+                          type="checkbox"
+                          checked={virtualAppsEnabled.finance}
+                          onChange={(event) => void updateVirtualAppPreference('finance', event.target.checked)}
+                        />
+                        <span>Activer le portefeuille fictif Actions/PEA</span>
+                      </label>
+                      <label className="checkRow" style={{ margin: 0 }}>
+                        <input
+                          type="checkbox"
+                          checked={cfg.enabled}
+                          disabled={!virtualAppsEnabled.finance}
+                          onChange={(event) => void updateAgentConfig(virtualPortfolio.id, { enabled: event.target.checked, mode: event.target.checked ? (cfg.mode === 'manual' ? 'supervised' : cfg.mode) : 'manual' })}
+                        />
+                        <span>Activer l agent IA Finance</span>
+                      </label>
+                      <label>
+                        Mode IA
+                        <select
+                          value={cfg.mode}
+                          disabled={!virtualAppsEnabled.finance || !cfg.enabled}
+                          onChange={(event) => void updateAgentConfig(virtualPortfolio.id, { mode: event.target.value as AgentMode })}
+                        >
+                          <option value="manual">Manuel</option>
+                          <option value="supervised">Validation humaine</option>
+                          <option value="autopilot">Autopilot</option>
+                        </select>
+                      </label>
+                      <label>
+                        Seuil montant max ({cfg.max_amount.toFixed(1)} €)
+                        <input
+                          type="range"
+                          min={MIN_MONETARY_LIMIT}
+                          max={600}
+                          step={0.1}
+                          disabled={!virtualAppsEnabled.finance || !cfg.enabled}
+                          value={Math.min(600, Math.max(MIN_MONETARY_LIMIT, cfg.max_amount))}
+                          onChange={(event) => void updateAgentConfig(virtualPortfolio.id, { max_amount: Math.max(MIN_MONETARY_LIMIT, Number(event.target.value) || MIN_MONETARY_LIMIT) })}
+                        />
+                      </label>
+                      <label>
+                        Seuil max transactions / jour ({cfg.max_transactions_per_day})
+                        <input
+                          type="range"
+                          min={1}
+                          max={30}
+                          step={1}
+                          disabled={!virtualAppsEnabled.finance || !cfg.enabled}
+                          value={Math.min(30, Math.max(1, cfg.max_transactions_per_day))}
+                          onChange={(event) => void updateAgentConfig(virtualPortfolio.id, { max_transactions_per_day: Math.max(1, Number(event.target.value) || 1) })}
+                        />
+                      </label>
+                    </div>
+                  </article>
+                );
+              })()}
+
+              {subscribeSignalId && peaMarketSignals.some((signal) => signal.id === subscribeSignalId) ? (
+                <article className="featureCard" style={{ borderColor: 'var(--brand-border)', background: 'var(--brand-soft)' }}>
+                  <div className="cardHeader">
+                    <h2>Ordre guidé PEA</h2>
+                    <span>{peaMarketSignals.find((signal) => signal.id === subscribeSignalId)?.name}</span>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <label>
+                      Portefeuille cible
+                      <select value={subscribePortfolioId} onChange={(event) => setSubscribePortfolioId(event.target.value)}>
+                        <option value="">— Choisir —</option>
+                        {allPortfolios.map((portfolio) => (
+                          <option key={`pea-target-${portfolio.id}`} value={portfolio.id}>
+                            {portfolio.type === 'virtual' ? '⚗️ ' : ''}{portfolio.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Montant (€)
+                      <input type="number" min={1} step="1" value={subscribeAmount} onChange={(event) => setSubscribeAmount(Math.max(1, Number(event.target.value) || 1))} />
+                    </label>
+                  </div>
+                  <div className="providerActions fullWidth" style={{ marginTop: 10 }}>
+                    <button
+                      className="secondaryButton"
+                      disabled={!subscribePortfolioId || subscribeLoading}
+                      onClick={() => {
+                        const signal = peaMarketSignals.find((entry) => entry.id === subscribeSignalId);
+                        if (!signal || !subscribePortfolioId) {
+                          return;
+                        }
+                        void subscribeToMarketSignal(signal, subscribePortfolioId, subscribeAmount);
+                      }}
+                      type="button"
+                    >
+                      {subscribeLoading ? 'Envoi...' : 'Confirmer la souscription'}
+                    </button>
+                    <button className="ghostButton" onClick={() => setSubscribeSignalId(null)} type="button">Annuler</button>
+                  </div>
+                </article>
+              ) : null}
+
+              <article className="featureCard">
+                <div className="cardHeader">
+                  <h2>Univers Actions éligible PEA</h2>
+                  <span>France et Europe</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(270px,1fr))', gap: 12 }}>
+                  {peaMarketSignals.map((signal) => (
+                    <div key={`pea-signal-${signal.id}`} className="marketSignalCard">
+                      <div className="marketSignalTop">
+                        <div>
+                          <strong className="marketSignalName">{signal.name}</strong>
+                          <p style={{ margin: 0, fontSize: '.74rem', color: 'var(--muted)' }}>{signal.symbol}</p>
+                        </div>
+                        <strong className={`marketSignalPerf ${signal.performance_30d >= 0 ? 'up' : 'down'}`}>
+                          {signal.performance_30d >= 0 ? '+' : ''}{signal.performance_30d.toFixed(1)}%
+                        </strong>
+                      </div>
+                      <p className="marketSignalRationale">{signal.rationale}</p>
+                      <button
+                        className="secondaryButton"
+                        onClick={() => {
+                          setSubscribeSignalId(signal.id);
+                          setSubscribeAmount(Math.max(1, signal.min_investment));
+                          setSubscribePortfolioId(allPortfolios[0]?.id ?? '');
+                          window.scrollTo({ top: 0, behavior: 'smooth' });
+                        }}
+                        type="button"
+                      >
+                        Préparer ordre PEA
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </article>
+            </section>
+          ) : null}
+
+          {isFinanceActionsActive && appView === 'portfolios' ? (
+            <section style={{ display: 'grid', gap: 18 }}>
+              <article className="featureCard">
+                <div className="cardHeader">
+                  <h2>Portefeuilles Actions</h2>
+                  <span>Support PEA et portefeuille virtuel</span>
+                </div>
+                <div style={{ display: 'grid', gap: 10 }}>
+                  {allPortfolios.map((portfolio) => (
+                    <div key={`pea-portfolio-${portfolio.id}`} className={`compactRow ${portfolio.type === 'virtual' ? 'portfolioRowVirtual' : 'portfolioRowReal'}`} style={{ alignItems: 'center' }}>
+                      <div>
+                        <strong style={{ fontSize: '.9rem' }}>{portfolio.label}</strong>
+                        <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>
+                          {portfolio.type === 'virtual' ? 'Simulation PEA' : 'Compte titre/PEA connecté'} · {portfolio.agent_name}
+                        </p>
+                      </div>
+                      <span className="metaPill">{portfolio.current_value.toFixed(2)} €</span>
+                    </div>
+                  ))}
+                </div>
+              </article>
+            </section>
+          ) : null}
+
+          {isFinanceActionsActive && appView === 'settings' ? (
+            <section className="workspaceGrid settingsGrid">
+              <article className="featureCard settingsIntroCard">
+                <div className="cardHeader">
+                  <h2>Options Actions (PEA)</h2>
+                  <span>Banques françaises et paramètres d exécution</span>
+                </div>
+                <p className="helperText" style={{ margin: 0 }}>
+                  Configurez vos banques PEA comme vous le faites pour Coinbase afin de centraliser l exécution Actions.
+                </p>
+              </article>
+
+              <article className="featureCard">
+                <div className="cardHeader">
+                  <h2>Banques PEA</h2>
+                  <span>Connexion et identifiants</span>
+                </div>
+                <div style={{ display: 'grid', gap: 12 }}>
+                  {PEA_BANKS.map((bank) => {
+                    const keyState = providerKeys[bank.code] ?? { apiKey: '', apiSecret: '', portfolioId: '' };
+                    return (
+                      <div key={bank.code} className="providerCard stacked">
+                        <div className="providerCardBody">
+                          <strong>{bank.name}</strong>
+                          <p>Configuration PEA en cours de déploiement. Vous pouvez préparer vos identifiants dès maintenant.</p>
+                        </div>
+                        <div className="providerActions fullWidth">
+                          <input
+                            placeholder="Identifiant / API Key"
+                            value={keyState.apiKey}
+                            onChange={(event) => setProviderKeys((prev) => ({ ...prev, [bank.code]: { ...keyState, apiKey: event.target.value } }))}
+                          />
+                          <input
+                            placeholder="Secret"
+                            type="password"
+                            value={keyState.apiSecret}
+                            onChange={(event) => setProviderKeys((prev) => ({ ...prev, [bank.code]: { ...keyState, apiSecret: event.target.value } }))}
+                          />
+                          <button className="secondaryButton" onClick={() => setError(`Configuration enregistrée localement pour ${bank.name}. Activation API PEA côté serveur en cours.`)} type="button">
+                            Enregistrer
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </article>
+            </section>
+          ) : null}
+
           {activeApp === 'betting' && !strategyDetailOpen && appView === 'dashboard' ? (
             <>
               {supervisedBettingMessages.length > 0 ? (
@@ -8338,6 +10315,69 @@ export default function RobinApp() {
                   );
                 })()}
               </div>
+
+              <article className="featureCard">
+                <div className="cardHeader"><h2>Pilotage Cockpit · Paris sportifs fictif</h2><span>Activation portefeuille, agent IA et configuration</span></div>
+                {activeBettingVirtualStrategy ? (
+                  <div style={{ display: 'grid', gap: 12 }}>
+                    <label className="checkRow" style={{ margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={virtualAppsEnabled.betting}
+                        onChange={(event) => void updateVirtualAppPreference('betting', event.target.checked)}
+                      />
+                      <span>Activer le portefeuille fictif Paris sportifs</span>
+                    </label>
+                    <label className="checkRow" style={{ margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={activeBettingVirtualStrategy.ai_enabled}
+                        disabled={!virtualAppsEnabled.betting}
+                        onChange={(event) => updateBettingStrategy(activeBettingVirtualStrategy.id, { ai_enabled: event.target.checked, enabled: event.target.checked ? true : activeBettingVirtualStrategy.enabled })}
+                      />
+                      <span>Activer l agent IA sur ce portefeuille</span>
+                    </label>
+                    <label>
+                      Mode IA
+                      <select
+                        value={activeBettingVirtualStrategy.mode}
+                        disabled={!virtualAppsEnabled.betting || !activeBettingVirtualStrategy.ai_enabled}
+                        onChange={(event) => updateBettingStrategy(activeBettingVirtualStrategy.id, { mode: event.target.value as BettingStrategy['mode'] })}
+                      >
+                        <option value="manual">Manuel</option>
+                        <option value="supervised">Validation humaine</option>
+                        <option value="autonomous">Autopilot</option>
+                      </select>
+                    </label>
+                    <label>
+                      Seuil mise max ({activeBettingVirtualStrategy.max_stake.toFixed(1)} €)
+                      <input
+                        type="range"
+                        min={MIN_MONETARY_LIMIT}
+                        max={100}
+                        step={0.1}
+                        disabled={!virtualAppsEnabled.betting || !activeBettingVirtualStrategy.ai_enabled}
+                        value={Math.min(100, Math.max(MIN_MONETARY_LIMIT, activeBettingVirtualStrategy.max_stake))}
+                        onChange={(event) => updateBettingStrategy(activeBettingVirtualStrategy.id, { max_stake: Math.max(MIN_MONETARY_LIMIT, Number(event.target.value) || MIN_MONETARY_LIMIT) })}
+                      />
+                    </label>
+                    <label>
+                      Seuil max paris / jour ({activeBettingVirtualStrategy.max_bets_per_day})
+                      <input
+                        type="range"
+                        min={1}
+                        max={100}
+                        step={1}
+                        disabled={!virtualAppsEnabled.betting || !activeBettingVirtualStrategy.ai_enabled}
+                        value={Math.min(100, Math.max(1, activeBettingVirtualStrategy.max_bets_per_day))}
+                        onChange={(event) => updateBettingStrategy(activeBettingVirtualStrategy.id, { max_bets_per_day: Math.max(1, Number(event.target.value) || 1) })}
+                      />
+                    </label>
+                  </div>
+                ) : (
+                  <p className="helperText">Portefeuille fictif Paris sportifs indisponible.</p>
+                )}
+              </article>
 
               {/* === Betting alerts === */}
               {emergencyStopActive ? (
@@ -8798,6 +10838,69 @@ export default function RobinApp() {
                 <p style={{ fontSize: '.85rem', color: 'var(--muted)', margin: 0 }}>Gérez votre profil, vos connexions aux bookmakers, vos limites de jeu responsable et vos préférences de notification.</p>
               </article>
 
+              <article className="featureCard">
+                <div className="cardHeader"><h2>Portefeuille fictif &amp; Agent IA</h2><span>Activation et seuils Paris sportifs</span></div>
+                {activeBettingVirtualStrategy ? (
+                  <div style={{ display: 'grid', gap: 12 }}>
+                    <label className="checkRow" style={{ margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={virtualAppsEnabled.betting}
+                        onChange={(event) => void updateVirtualAppPreference('betting', event.target.checked)}
+                      />
+                      <span>Activer le portefeuille fictif Paris sportifs</span>
+                    </label>
+                    <label className="checkRow" style={{ margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={activeBettingVirtualStrategy.ai_enabled}
+                        disabled={!virtualAppsEnabled.betting}
+                        onChange={(event) => updateBettingStrategy(activeBettingVirtualStrategy.id, { ai_enabled: event.target.checked, enabled: event.target.checked ? true : activeBettingVirtualStrategy.enabled })}
+                      />
+                      <span>Activer l agent IA sur ce portefeuille</span>
+                    </label>
+                    <label>
+                      Mode IA
+                      <select
+                        value={activeBettingVirtualStrategy.mode}
+                        disabled={!virtualAppsEnabled.betting || !activeBettingVirtualStrategy.ai_enabled}
+                        onChange={(event) => updateBettingStrategy(activeBettingVirtualStrategy.id, { mode: event.target.value as BettingStrategy['mode'] })}
+                      >
+                        <option value="manual">Manuel</option>
+                        <option value="supervised">Validation humaine</option>
+                        <option value="autonomous">Autopilot</option>
+                      </select>
+                    </label>
+                    <label>
+                      Seuil mise max ({activeBettingVirtualStrategy.max_stake.toFixed(1)} €)
+                      <input
+                        type="range"
+                        min={MIN_MONETARY_LIMIT}
+                        max={100}
+                        step={0.1}
+                        disabled={!virtualAppsEnabled.betting || !activeBettingVirtualStrategy.ai_enabled}
+                        value={Math.min(100, Math.max(MIN_MONETARY_LIMIT, activeBettingVirtualStrategy.max_stake))}
+                        onChange={(event) => updateBettingStrategy(activeBettingVirtualStrategy.id, { max_stake: Math.max(MIN_MONETARY_LIMIT, Number(event.target.value) || MIN_MONETARY_LIMIT) })}
+                      />
+                    </label>
+                    <label>
+                      Seuil max paris / jour ({activeBettingVirtualStrategy.max_bets_per_day})
+                      <input
+                        type="range"
+                        min={1}
+                        max={100}
+                        step={1}
+                        disabled={!virtualAppsEnabled.betting || !activeBettingVirtualStrategy.ai_enabled}
+                        value={Math.min(100, Math.max(1, activeBettingVirtualStrategy.max_bets_per_day))}
+                        onChange={(event) => updateBettingStrategy(activeBettingVirtualStrategy.id, { max_bets_per_day: Math.max(1, Number(event.target.value) || 1) })}
+                      />
+                    </label>
+                  </div>
+                ) : (
+                  <p className="helperText">Portefeuille fictif Paris sportifs indisponible.</p>
+                )}
+              </article>
+
               {/* Profil & jeu responsable */}
               <article className="featureCard">
                 <div className="cardHeader"><h2>Profil &amp; Jeu responsable</h2><span>Limites et paramètres de sécurité</span></div>
@@ -8890,11 +10993,122 @@ export default function RobinApp() {
               </div>
 
               <article className="featureCard">
+                <div className="cardHeader"><h2>Pilotage Cockpit · Hippiques fictif</h2><span>Activation portefeuille, agent IA et configuration</span></div>
+                {activeRacingVirtualStrategy ? (
+                  <div style={{ display: 'grid', gap: 12 }}>
+                    <label className="checkRow" style={{ margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={virtualAppsEnabled.racing}
+                        onChange={(event) => {
+                          if (event.target.checked && !activeRacingVirtualStrategy.ai_enabled) {
+                            setBettingAlert('Activez d abord l agent IA hippique pour pouvoir activer le portefeuille fictif.');
+                            return;
+                          }
+                          void updateVirtualAppPreference('racing', event.target.checked);
+                        }}
+                      />
+                      <span>Activer le portefeuille fictif Paris hippiques</span>
+                    </label>
+                    <label className="checkRow" style={{ margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={activeRacingVirtualStrategy.ai_enabled}
+                        onChange={(event) => {
+                          if (!event.target.checked && virtualAppsEnabled.racing) {
+                            setBettingAlert('Impossible de désactiver l agent IA tant que le portefeuille fictif hippique est actif.');
+                            return;
+                          }
+                          setRacingStrategies((prev) => prev.map((strategy) => strategy.id === activeRacingVirtualStrategy.id
+                            ? { ...strategy, ai_enabled: event.target.checked, enabled: event.target.checked ? true : strategy.enabled }
+                            : strategy));
+                        }}
+                      />
+                      <span>Activer l agent IA sur ce portefeuille</span>
+                    </label>
+                    <label>
+                      Mode IA
+                      <select
+                        value={activeRacingVirtualStrategy.mode}
+                        disabled={!virtualAppsEnabled.racing || !activeRacingVirtualStrategy.ai_enabled}
+                        onChange={(event) => setRacingStrategies((prev) => prev.map((strategy) => strategy.id === activeRacingVirtualStrategy.id ? { ...strategy, mode: event.target.value as BettingStrategy['mode'] } : strategy))}
+                      >
+                        <option value="manual">Manuel</option>
+                        <option value="supervised">Validation humaine</option>
+                        <option value="autonomous">Autopilot</option>
+                      </select>
+                    </label>
+                    <div className="providerActions fullWidth" style={{ marginTop: -2 }}>
+                      <button className="ghostButton" onClick={alignRacingPilotModeWithBetting} type="button">
+                        Aligner le pilotage sur Paris sportifs
+                      </button>
+                    </div>
+                    <label>
+                      Seuil mise max ({activeRacingVirtualStrategy.max_stake.toFixed(1)} €)
+                      <input
+                        type="range"
+                        min={MIN_MONETARY_LIMIT}
+                        max={80}
+                        step={0.1}
+                        disabled={!virtualAppsEnabled.racing || !activeRacingVirtualStrategy.ai_enabled}
+                        value={Math.min(80, Math.max(MIN_MONETARY_LIMIT, activeRacingVirtualStrategy.max_stake))}
+                        onChange={(event) => setRacingStrategies((prev) => prev.map((strategy) => strategy.id === activeRacingVirtualStrategy.id
+                          ? { ...strategy, max_stake: Math.max(MIN_MONETARY_LIMIT, Number(event.target.value) || MIN_MONETARY_LIMIT) }
+                          : strategy))}
+                      />
+                    </label>
+                    <label>
+                      Seuil max paris / jour ({activeRacingVirtualStrategy.max_bets_per_day})
+                      <input
+                        type="range"
+                        min={1}
+                        max={40}
+                        step={1}
+                        disabled={!virtualAppsEnabled.racing || !activeRacingVirtualStrategy.ai_enabled}
+                        value={Math.min(40, Math.max(1, activeRacingVirtualStrategy.max_bets_per_day))}
+                        onChange={(event) => setRacingStrategies((prev) => prev.map((strategy) => strategy.id === activeRacingVirtualStrategy.id
+                          ? { ...strategy, max_bets_per_day: Math.max(1, Number(event.target.value) || 1) }
+                          : strategy))}
+                      />
+                    </label>
+                  </div>
+                ) : (
+                  <p className="helperText">Portefeuille fictif hippique indisponible.</p>
+                )}
+              </article>
+
+              <article className="featureCard">
                 <div className="cardHeader"><h2>🏇 Recommandations hippiques IA</h2><span>{racingSignals.filter((signal) => signal.status === 'pending').length} course(s) analysée(s)</span></div>
                 {racingSignals.filter((signal) => signal.status === 'pending').length === 0 ? (
                   <div className="emptyState"><span className="emptyStateIcon">🏇</span><p className="emptyStateTitle">Aucune recommandation disponible</p><p className="emptyStateText">Robin IA analyse les prochaines courses. Revenez avant chaque réunion PMU.</p></div>
                 ) : (
                   <div style={{ display: 'grid', gap: 12 }}>
+                    <div className="infoPanel" style={{ margin: 0, display: 'grid', gap: 8 }}>
+                      <strong>Confirmation rapide des recommandations IA</strong>
+                      <label>
+                        Portefeuille cible
+                        <select value={selectedRacingRecommendationStrategyId} onChange={(event) => setSelectedRacingRecommendationStrategyId(event.target.value)}>
+                          {racingStrategies.map((strategy) => (
+                            <option key={`racing-target-${strategy.id}`} value={strategy.id}>
+                              {strategy.isVirtual ? 'Simulation' : 'Réel'} · {strategy.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <p style={{ margin: 0, fontSize: '.8rem', color: 'var(--muted)' }}>
+                        La confirmation utilisateur exécute une simulation sur le portefeuille fictif, ou associe la recommandation au portefeuille réel choisi.
+                      </p>
+                      {(() => {
+                        const selectedStrategy = racingStrategies.find((strategy) => strategy.id === selectedRacingRecommendationStrategyId);
+                        return selectedStrategy?.isVirtual && !virtualAppsEnabled.racing ? (
+                          <div className="providerActions fullWidth">
+                            <button className="secondaryButton" onClick={() => void updateVirtualAppPreference('racing', true)} type="button">
+                              Activer le portefeuille fictif
+                            </button>
+                          </div>
+                        ) : null;
+                      })()}
+                    </div>
                     {racingSignals.filter((signal) => signal.status === 'pending').map((signal) => (
                       <div key={signal.id} className="compactRow" style={{ alignItems: 'flex-start' }}>
                         <div style={{ display: 'grid', gap: 4, flex: 1 }}>
@@ -8911,7 +11125,7 @@ export default function RobinApp() {
                         </div>
                         <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
                           <span className="statusBadge ok">{signal.bookmaker}</span>
-                          <button className="secondaryButton" onClick={() => { setRacingSignals((prev) => prev.map((entry) => entry.id === signal.id ? { ...entry, status: 'approved' } : entry)); setBettingAlert(`✅ Recommandation hippique validée : ${signal.event}`); }} type="button">Valider</button>
+                          <button className="secondaryButton" onClick={() => confirmRacingRecommendation(signal, selectedRacingRecommendationStrategyId)} type="button">Confirmer sur le portefeuille</button>
                         </div>
                       </div>
                     ))}
@@ -8954,6 +11168,138 @@ export default function RobinApp() {
                 </div>
                 <Sparkline data={selectedRacingStrategy.history} color="var(--teal)" />
               </article>
+
+              <article className="featureCard">
+                <div className="cardHeader"><h2>Mode de pilotage</h2><span>Même logique que Paris sportifs</span></div>
+                <div className="compactRow" style={{ marginBottom: 10 }}>
+                  <span style={{ fontSize: '.82rem' }}>Mode actif</span>
+                  <span className={`metaPill ${selectedRacingStrategy.mode === 'autonomous' ? 'up' : selectedRacingStrategy.mode === 'supervised' ? '' : 'neutral'}`}>
+                    {selectedRacingStrategy.mode === 'autonomous' ? '🤖 IA autonome' : selectedRacingStrategy.mode === 'supervised' ? '👁 IA supervisé' : '🖐 Manuel'}
+                  </span>
+                </div>
+                <div className="compactRow" style={{ marginBottom: 10 }}>
+                  <span style={{ fontSize: '.82rem' }}>Portefeuille actif</span>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={selectedRacingStrategy.enabled}
+                      onChange={(event) => {
+                        const nextEnabled = event.target.checked;
+                        setRacingStrategies((prev) => prev.map((strategy) => strategy.id === selectedRacingStrategy.id ? { ...strategy, enabled: nextEnabled } : strategy));
+                        setSelectedRacingStrategy((prev) => prev && prev.id === selectedRacingStrategy.id ? { ...prev, enabled: nextEnabled } : prev);
+                      }}
+                    />
+                    <span style={{ fontSize: '.78rem', color: 'var(--muted)' }}>{selectedRacingStrategy.enabled ? 'Actif' : 'Inactif'}</span>
+                  </label>
+                </div>
+                <div className="compactRow" style={{ marginBottom: 10 }}>
+                  <span style={{ fontSize: '.82rem' }}>Assistance IA</span>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={selectedRacingStrategy.ai_enabled}
+                      onChange={(event) => {
+                        if (!event.target.checked && selectedRacingStrategy.isVirtual && virtualAppsEnabled.racing) {
+                          setBettingAlert('Impossible de désactiver l agent IA tant que le portefeuille fictif hippique est actif.');
+                          return;
+                        }
+                        const nextEnabled = event.target.checked;
+                        setRacingStrategies((prev) => prev.map((strategy) => strategy.id === selectedRacingStrategy.id ? { ...strategy, ai_enabled: nextEnabled, enabled: nextEnabled ? true : strategy.enabled } : strategy));
+                        setSelectedRacingStrategy((prev) => prev && prev.id === selectedRacingStrategy.id ? { ...prev, ai_enabled: nextEnabled, enabled: nextEnabled ? true : prev.enabled } : prev);
+                      }}
+                    />
+                    <span style={{ fontSize: '.78rem', color: 'var(--muted)' }}>{selectedRacingStrategy.ai_enabled ? 'Activée' : 'Désactivée'}</span>
+                  </label>
+                </div>
+                <div className="aiModeSelector">
+                  <button
+                    className={`aiModeOption ${selectedRacingStrategy.mode === 'manual' ? 'active' : ''}`}
+                    onClick={() => {
+                      setRacingStrategies((prev) => prev.map((strategy) => strategy.id === selectedRacingStrategy.id ? { ...strategy, mode: 'manual' } : strategy));
+                      setSelectedRacingStrategy((prev) => prev && prev.id === selectedRacingStrategy.id ? { ...prev, mode: 'manual' } : prev);
+                    }}
+                    type="button"
+                  >
+                    <span className="aiModeIcon">🖐</span>
+                    <strong>Manuel</strong>
+                    <small>Vous validez les opérations</small>
+                  </button>
+                  <button
+                    className={`aiModeOption ${selectedRacingStrategy.mode === 'supervised' ? 'active' : ''}`}
+                    onClick={() => {
+                      setRacingStrategies((prev) => prev.map((strategy) => strategy.id === selectedRacingStrategy.id ? { ...strategy, mode: 'supervised', enabled: true, ai_enabled: true } : strategy));
+                      setSelectedRacingStrategy((prev) => prev && prev.id === selectedRacingStrategy.id ? { ...prev, mode: 'supervised', enabled: true, ai_enabled: true } : prev);
+                    }}
+                    type="button"
+                  >
+                    <span className="aiModeIcon">👁</span>
+                    <strong>Validation humaine</strong>
+                    <small>L IA propose, vous validez</small>
+                  </button>
+                  <button
+                    className={`aiModeOption ${selectedRacingStrategy.mode === 'autonomous' ? 'active' : ''}`}
+                    onClick={() => {
+                      if (emergencyStopActive) {
+                        setBettingAlert('Kill switch actif — mode autonome indisponible.');
+                        return;
+                      }
+                      setRacingStrategies((prev) => prev.map((strategy) => strategy.id === selectedRacingStrategy.id ? { ...strategy, mode: 'autonomous', enabled: true, ai_enabled: true } : strategy));
+                      setSelectedRacingStrategy((prev) => prev && prev.id === selectedRacingStrategy.id ? { ...prev, mode: 'autonomous', enabled: true, ai_enabled: true } : prev);
+                    }}
+                    type="button"
+                  >
+                    <span className="aiModeIcon">🤖</span>
+                    <strong>IA autonome</strong>
+                    <small>L IA exécute automatiquement</small>
+                  </button>
+                </div>
+                <div className="providerActions fullWidth" style={{ marginTop: 10 }}>
+                  <button className="ghostButton" onClick={alignRacingPilotModeWithBetting} type="button">
+                    Aligner sur le mode Paris sportifs
+                  </button>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: 10, marginTop: 12 }}>
+                  <label style={{ fontSize: '.78rem', color: 'var(--muted)', display: 'grid', gap: 4 }}>
+                    Mise max / pari
+                    <div className="compactRow" style={{ margin: 0 }}>
+                      <strong>{selectedRacingStrategy.max_stake.toFixed(1)} €</strong>
+                      <span className="metaPill">Plage 0.1 - 100 €</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={MIN_MONETARY_LIMIT}
+                      max={100}
+                      step={0.1}
+                      value={Math.max(MIN_MONETARY_LIMIT, Number(selectedRacingStrategy.max_stake.toFixed(1)))}
+                      onChange={(event) => {
+                        const nextStake = Math.max(MIN_MONETARY_LIMIT, Number(event.target.value || MIN_MONETARY_LIMIT));
+                        setRacingStrategies((prev) => prev.map((strategy) => strategy.id === selectedRacingStrategy.id ? { ...strategy, max_stake: nextStake } : strategy));
+                        setSelectedRacingStrategy((prev) => prev && prev.id === selectedRacingStrategy.id ? { ...prev, max_stake: nextStake } : prev);
+                      }}
+                    />
+                  </label>
+                  <label style={{ fontSize: '.78rem', color: 'var(--muted)', display: 'grid', gap: 4 }}>
+                    Paris max / jour
+                    <div className="compactRow" style={{ margin: 0 }}>
+                      <strong>{selectedRacingStrategy.max_bets_per_day} pari(s)</strong>
+                      <span className="metaPill">Plage 1 - 100</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={1}
+                      max={100}
+                      step={1}
+                      value={Math.max(1, Math.round(selectedRacingStrategy.max_bets_per_day))}
+                      onChange={(event) => {
+                        const nextMax = Math.max(1, Number(event.target.value || 1));
+                        setRacingStrategies((prev) => prev.map((strategy) => strategy.id === selectedRacingStrategy.id ? { ...strategy, max_bets_per_day: nextMax } : strategy));
+                        setSelectedRacingStrategy((prev) => prev && prev.id === selectedRacingStrategy.id ? { ...prev, max_bets_per_day: nextMax } : prev);
+                      }}
+                    />
+                  </label>
+                </div>
+              </article>
+
               <article className="featureCard">
                 <div className="cardHeader"><h2>Paris hippiques récents</h2><span>Historique {selectedRacingStrategy.name}</span></div>
                 {selectedRacingStrategy.recentBets.length === 0 ? (
@@ -9021,6 +11367,90 @@ export default function RobinApp() {
                 <p style={{ fontSize: '.85rem', color: 'var(--muted)', margin: 0 }}>Gérez vos préférences hippiques, vos connexions PMU, vos limites de jeu responsable et vos alertes de courses.</p>
               </article>
               <article className="featureCard">
+                <div className="cardHeader"><h2>Portefeuille fictif &amp; Agent IA</h2><span>Activation et seuils hippiques</span></div>
+                {activeRacingVirtualStrategy ? (
+                  <div style={{ display: 'grid', gap: 12 }}>
+                    <label className="checkRow" style={{ margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={virtualAppsEnabled.racing}
+                        onChange={(event) => {
+                          if (event.target.checked && !activeRacingVirtualStrategy.ai_enabled) {
+                            setBettingAlert('Activez d abord l agent IA hippique pour pouvoir activer le portefeuille fictif.');
+                            return;
+                          }
+                          void updateVirtualAppPreference('racing', event.target.checked);
+                        }}
+                      />
+                      <span>Activer le portefeuille fictif Paris hippiques</span>
+                    </label>
+                    <label className="checkRow" style={{ margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={activeRacingVirtualStrategy.ai_enabled}
+                        onChange={(event) => {
+                          if (!event.target.checked && virtualAppsEnabled.racing) {
+                            setBettingAlert('Impossible de désactiver l agent IA tant que le portefeuille fictif hippique est actif.');
+                            return;
+                          }
+                          setRacingStrategies((prev) => prev.map((strategy) => strategy.id === activeRacingVirtualStrategy.id
+                            ? { ...strategy, ai_enabled: event.target.checked, enabled: event.target.checked ? true : strategy.enabled }
+                            : strategy));
+                        }}
+                      />
+                      <span>Activer l agent IA sur ce portefeuille</span>
+                    </label>
+                    <label>
+                      Mode IA
+                      <select
+                        value={activeRacingVirtualStrategy.mode}
+                        disabled={!virtualAppsEnabled.racing || !activeRacingVirtualStrategy.ai_enabled}
+                        onChange={(event) => setRacingStrategies((prev) => prev.map((strategy) => strategy.id === activeRacingVirtualStrategy.id ? { ...strategy, mode: event.target.value as BettingStrategy['mode'] } : strategy))}
+                      >
+                        <option value="manual">Manuel</option>
+                        <option value="supervised">Validation humaine</option>
+                        <option value="autonomous">Autopilot</option>
+                      </select>
+                    </label>
+                    <div className="providerActions fullWidth" style={{ marginTop: -2 }}>
+                      <button className="ghostButton" onClick={alignRacingPilotModeWithBetting} type="button">
+                        Aligner le pilotage sur Paris sportifs
+                      </button>
+                    </div>
+                    <label>
+                      Seuil mise max ({activeRacingVirtualStrategy.max_stake.toFixed(1)} €)
+                      <input
+                        type="range"
+                        min={MIN_MONETARY_LIMIT}
+                        max={80}
+                        step={0.1}
+                        disabled={!virtualAppsEnabled.racing || !activeRacingVirtualStrategy.ai_enabled}
+                        value={Math.min(80, Math.max(MIN_MONETARY_LIMIT, activeRacingVirtualStrategy.max_stake))}
+                        onChange={(event) => setRacingStrategies((prev) => prev.map((strategy) => strategy.id === activeRacingVirtualStrategy.id
+                          ? { ...strategy, max_stake: Math.max(MIN_MONETARY_LIMIT, Number(event.target.value) || MIN_MONETARY_LIMIT) }
+                          : strategy))}
+                      />
+                    </label>
+                    <label>
+                      Seuil max paris / jour ({activeRacingVirtualStrategy.max_bets_per_day})
+                      <input
+                        type="range"
+                        min={1}
+                        max={40}
+                        step={1}
+                        disabled={!virtualAppsEnabled.racing || !activeRacingVirtualStrategy.ai_enabled}
+                        value={Math.min(40, Math.max(1, activeRacingVirtualStrategy.max_bets_per_day))}
+                        onChange={(event) => setRacingStrategies((prev) => prev.map((strategy) => strategy.id === activeRacingVirtualStrategy.id
+                          ? { ...strategy, max_bets_per_day: Math.max(1, Number(event.target.value) || 1) }
+                          : strategy))}
+                      />
+                    </label>
+                  </div>
+                ) : (
+                  <p className="helperText">Portefeuille fictif hippique indisponible.</p>
+                )}
+              </article>
+              <article className="featureCard">
                 <div className="cardHeader"><h2>Profil &amp; Jeu responsable</h2><span>Limites et paramètres</span></div>
                 <div style={{ display: 'grid', gap: 14 }}>
                   <label style={{ fontSize: '.85rem', fontWeight: 600 }}>Mise maximale par pari (€)<input defaultValue="30" type="number" min="0.1" step="0.1" style={{ marginTop: 4 }} /></label>
@@ -9060,6 +11490,121 @@ export default function RobinApp() {
 
           {activeApp === 'loto' && appView === 'dashboard' ? (
             <section style={{ display: 'grid', gap: 18 }}>
+              <article className="featureCard">
+                <div className="cardHeader">
+                  <h2>Pilotage Cockpit · Loto fictif</h2>
+                  <span>Activation portefeuille, agent IA et configuration</span>
+                </div>
+                <div style={{ display: 'grid', gap: 12 }}>
+                  <div className="heroKpiStrip" style={{ padding: '10px 14px' }}>
+                    <div className="heroKpiItem">
+                      <span>Bankroll fictive</span>
+                      <strong>{lotteryVirtualPortfolio.bankroll.toFixed(2)} €</strong>
+                      <small className={lotteryVirtualPnl >= 0 ? 'up' : 'down'}>PnL: {lotteryVirtualPnl >= 0 ? '+' : ''}{lotteryVirtualPnl.toFixed(2)} €</small>
+                    </div>
+                    <div className="heroKpiItem">
+                      <span>Tickets en cours</span>
+                      <strong>{lotteryPendingTickets.length}</strong>
+                      <small>Après tirage: règlement auto</small>
+                    </div>
+                    <div className="heroKpiItem">
+                      <span>Tickets réglés</span>
+                      <strong>{lotterySettledTickets.length}</strong>
+                      <small>{lotterySettledTickets.filter((ticket) => ticket.status === 'won').length} gagnant(s)</small>
+                    </div>
+                  </div>
+
+                  <label className="checkRow" style={{ margin: 0 }}>
+                    <input
+                      type="checkbox"
+                      checked={virtualAppsEnabled.loto}
+                      onChange={(event) => void updateVirtualAppPreference('loto', event.target.checked)}
+                    />
+                    <span>Activer le portefeuille fictif Loto/Euromillions (50 € simulés)</span>
+                  </label>
+
+                  <label className="checkRow" style={{ margin: 0 }}>
+                    <input
+                      type="checkbox"
+                      checked={lotteryVirtualPortfolio.ai_enabled}
+                      disabled={!virtualAppsEnabled.loto}
+                      onChange={(event) => persistLotteryVirtualPortfolio({
+                        ...lotteryVirtualPortfolio,
+                        ai_enabled: event.target.checked,
+                        mode: event.target.checked && lotteryVirtualPortfolio.mode === 'manual' ? 'supervised' : lotteryVirtualPortfolio.mode,
+                      })}
+                    />
+                    <span>Activer l agent IA sur le portefeuille loto fictif</span>
+                  </label>
+
+                  <label>
+                    Mode IA
+                    <select
+                      value={lotteryVirtualPortfolio.mode}
+                      disabled={!virtualAppsEnabled.loto || !lotteryVirtualPortfolio.ai_enabled}
+                      onChange={(event) => persistLotteryVirtualPortfolio({ ...lotteryVirtualPortfolio, mode: event.target.value as BettingStrategy['mode'] })}
+                    >
+                      <option value="manual">Manuel</option>
+                      <option value="supervised">Validation humaine</option>
+                      <option value="autonomous">Autopilot</option>
+                    </select>
+                  </label>
+
+                  <label>
+                    Grilles max par tirage ({lotteryVirtualPortfolio.max_grids_per_draw})
+                    <input
+                      type="range"
+                      min={1}
+                      max={MAX_LOTTERY_GRID_COUNT}
+                      step={1}
+                      disabled={!virtualAppsEnabled.loto}
+                      value={lotteryVirtualPortfolio.max_grids_per_draw}
+                      onChange={(event) => persistLotteryVirtualPortfolio({
+                        ...lotteryVirtualPortfolio,
+                        max_grids_per_draw: Math.max(1, Math.min(MAX_LOTTERY_GRID_COUNT, Number(event.target.value) || 1)),
+                      })}
+                    />
+                  </label>
+
+                  <div className="infoPanel" style={{ margin: 0, display: 'grid', gap: 8 }}>
+                    <strong>Abonnement simulé sur plusieurs semaines</strong>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {LOTTERY_SUBSCRIPTION_WEEK_OPTIONS.map((weekCount) => (
+                        <button
+                          key={`lottery-subscription-weeks-${weekCount}`}
+                          className={lotterySubscriptionWeeks === weekCount ? 'smallPill selectedPortfolioPill selected' : 'smallPill selectedPortfolioPill'}
+                          onClick={() => setLotterySubscriptionWeeks(weekCount)}
+                          type="button"
+                        >
+                          {weekCount} semaine{weekCount > 1 ? 's' : ''}
+                        </button>
+                      ))}
+                    </div>
+                    <p style={{ margin: 0, fontSize: '.8rem', color: 'var(--muted)' }}>
+                      Budget estimé {LOTTERY_CONFIG[lotteryGameFocus].label}: {(normalizedLotteryGridCount * LOTTERY_SIMPLE_GRID_COST[lotteryGameFocus] * LOTTERY_UPCOMING_DRAWS.filter((draw) => draw.game === lotteryGameFocus).length * lotterySubscriptionWeeks).toFixed(2)} € pour {lotterySubscriptionWeeks} semaine{lotterySubscriptionWeeks > 1 ? 's' : ''}.
+                    </p>
+                  </div>
+
+                  <div className="providerActions fullWidth">
+                    <button className="secondaryButton" disabled={!virtualAppsEnabled.loto} onClick={() => playLotteryVirtualTickets(lotteryGameFocus)} type="button">
+                      Jouer {LOTTERY_CONFIG[lotteryGameFocus].label} (fictif)
+                    </button>
+                    <button className="secondaryButton" disabled={!virtualAppsEnabled.loto} onClick={() => subscribeLotteryVirtualTickets([lotteryGameFocus], lotterySubscriptionWeeks)} type="button">
+                      Abonnement {LOTTERY_CONFIG[lotteryGameFocus].label} · {lotterySubscriptionWeeks} sem.
+                    </button>
+                    <button className="ghostButton" disabled={!virtualAppsEnabled.loto} onClick={() => { playLotteryVirtualTickets('loto'); playLotteryVirtualTickets('euromillions'); }} type="button">
+                      Jouer Loto + EuroMillions
+                    </button>
+                    <button className="ghostButton" disabled={!virtualAppsEnabled.loto} onClick={() => subscribeLotteryVirtualTickets(['loto', 'euromillions'], lotterySubscriptionWeeks)} type="button">
+                      Abonnement Loto + EuroMillions
+                    </button>
+                    <button className="ghostButton" disabled={!virtualAppsEnabled.loto} onClick={resetLotteryVirtualPortfolio} type="button">
+                      Réinitialiser à 50 €
+                    </button>
+                  </div>
+                </div>
+              </article>
+
               <article className="featureCard lotoSecondaryCard">
                 <div className="cardHeader">
                   <h2>📅 Prochains tirages & jackpots</h2>
@@ -9125,6 +11670,29 @@ export default function RobinApp() {
                   </div>
                   <p style={{ margin: 0, fontSize: '.82rem' }}>Budget simple estime: {formatCurrency(String(normalizedLotteryGridCount * LOTTERY_SIMPLE_GRID_COST[lotteryGameFocus]))} par tirage sur {LOTTERY_CONFIG[lotteryGameFocus].label}.</p>
                 </div>
+                <div className="infoPanel" style={{ marginBottom: 10, display: 'grid', gap: 8 }}>
+                  <strong>Confirmation rapide des recommandations IA</strong>
+                  <label>
+                    Portefeuille cible
+                    <select value={selectedLotteryRecommendationPortfolioId} onChange={(event) => setSelectedLotteryRecommendationPortfolioId(event.target.value)}>
+                      {lotteryAssignablePortfolios.map((portfolio) => (
+                        <option key={`lottery-target-${portfolio.id}`} value={portfolio.id}>
+                          {portfolio.executionMode === 'simulation' ? 'Simulation' : 'Réel'} · {portfolio.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <p style={{ margin: 0, fontSize: '.8rem', color: 'var(--muted)' }}>
+                    La confirmation utilisateur exécute une simulation sur le portefeuille fictif, ou enregistre la recommandation sur le portefeuille réel choisi.
+                  </p>
+                  {selectedLotteryRecommendationPortfolio?.id === 'loto-virtual' && !virtualAppsEnabled.loto ? (
+                    <div className="providerActions fullWidth">
+                      <button className="secondaryButton" onClick={() => void updateVirtualAppPreference('loto', true)} type="button">
+                        Activer le portefeuille fictif
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
                 <div style={{ display: 'grid', gap: 10 }}>
                   {lotteryPredictions[lotteryGameFocus].predictedGrids.map((grid, index) => {
                     const backtest = lotteryBacktests[lotteryGameFocus][grid.id];
@@ -9153,6 +11721,20 @@ export default function RobinApp() {
                         <div style={{ display: 'grid', gap: 6, justifyItems: 'end' }}>
                           <span className="metaPill">Confiance: {grid.confidenceIndex}%</span>
                           {isProjectedWinner ? <span className="metaPill lotteryWinnerPill">+{formatCurrency(String(backtest.totalEstimatedWinnings))} aurait rapporté — net {netLabel}</span> : null}
+                          <button
+                            className="secondaryButton"
+                            onClick={() => confirmLotteryRecommendation(lotteryGameFocus, grid, selectedLotteryRecommendationPortfolioId, 1)}
+                            type="button"
+                          >
+                            Confirmer sur le portefeuille · 1 tirage
+                          </button>
+                          <button
+                            className="ghostButton"
+                            onClick={() => confirmLotteryRecommendation(lotteryGameFocus, grid, selectedLotteryRecommendationPortfolioId, lotterySubscriptionWeeks)}
+                            type="button"
+                          >
+                            Confirmer sur le portefeuille · {lotterySubscriptionWeeks} semaine{lotterySubscriptionWeeks > 1 ? 's' : ''}
+                          </button>
                         </div>
                       </div>
                     );
@@ -9170,6 +11752,149 @@ export default function RobinApp() {
 
           {activeApp === 'loto' && appView === 'portfolios' ? (
             <section style={{ display: 'grid', gap: 18 }}>
+              {lotoPortfolioMenuSelection === 'loto-virtual' ? (
+                <article className="featureCard">
+                  <div className="cardHeader">
+                    <h2>Portefeuille fictif Loto</h2>
+                    <span>{virtualAppsEnabled.loto ? 'Actif' : 'Inactif'} · Solde {lotteryVirtualPortfolio.bankroll.toFixed(2)} €</span>
+                  </div>
+                  {lotteryVirtualPortfolio.tickets.length === 0 ? (
+                    <div className="infoPanel mutedPanel">
+                      <strong>Aucun ticket fictif</strong>
+                      <p>Activez le portefeuille fictif dans le cockpit Loto puis jouez vos grilles pour suivre les gains/pertes après tirage.</p>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'grid', gap: 12 }}>
+                      <article className="infoPanel mutedPanel" style={{ margin: 0 }}>
+                        <strong>En cours de tirage: {lotteryPendingTickets.length}</strong>
+                        <p>Les tickets pending sont automatiquement réglés dès que l heure du tirage est passée. {lotteryVirtualPortfolio.tickets.filter((ticket) => ticket.subscriptionLabel).length} ticket(s) proviennent d un abonnement multi-semaines.</p>
+                      </article>
+                      <table className="txLogTable">
+                        <thead>
+                          <tr>
+                            <th>Date</th>
+                            <th>Jeu</th>
+                            <th>Origine</th>
+                            <th>Grille</th>
+                            <th>Mise</th>
+                            <th>Statut</th>
+                            <th>Gain</th>
+                            <th>Profit</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {lotteryVirtualPortfolio.tickets.slice(0, 40).map((ticket) => (
+                            <tr key={ticket.id}>
+                              <td>{formatDateTimeFr(ticket.drawDate)}</td>
+                              <td>{LOTTERY_CONFIG[ticket.game].label}</td>
+                              <td>
+                                <span className="metaPill">{ticket.subscriptionLabel ?? 'Ponctuel'}</span>
+                              </td>
+                              <td>
+                                {ticket.gridLabel}
+                                <br />
+                                <span style={{ fontSize: '.72rem', color: 'var(--muted)' }}>{ticket.numbers.join('-')} | {ticket.stars.join('-')}</span>
+                              </td>
+                              <td>{ticket.stake.toFixed(2)} €</td>
+                              <td>
+                                <span className={ticket.status === 'won' ? 'statusBadge ok' : ticket.status === 'lost' ? 'statusBadge warn' : 'statusBadge idle'}>
+                                  {ticket.status === 'pending' ? 'En cours' : ticket.status === 'won' ? 'Gagné' : 'Perdu'}
+                                </span>
+                              </td>
+                              <td>{ticket.payout.toFixed(2)} €</td>
+                              <td style={{ color: ticket.profit >= 0 ? 'var(--ok)' : 'var(--danger)', fontWeight: 700 }}>
+                                {ticket.profit >= 0 ? '+' : ''}{ticket.profit.toFixed(2)} €
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </article>
+              ) : selectedLotoIntegrationPortfolio ? (
+                <article className="featureCard">
+                  <div className="cardHeader">
+                    <h2>Portefeuille intégration · {selectedLotoIntegrationPortfolio.label}</h2>
+                    <span>{selectedLotoIntegrationPortfolio.providerName} · créé automatiquement depuis Options</span>
+                  </div>
+                  {(() => {
+                    const cfg = getAgentConfig(selectedLotoIntegrationPortfolio.id);
+                    const relatedRequests = lotteryExecutionRequests.filter((request) => request.targetPortfolioId === selectedLotoIntegrationPortfolio.id);
+                    return (
+                      <div style={{ display: 'grid', gap: 12 }}>
+                        <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
+                          <strong>Portefeuille d intégration tiers</strong>
+                          <p>Ce portefeuille est créé au nom de l intégration active. Vous pouvez activer un agent IA dédié avec les mêmes modes: manuel, validation humaine ou autopilot.</p>
+                        </div>
+                        <label className="checkRow" style={{ margin: 0 }}>
+                          <input
+                            type="checkbox"
+                            checked={cfg.enabled}
+                            onChange={(event) => void updateAgentConfig(selectedLotoIntegrationPortfolio.id, { enabled: event.target.checked, mode: event.target.checked ? (cfg.mode === 'manual' ? 'supervised' : cfg.mode) : 'manual' })}
+                          />
+                          <span>Activer l agent IA pour cette intégration</span>
+                        </label>
+                        <label>
+                          Mode IA
+                          <select
+                            value={cfg.mode}
+                            disabled={!cfg.enabled}
+                            onChange={(event) => void updateAgentConfig(selectedLotoIntegrationPortfolio.id, { mode: event.target.value as AgentMode })}
+                          >
+                            <option value="manual">Manuel</option>
+                            <option value="supervised">Validation humaine</option>
+                            <option value="autopilot">Autopilot</option>
+                          </select>
+                        </label>
+                        <label>
+                          Seuil montant max / action ({cfg.max_amount.toFixed(1)} €)
+                          <input
+                            type="range"
+                            min={MIN_MONETARY_LIMIT}
+                            max={500}
+                            step={0.1}
+                            disabled={!cfg.enabled}
+                            value={Math.min(500, Math.max(MIN_MONETARY_LIMIT, cfg.max_amount))}
+                            onChange={(event) => void updateAgentConfig(selectedLotoIntegrationPortfolio.id, { max_amount: Math.max(MIN_MONETARY_LIMIT, Number(event.target.value) || MIN_MONETARY_LIMIT) })}
+                          />
+                        </label>
+                        <label>
+                          Seuil max actions / jour ({cfg.max_transactions_per_day})
+                          <input
+                            type="range"
+                            min={1}
+                            max={30}
+                            step={1}
+                            disabled={!cfg.enabled}
+                            value={Math.min(30, Math.max(1, cfg.max_transactions_per_day))}
+                            onChange={(event) => void updateAgentConfig(selectedLotoIntegrationPortfolio.id, { max_transactions_per_day: Math.max(1, Number(event.target.value) || 1) })}
+                          />
+                        </label>
+                        <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
+                          <strong>Recommandations IA confirmées sur cette intégration</strong>
+                          {relatedRequests.length === 0 ? (
+                            <p style={{ margin: '4px 0 0' }}>Aucune recommandation confirmée en mode réel pour le moment.</p>
+                          ) : (
+                            <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+                              {relatedRequests.slice(0, 8).map((request) => (
+                                <div key={request.id} className="compactRow" style={{ alignItems: 'center' }}>
+                                  <div style={{ display: 'grid', gap: 2 }}>
+                                    <strong style={{ fontSize: '.84rem' }}>{LOTTERY_CONFIG[request.game].label} · {request.gridLabel}</strong>
+                                    <p style={{ margin: 0, fontSize: '.74rem', color: 'var(--muted)' }}>{formatDateTimeFr(request.drawDate)} · {request.subscriptionLabel ?? 'Ponctuel'}</p>
+                                  </div>
+                                  <span className="metaPill">Mode réel</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </article>
+              ) : null}
+
               <article className="featureCard lotoSecondaryCard">
                 <div className="cardHeader">
                   <h2>Historique & probabilites</h2>
@@ -9207,6 +11932,102 @@ export default function RobinApp() {
                     );
                   })}
                 </div>
+              </article>
+            </section>
+          ) : null}
+
+          {activeApp === 'loto' && appView === 'settings' ? (
+            <section className="workspaceGrid settingsGrid">
+              <article className="featureCard settingsCard">
+                <div className="cardHeader">
+                  <h2>Options Loto · Portefeuille fictif</h2>
+                  <span>Activation, agent IA et mode de pilotage</span>
+                </div>
+                <div style={{ display: 'grid', gap: 12 }}>
+                  <label className="checkRow" style={{ margin: 0 }}>
+                    <input
+                      type="checkbox"
+                      checked={virtualAppsEnabled.loto}
+                      onChange={(event) => void updateVirtualAppPreference('loto', event.target.checked)}
+                    />
+                    <span>Activer le portefeuille fictif Loto/Euromillions (50 € simulés)</span>
+                  </label>
+                  <label className="checkRow" style={{ margin: 0 }}>
+                    <input
+                      type="checkbox"
+                      checked={lotteryVirtualPortfolio.ai_enabled}
+                      disabled={!virtualAppsEnabled.loto}
+                      onChange={(event) => persistLotteryVirtualPortfolio({
+                        ...lotteryVirtualPortfolio,
+                        ai_enabled: event.target.checked,
+                        mode: event.target.checked && lotteryVirtualPortfolio.mode === 'manual' ? 'supervised' : lotteryVirtualPortfolio.mode,
+                      })}
+                    />
+                    <span>Activer l agent IA sur le portefeuille fictif Loto</span>
+                  </label>
+                  <label>
+                    Mode IA
+                    <select
+                      value={lotteryVirtualPortfolio.mode}
+                      disabled={!virtualAppsEnabled.loto || !lotteryVirtualPortfolio.ai_enabled}
+                      onChange={(event) => persistLotteryVirtualPortfolio({ ...lotteryVirtualPortfolio, mode: event.target.value as BettingStrategy['mode'] })}
+                    >
+                      <option value="manual">Manuel</option>
+                      <option value="supervised">Validation humaine</option>
+                      <option value="autonomous">Autopilot</option>
+                    </select>
+                  </label>
+                  <p className="helperText" style={{ margin: 0 }}>
+                    Paramétrage standard IA: manuel, validation humaine ou autopilot.
+                  </p>
+                </div>
+              </article>
+
+              <article className="featureCard settingsCard">
+                <div className="cardHeader">
+                  <h2>Connecteurs tiers & portefeuilles d intégration</h2>
+                  <span>Un portefeuille est créé automatiquement au nom de chaque intégration active</span>
+                </div>
+                {lotoIntegrationPortfolios.length === 0 ? (
+                  <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
+                    <strong>Aucune intégration active</strong>
+                    <p>Activez un connecteur dans les options Finance. Lorsqu il devient actif, un portefeuille d intégration apparaît ici avec son propre agent IA.</p>
+                  </div>
+                ) : (
+                  <div style={{ display: 'grid', gap: 12 }}>
+                    {lotoIntegrationPortfolios.map((portfolio) => {
+                      const cfg = getAgentConfig(portfolio.id);
+                      return (
+                        <article key={`loto-settings-integration-${portfolio.id}`} className="infoPanel mutedPanel" style={{ margin: 0, display: 'grid', gap: 10 }}>
+                          <div className="compactRow" style={{ margin: 0 }}>
+                            <strong>{portfolio.label}</strong>
+                            <span className="metaPill">{portfolio.providerName}</span>
+                          </div>
+                          <label className="checkRow" style={{ margin: 0 }}>
+                            <input
+                              type="checkbox"
+                              checked={cfg.enabled}
+                              onChange={(event) => void updateAgentConfig(portfolio.id, { enabled: event.target.checked, mode: event.target.checked ? (cfg.mode === 'manual' ? 'supervised' : cfg.mode) : 'manual' })}
+                            />
+                            <span>Activer un agent IA sur cette intégration</span>
+                          </label>
+                          <label>
+                            Mode IA
+                            <select
+                              value={cfg.mode}
+                              disabled={!cfg.enabled}
+                              onChange={(event) => void updateAgentConfig(portfolio.id, { mode: event.target.value as AgentMode })}
+                            >
+                              <option value="manual">Manuel</option>
+                              <option value="supervised">Validation humaine</option>
+                              <option value="autopilot">Autopilot</option>
+                            </select>
+                          </label>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
               </article>
             </section>
           ) : null}

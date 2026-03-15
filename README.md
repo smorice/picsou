@@ -108,8 +108,9 @@ docker-compose.yml
 
 1. Copier `.env.example` vers `.env`.
 2. Renseigner `REMOTE_HOST`, `REMOTE_PORT`, `REMOTE_USER` et `REMOTE_APP_DIR`.
-3. Verifier que le compte SSH distant a le droit d'executer Docker ou `sudo`.
-4. Executer `chmod +x infra/scripts/deploy.sh && ./infra/scripts/deploy.sh`.
+3. Verifier que `PUBLIC_BASE_URL=https://nayonne.ovh` est bien defini ou laissez le script l'ajouter par defaut.
+4. Verifier que le compte SSH distant a le droit d'executer Docker ou `sudo`.
+5. Executer `chmod +x infra/scripts/deploy.sh && ./infra/scripts/deploy.sh`.
 
 Le script:
 
@@ -117,11 +118,13 @@ Le script:
 - installe Docker si necessaire
 - installe le plugin Compose si necessaire
 - cree `.env` sur le VPS s'il n'existe pas
+- force la publication publique par defaut sur `https://nayonne.ovh` si `PUBLIC_BASE_URL` n'est pas encore defini
 - construit et demarre la stack
 
 ### Domaine canonique et redirections
 
 - Domaine de reference/canonique: `https://nayonne.ovh`
+- Toute publication du code doit etre consideree comme publiee par defaut sur `https://nayonne.ovh`.
 - Les acces via `http://79.137.75.219` et `https://79.137.75.219` sont rediriges en permanent vers `https://nayonne.ovh`.
 - `www.nayonne.ovh` est aussi redirige vers `https://nayonne.ovh`.
 - La variable `PUBLIC_BASE_URL` doit pointer vers `https://nayonne.ovh` pour que les liens emis par l API restent coherents (emails, callbacks OAuth).

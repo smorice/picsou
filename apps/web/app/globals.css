@@ -92,6 +92,8 @@ h1,h2,h3,p { margin:0; }
 @keyframes shimmer  { 0%{ background-position:-600px 0 } 100%{ background-position:600px 0 } }
 @keyframes trendSlide { 0%{ transform:translateX(-6px) scale(var(--trend-scale,1)) } 50%{ transform:translateX(8px) scale(calc(var(--trend-scale,1) + .06)) } 100%{ transform:translateX(-6px) scale(var(--trend-scale,1)) } }
 @keyframes trendGlow { 0%{ opacity:.18 } 50%{ opacity:.42 } 100%{ opacity:.18 } }
+@keyframes chargeFlow { 0%{ transform:translateX(-75%) } 100%{ transform:translateX(155%) } }
+@keyframes boltPulse { 0%,100%{ transform:translateY(0) scale(1); opacity:.85 } 50%{ transform:translateY(-1px) scale(1.08); opacity:1 } }
 
 /* ============================================================ SHELL */
 .investShell {
@@ -159,7 +161,7 @@ h1,h2,h3,p { margin:0; }
 .brandCluster p { font-size:.72rem; color:var(--muted); margin-top:1px; max-width:40ch; }
 .trendArrowTrack {
   position:relative;
-  width:170px;
+  width:250px;
   height:22px;
   border-radius:999px;
   overflow:hidden;
@@ -170,12 +172,21 @@ h1,h2,h3,p { margin:0; }
   position:absolute;
   left:8px;
   top:3px;
-  width:148px;
+  width:228px;
   height:14px;
   border-radius:999px;
   border:1px solid rgba(47,93,55,.35);
   background:rgba(255,255,255,.75);
   overflow:hidden;
+}
+
+.batteryChargingFlow {
+  position:absolute;
+  inset:-20% -15%;
+  background:linear-gradient(115deg,transparent 36%,rgba(255,255,255,.62) 50%,transparent 66%);
+  animation:chargeFlow 1.4s linear infinite;
+  opacity:.72;
+  pointer-events:none;
 }
 
 .batteryLevel {
@@ -185,7 +196,8 @@ h1,h2,h3,p { margin:0; }
   height:100%;
   width:var(--goal-progress-pct, 0%);
   background:linear-gradient(90deg,#ef4444,#f59e0b 45%,#22c55e);
-  transition:width .45s var(--ease);
+  transition:width .45s var(--ease), filter .35s var(--ease);
+  filter:saturate(1.07);
 }
 
 .batteryPercent {
@@ -209,6 +221,18 @@ h1,h2,h3,p { margin:0; }
   height:8px;
   border-radius:3px;
   background:rgba(47,93,55,.45);
+}
+
+.batteryBolt {
+  position:absolute;
+  left:6px;
+  top:50%;
+  transform:translateY(-50%);
+  font-size:.66rem;
+  line-height:1;
+  color:rgba(15,23,42,.9);
+  text-shadow:0 1px 0 rgba(255,255,255,.55);
+  animation:boltPulse 1.2s ease-in-out infinite;
 }
 
 .trendArrowTrack.achieved {
@@ -523,12 +547,35 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
   margin-top: -8px;
 }
 
+.selectedPortfolioHeader {
+  display: grid;
+  gap: 6px;
+}
+
 .selectedPortfolioStrip > span {
   font-size: .78rem;
   color: var(--muted);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .06em;
+}
+
+.selectedPortfolioSummary {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.selectedPortfolioSummaryPill {
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,.72);
+  color: var(--muted);
+  padding: 4px 8px;
+  font-size: .68rem;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
 }
 
 .selectedPortfolioList {
@@ -539,6 +586,52 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
 
 .selectedPortfolioPill {
   cursor: pointer;
+}
+
+.selectedPortfolioPill.detailed {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  min-width: 220px;
+  justify-content: space-between;
+  border-radius: 14px;
+}
+
+.selectedPortfolioPillIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.82);
+  font-size: .92rem;
+  flex: 0 0 auto;
+}
+
+.selectedPortfolioPillBody {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  flex: 1 1 auto;
+}
+
+.selectedPortfolioPillBody strong {
+  font-size: .82rem;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.selectedPortfolioPillBody small {
+  font-size: .7rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .selectedPortfolioPill.selected {
@@ -558,6 +651,21 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
   background: linear-gradient(135deg, #1d4ed8, #1e40af);
   color: #ffffff;
   box-shadow: 0 10px 24px rgba(30, 64, 175, .22);
+}
+
+.investShell.appTheme-loto .selectedPortfolioSummaryPill {
+  border-color: rgba(30, 64, 175, .14);
+  background: rgba(248, 250, 255, .92);
+  color: #1e3a8a;
+}
+
+.investShell.appTheme-loto .selectedPortfolioPillIcon {
+  background: rgba(255,255,255,.9);
+}
+
+.investShell.appTheme-loto .selectedPortfolioPill.selected .selectedPortfolioPillBody strong,
+.investShell.appTheme-loto .selectedPortfolioPill.selected .selectedPortfolioPillBody small {
+  color: #ffffff;
 }
 
 .lotoPrimaryCard {
@@ -1347,14 +1455,15 @@ small.neutral { color: var(--muted); font-weight: 700; }
 @media(max-width:768px){
   .investShell { padding:0 14px 80px; }
   .heroTopbar { margin:0 -14px 28px; padding:12px 14px; }
-  .trendArrowTrack { width:150px; }
+  .trendArrowTrack { width:210px; }
   .topbarKpis .smallPill { font-size:.64rem; }
   .workspaceGrid,.marketPulseGrid,.providerGrid,.suggestionGrid,.adminToolbar { grid-template-columns:1fr; }
   .indicatorDeck { grid-template-columns:repeat(2,1fr); }
   .workspaceNav { width:100%; }
   .navButton { flex:1; text-align:center; padding:8px 8px; font-size:.8rem; }
   .selectedPortfolioStrip { align-items:flex-start; }
-  .selectedPortfolioStrip > span { width:100%; }
+  .selectedPortfolioHeader { width:100%; }
+  .selectedPortfolioPill.detailed { min-width:100%; }
   .activePortfolioSplit { grid-template-columns: 1fr; }
   .historyCompareGrid { grid-template-columns: 1fr; }
   .landingStoryCard { padding:28px 22px; }
@@ -1833,6 +1942,123 @@ small.neutral { color: var(--muted); font-weight: 700; }
 .heroKpiItem small { font-size: .72rem; color: var(--muted); }
 .heroKpiItem small.up { color: var(--ok); font-weight: 700; }
 .heroKpiItem small.down { color: var(--danger); font-weight: 700; }
+
+/* ---- HOME OVERVIEW HERO ---- */
+.overviewHeroPanel {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.overviewKpiGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.overviewKpiCard {
+  border-radius: var(--card-radius-sm);
+  border: 1px solid var(--brand-border);
+  background:
+    radial-gradient(circle at 86% 14%, rgba(56, 189, 248, .18), transparent 42%),
+    linear-gradient(145deg, #ffffff 0%, var(--brand-soft) 100%);
+  padding: 12px 13px;
+  display: grid;
+  gap: 5px;
+}
+
+.overviewKpiCard span {
+  font-size: .66rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .09em;
+  color: var(--muted);
+}
+
+.overviewKpiCard strong {
+  font-family: var(--font-mono), monospace;
+  font-size: 1.04rem;
+  letter-spacing: -.02em;
+  color: var(--text);
+}
+
+.overviewKpiCard strong.up {
+  color: var(--ok);
+}
+
+.overviewKpiCard strong.down {
+  color: var(--danger);
+}
+
+.overviewKpiCard small {
+  font-size: .74rem;
+  color: var(--muted);
+  line-height: 1.35;
+  min-height: 2.1em;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.overviewKpiCard small.up {
+  color: var(--ok);
+  font-weight: 700;
+}
+
+.overviewKpiCard small.down {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.overviewPulsePanel {
+  border-radius: var(--card-radius-sm);
+  border: 1px solid var(--teal-border);
+  background:
+    linear-gradient(130deg, rgba(236, 253, 245, .9) 0%, rgba(239, 246, 255, .86) 100%);
+  padding: 14px;
+}
+
+.overviewPulseGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.overviewPulseItem {
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, .9);
+  padding: 10px 11px;
+  display: grid;
+  gap: 5px;
+}
+
+.overviewPulseItem strong {
+  font-size: .78rem;
+  letter-spacing: .02em;
+  color: var(--text);
+}
+
+.overviewPulseItem p {
+  margin: 0;
+  font-size: .76rem;
+  color: var(--text-2);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+@media(max-width:1000px) {
+  .overviewKpiGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overviewPulseGrid { grid-template-columns: 1fr; }
+}
+
+@media(max-width:600px) {
+  .overviewKpiGrid { grid-template-columns: 1fr; }
+}
 
 .dashboardChartsGrid {
   display: grid;
