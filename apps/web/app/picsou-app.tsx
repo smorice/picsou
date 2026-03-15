@@ -6,9 +6,13 @@ type UserProfile = {
   id: string;
   email: string;
   phone_number?: string | null;
+  birth_date?: string | null;
+  last_login_at?: string | null;
   full_name: string;
   role: string;
   assigned_roles: string[];
+  access_profile?: 'read' | 'write' | 'admin';
+  app_access?: Array<'finance' | 'betting' | 'loto'>;
   is_active: boolean;
   mfa_enabled: boolean;
   personal_settings: Record<string, unknown>;
@@ -179,6 +183,18 @@ type CommunicationTestRequest = {
   telegram_chat_id?: string | null;
 };
 
+type BettingAnalyticsSummary = {
+  roi_pct: number;
+  yield_pct: number;
+  variance: number;
+  max_drawdown_pct: number;
+  bets: number;
+  win_rate_pct: number;
+};
+
+type BettingThemeKey = 'football' | 'tennis' | 'basketball' | 'rugby' | 'other';
+type BettingThemeVisibility = Record<BettingThemeKey, boolean>;
+
 type Portfolio = {
   id: string;
   type: 'integration' | 'virtual';
@@ -227,6 +243,20 @@ type AppliedDecision = {
   applied_at: string;
 };
 
+type DecisionActionOptions = {
+  silent?: boolean;
+  source?: 'manual' | 'autopilot';
+  targetPortfolioId?: string;
+  side?: 'buy' | 'sell';
+  amount?: number;
+};
+
+type PendingDecisionConfirmation = {
+  insight: InsightItem;
+  approved: boolean;
+  options: DecisionActionOptions;
+};
+
 type Holding = {
   asset: string;
   firstBuyDate: string;
@@ -255,7 +285,7 @@ type MarketSignal = {
   min_investment: number;
 };
 
-type AgentMode = 'manual' | 'autopilot';
+type AgentMode = 'manual' | 'supervised' | 'autopilot';
 type AgentDomain = 'crypto' | 'actions' | 'etf' | 'obligations';
 type AgentDomainPolicy = 'prefer' | 'allow' | 'reject';
 type GoalPeriod = '7d' | '1m' | '3m' | '1y';
@@ -307,6 +337,15 @@ type BettingStrategy = {
   recentBets: BetRecord[];
 };
 
+type BettingStrategySettings = {
+  enabled: boolean;
+  ai_enabled: boolean;
+  mode: BettingStrategy['mode'];
+  max_stake: number;
+  max_bets_per_day: number;
+  risk_profile?: BettingStrategy['risk_profile'];
+};
+
 type TipsterSignal = {
   id: string;
   sport: BetSport;
@@ -321,6 +360,457 @@ type TipsterSignal = {
   deadline: string;
   status: 'pending' | 'approved' | 'rejected';
 };
+
+type LotteryGame = 'loto' | 'euromillions';
+
+type LotteryDrawRecord = {
+  date: string;
+  numbers: number[];
+  stars: number[];
+};
+
+type LotteryPrediction = {
+  id: string;
+  game: LotteryGame;
+  numbers: number[];
+  stars: number[];
+  confidenceIndex: number;
+  rationale: string;
+};
+
+type LotteryUpcomingDraw = {
+  game: LotteryGame;
+  drawDate: string;
+  closeAt: string;
+  jackpotLabel: string;
+};
+
+type AssistantTip = {
+  id: string;
+  title: string;
+  detail: string;
+  insight?: InsightItem;
+  value?: string;
+  trend?: string;
+};
+
+const APP_LABELS: Record<'finance' | 'betting' | 'loto', string> = {
+  finance: 'Finance',
+  betting: 'Paris en ligne',
+  loto: 'Loto',
+};
+
+const DEFAULT_BETTING_THEME_VISIBILITY: BettingThemeVisibility = {
+  football: true,
+  tennis: true,
+  basketball: true,
+  rugby: true,
+  other: false,
+};
+
+const BETTING_THEME_LABELS: Record<BettingThemeKey, string> = {
+  football: 'Football',
+  tennis: 'Tennis',
+  basketball: 'Basketball',
+  rugby: 'Rugby',
+  other: 'Autres sports',
+};
+
+const ALL_APP_KEYS: Array<'finance' | 'betting' | 'loto'> = ['finance', 'betting', 'loto'];
+
+function normalizeFrontendAppAccess(raw: unknown): Array<'finance' | 'betting' | 'loto'> {
+  if (!Array.isArray(raw)) {
+    return [...ALL_APP_KEYS];
+  }
+  const cleaned: Array<'finance' | 'betting' | 'loto'> = [];
+  raw.forEach((value) => {
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if ((normalized === 'finance' || normalized === 'betting' || normalized === 'loto') && !cleaned.includes(normalized as 'finance' | 'betting' | 'loto')) {
+      cleaned.push(normalized as 'finance' | 'betting' | 'loto');
+    }
+  });
+  if (cleaned.length === 0) {
+    cleaned.push('finance');
+  }
+  if (!cleaned.includes('loto')) {
+    cleaned.push('loto');
+  }
+  return cleaned;
+}
+
+const LOTTERY_CONFIG: Record<LotteryGame, { label: string; numbersCount: number; maxNumber: number; starsCount: number; maxStar: number; starLabel: string }> = {
+  loto: {
+    label: 'Loto',
+    numbersCount: 5,
+    maxNumber: 49,
+    starsCount: 1,
+    maxStar: 10,
+    starLabel: 'Numero Chance',
+  },
+  euromillions: {
+    label: 'Euromillions',
+    numbersCount: 5,
+    maxNumber: 50,
+    starsCount: 2,
+    maxStar: 12,
+    starLabel: 'Etoiles',
+  },
+};
+
+const LOTO_HISTORY: LotteryDrawRecord[] = [
+  { date: '2026-01-03T20:45:00+01:00', numbers: [3, 11, 22, 37, 44], stars: [8] },
+  { date: '2026-01-06T20:45:00+01:00', numbers: [7, 14, 19, 33, 41], stars: [5] },
+  { date: '2026-01-10T20:45:00+01:00', numbers: [2, 9, 24, 28, 46], stars: [4] },
+  { date: '2026-01-13T20:45:00+01:00', numbers: [6, 17, 21, 30, 47], stars: [10] },
+  { date: '2026-01-17T20:45:00+01:00', numbers: [1, 12, 23, 34, 45], stars: [2] },
+  { date: '2026-01-20T20:45:00+01:00', numbers: [4, 16, 25, 32, 49], stars: [7] },
+  { date: '2026-01-24T20:45:00+01:00', numbers: [8, 13, 27, 36, 42], stars: [9] },
+  { date: '2026-01-27T20:45:00+01:00', numbers: [5, 10, 18, 31, 43], stars: [1] },
+  { date: '2026-01-31T20:45:00+01:00', numbers: [9, 15, 22, 29, 48], stars: [6] },
+  { date: '2026-02-03T20:45:00+01:00', numbers: [2, 14, 26, 35, 40], stars: [3] },
+  { date: '2026-02-07T20:45:00+01:00', numbers: [7, 11, 24, 38, 44], stars: [8] },
+  { date: '2026-02-10T20:45:00+01:00', numbers: [3, 16, 21, 33, 47], stars: [5] },
+  { date: '2026-02-14T20:45:00+01:00', numbers: [6, 12, 27, 34, 45], stars: [10] },
+  { date: '2026-02-17T20:45:00+01:00', numbers: [1, 18, 25, 30, 41], stars: [7] },
+  { date: '2026-02-21T20:45:00+01:00', numbers: [4, 13, 23, 37, 46], stars: [2] },
+  { date: '2026-02-24T20:45:00+01:00', numbers: [8, 17, 26, 31, 49], stars: [9] },
+  { date: '2026-02-28T20:45:00+01:00', numbers: [5, 10, 22, 36, 42], stars: [4] },
+  { date: '2026-03-03T20:45:00+01:00', numbers: [7, 15, 24, 32, 43], stars: [6] },
+  { date: '2026-03-07T20:45:00+01:00', numbers: [2, 11, 28, 35, 44], stars: [1] },
+  { date: '2026-03-10T20:45:00+01:00', numbers: [9, 14, 21, 33, 47], stars: [8] },
+];
+
+const EUROMILLIONS_HISTORY: LotteryDrawRecord[] = [
+  { date: '2026-01-02T21:00:00+01:00', numbers: [4, 18, 23, 36, 47], stars: [3, 11] },
+  { date: '2026-01-06T21:00:00+01:00', numbers: [9, 14, 27, 39, 44], stars: [2, 7] },
+  { date: '2026-01-09T21:00:00+01:00', numbers: [5, 12, 25, 33, 50], stars: [1, 10] },
+  { date: '2026-01-13T21:00:00+01:00', numbers: [8, 19, 24, 37, 42], stars: [4, 9] },
+  { date: '2026-01-16T21:00:00+01:00', numbers: [3, 11, 22, 35, 46], stars: [5, 12] },
+  { date: '2026-01-20T21:00:00+01:00', numbers: [7, 15, 28, 31, 49], stars: [2, 8] },
+  { date: '2026-01-23T21:00:00+01:00', numbers: [1, 13, 26, 34, 45], stars: [6, 10] },
+  { date: '2026-01-27T21:00:00+01:00', numbers: [6, 17, 21, 40, 48], stars: [3, 11] },
+  { date: '2026-01-30T21:00:00+01:00', numbers: [2, 16, 29, 32, 43], stars: [1, 9] },
+  { date: '2026-02-03T21:00:00+01:00', numbers: [10, 18, 24, 38, 47], stars: [4, 7] },
+  { date: '2026-02-06T21:00:00+01:00', numbers: [5, 14, 27, 33, 50], stars: [2, 12] },
+  { date: '2026-02-10T21:00:00+01:00', numbers: [8, 19, 23, 36, 44], stars: [5, 10] },
+  { date: '2026-02-13T21:00:00+01:00', numbers: [4, 12, 25, 37, 49], stars: [3, 8] },
+  { date: '2026-02-17T21:00:00+01:00', numbers: [7, 11, 22, 34, 46], stars: [1, 9] },
+  { date: '2026-02-20T21:00:00+01:00', numbers: [6, 15, 28, 31, 45], stars: [4, 11] },
+  { date: '2026-02-24T21:00:00+01:00', numbers: [3, 13, 26, 40, 48], stars: [2, 7] },
+  { date: '2026-02-27T21:00:00+01:00', numbers: [9, 17, 21, 32, 43], stars: [6, 12] },
+  { date: '2026-03-03T21:00:00+01:00', numbers: [2, 18, 24, 39, 47], stars: [3, 10] },
+  { date: '2026-03-06T21:00:00+01:00', numbers: [5, 14, 27, 35, 50], stars: [1, 8] },
+  { date: '2026-03-10T21:00:00+01:00', numbers: [8, 16, 23, 37, 44], stars: [4, 11] },
+];
+
+const LOTTERY_UPCOMING_DRAWS: LotteryUpcomingDraw[] = [
+  { game: 'loto', drawDate: '2026-03-16T20:45:00+01:00', closeAt: '20:20', jackpotLabel: '3 M€ estimes' },
+  { game: 'loto', drawDate: '2026-03-18T20:45:00+01:00', closeAt: '20:20', jackpotLabel: '4 M€ estimes' },
+  { game: 'euromillions', drawDate: '2026-03-17T21:00:00+01:00', closeAt: '20:45', jackpotLabel: '38 M€ estimes' },
+  { game: 'euromillions', drawDate: '2026-03-20T21:00:00+01:00', closeAt: '20:45', jackpotLabel: '44 M€ estimes' },
+];
+
+const LOTTERY_GRID_TEMPLATES = [
+  [0, 1, 2, 3, 4],
+  [0, 2, 4, 6, 8],
+  [1, 3, 5, 7, 9],
+  [0, 3, 6, 9, 12],
+  [2, 5, 8, 11, 14],
+  [1, 4, 7, 10, 13],
+  [0, 5, 9, 12, 15],
+  [3, 6, 9, 13, 16],
+];
+
+function computeFrequencies(values: number[][], max: number): number[] {
+  const frequencies = Array.from({ length: max + 1 }, () => 0);
+  values.forEach((row) => {
+    row.forEach((value) => {
+      if (Number.isInteger(value) && value >= 1 && value <= max) {
+        frequencies[value] += 1;
+      }
+    });
+  });
+  return frequencies;
+}
+
+function computeRecencyWeightedFrequencies(values: number[][], max: number, decay = 0.93): number[] {
+  const frequencies = Array.from({ length: max + 1 }, () => 0);
+  values.forEach((row, index) => {
+    const weight = Math.pow(decay, Math.max(0, values.length - 1 - index));
+    row.forEach((value) => {
+      if (Number.isInteger(value) && value >= 1 && value <= max) {
+        frequencies[value] += weight;
+      }
+    });
+  });
+  return frequencies;
+}
+
+function computeOverdueScores(values: number[][], max: number): number[] {
+  const lastSeenIndex = Array.from({ length: max + 1 }, () => -1);
+  values.forEach((row, index) => {
+    row.forEach((value) => {
+      if (Number.isInteger(value) && value >= 1 && value <= max) {
+        lastSeenIndex[value] = index;
+      }
+    });
+  });
+  const drawsCount = values.length;
+  const raw = Array.from({ length: max + 1 }, (_, value) => {
+    if (value === 0) {
+      return 0;
+    }
+    const seenAt = lastSeenIndex[value];
+    return seenAt === -1 ? drawsCount + 1 : drawsCount - 1 - seenAt;
+  });
+  const maxRaw = Math.max(1, ...raw);
+  return raw.map((score) => score / maxRaw);
+}
+
+function computePairFrequency(values: number[][]): Map<string, number> {
+  const map = new Map<string, number>();
+  values.forEach((row) => {
+    const unique = [...new Set(row.filter((value) => Number.isInteger(value)).sort((a, b) => a - b))];
+    for (let i = 0; i < unique.length; i += 1) {
+      for (let j = i + 1; j < unique.length; j += 1) {
+        const key = `${unique[i]}-${unique[j]}`;
+        map.set(key, (map.get(key) ?? 0) + 1);
+      }
+    }
+  });
+  return map;
+}
+
+function normalizeScores(scores: number[]): number[] {
+  const min = Math.min(...scores);
+  const max = Math.max(...scores);
+  const range = max - min;
+  if (range <= 0) {
+    return scores.map(() => 0.5);
+  }
+  return scores.map((score) => (score - min) / range);
+}
+
+function buildRankedByScore(scores: number[]): number[] {
+  return Array.from({ length: scores.length - 1 }, (_, index) => index + 1)
+    .sort((a, b) => {
+      const diff = (scores[b] ?? 0) - (scores[a] ?? 0);
+      if (diff !== 0) {
+        return diff;
+      }
+      return a - b;
+    });
+}
+
+function average(numbers: number[]) {
+  if (numbers.length === 0) {
+    return 0;
+  }
+  return numbers.reduce((sum, value) => sum + value, 0) / numbers.length;
+}
+
+function stdDev(numbers: number[]) {
+  if (numbers.length < 2) {
+    return 1;
+  }
+  const mean = average(numbers);
+  const variance = average(numbers.map((value) => (value - mean) ** 2));
+  return Math.sqrt(Math.max(variance, 1e-6));
+}
+
+function buildGridFromTemplate(rankedValues: number[], template: number[], requiredCount: number): number[] {
+  const selected: number[] = [];
+  template.forEach((offset, index) => {
+    const candidate = rankedValues[(offset + index) % rankedValues.length];
+    if (candidate && !selected.includes(candidate)) {
+      selected.push(candidate);
+    }
+  });
+  let cursor = 0;
+  while (selected.length < requiredCount && cursor < rankedValues.length) {
+    const candidate = rankedValues[cursor];
+    if (!selected.includes(candidate)) {
+      selected.push(candidate);
+    }
+    cursor += 1;
+  }
+  return selected.slice(0, requiredCount).sort((a, b) => a - b);
+}
+
+function toTopValues(frequencies: number[], max: number, limit: number): number[] {
+  return Array.from({ length: max }, (_, index) => index + 1)
+    .sort((a, b) => {
+      const byFrequency = frequencies[b] - frequencies[a];
+      if (byFrequency !== 0) {
+        return byFrequency;
+      }
+      return a - b;
+    })
+    .slice(0, limit);
+}
+
+function computeLotteryPredictions(
+  game: LotteryGame,
+  history: LotteryDrawRecord[],
+  profile: UserRiskProfile,
+  topCount = 5,
+): { hotNumbers: number[]; hotStars: number[]; predictedGrids: LotteryPrediction[]; totalDraws: number } {
+  const config = LOTTERY_CONFIG[game];
+  const numberRows = history.map((draw) => draw.numbers);
+  const starRows = history.map((draw) => draw.stars);
+  const numbersFreq = computeFrequencies(numberRows, config.maxNumber);
+  const starsFreq = computeFrequencies(starRows, config.maxStar);
+  const numbersRecency = computeRecencyWeightedFrequencies(numberRows, config.maxNumber, 0.935);
+  const starsRecency = computeRecencyWeightedFrequencies(starRows, config.maxStar, 0.92);
+  const numbersOverdue = computeOverdueScores(numberRows, config.maxNumber);
+  const starsOverdue = computeOverdueScores(starRows, config.maxStar);
+
+  const recentWindow = Math.max(4, Math.round(history.length * 0.3));
+  const numbersRecentFreq = computeFrequencies(numberRows.slice(-recentWindow), config.maxNumber);
+  const starsRecentFreq = computeFrequencies(starRows.slice(-recentWindow), config.maxStar);
+
+  const normalizedNumberFreq = normalizeScores(numbersFreq);
+  const normalizedStarFreq = normalizeScores(starsFreq);
+  const normalizedNumberRecency = normalizeScores(numbersRecency);
+  const normalizedStarRecency = normalizeScores(starsRecency);
+  const normalizedNumberRecent = normalizeScores(numbersRecentFreq);
+  const normalizedStarRecent = normalizeScores(starsRecentFreq);
+
+  const numberComposite = Array.from({ length: config.maxNumber + 1 }, (_, value) => {
+    if (value === 0) {
+      return 0;
+    }
+    const momentum = Math.max(-1, Math.min(1, (normalizedNumberRecent[value] ?? 0) - (normalizedNumberFreq[value] ?? 0)));
+    return (normalizedNumberFreq[value] ?? 0) * 0.3
+      + (normalizedNumberRecency[value] ?? 0) * 0.25
+      + (numbersOverdue[value] ?? 0) * 0.2
+      + Math.max(0, momentum) * 0.15
+      + (normalizedNumberRecent[value] ?? 0) * 0.1;
+  });
+  const starComposite = Array.from({ length: config.maxStar + 1 }, (_, value) => {
+    if (value === 0) {
+      return 0;
+    }
+    const momentum = Math.max(-1, Math.min(1, (normalizedStarRecent[value] ?? 0) - (normalizedStarFreq[value] ?? 0)));
+    return (normalizedStarFreq[value] ?? 0) * 0.32
+      + (normalizedStarRecency[value] ?? 0) * 0.28
+      + (starsOverdue[value] ?? 0) * 0.2
+      + Math.max(0, momentum) * 0.2;
+  });
+
+  const rankedNumbers = buildRankedByScore(numberComposite);
+  const rankedStars = buildRankedByScore(starComposite);
+
+  const pairNumbersMap = computePairFrequency(numberRows);
+  const pairStarsMap = computePairFrequency(starRows);
+  const maxPairNumbers = Math.max(1, ...pairNumbersMap.values(), 1);
+  const maxPairStars = Math.max(1, ...pairStarsMap.values(), 1);
+
+  const sumsHistory = numberRows.map((row) => row.reduce((sum, value) => sum + value, 0));
+  const spreadHistory = numberRows.map((row) => (row.length > 0 ? row[row.length - 1] - row[0] : 0));
+  const oddCountsHistory = numberRows.map((row) => row.filter((value) => value % 2 !== 0).length);
+  const sumMean = average(sumsHistory);
+  const sumStd = stdDev(sumsHistory);
+  const spreadMean = average(spreadHistory);
+  const spreadStd = stdDev(spreadHistory);
+  const oddCountMode = oddCountsHistory.length > 0
+    ? oddCountsHistory
+        .sort((a, b) => oddCountsHistory.filter((v) => v === b).length - oddCountsHistory.filter((v) => v === a).length)[0]
+    : Math.round(config.numbersCount / 2);
+
+  const candidateGrids: LotteryPrediction[] = [];
+  const numberTemplateSeeds = Math.min(24, rankedNumbers.length);
+  const starTemplateSeeds = Math.min(14, rankedStars.length);
+
+  for (let i = 0; i < numberTemplateSeeds; i += 1) {
+    const numberPool = [...rankedNumbers.slice(i), ...rankedNumbers.slice(0, i)];
+    const template = LOTTERY_GRID_TEMPLATES[i % LOTTERY_GRID_TEMPLATES.length];
+    const numbers = buildGridFromTemplate(numberPool, template, config.numbersCount);
+    for (let j = 0; j < Math.max(6, Math.min(12, starTemplateSeeds)); j += 1) {
+      const starPool = [...rankedStars.slice(j), ...rankedStars.slice(0, j)];
+      const stars = buildGridFromTemplate(starPool, LOTTERY_GRID_TEMPLATES[(i + j) % LOTTERY_GRID_TEMPLATES.length], config.starsCount);
+
+      const numberCore = average(numbers.map((value) => numberComposite[value] ?? 0));
+      const starCore = average(stars.map((value) => starComposite[value] ?? 0));
+
+      const numberPairs: number[] = [];
+      for (let a = 0; a < numbers.length; a += 1) {
+        for (let b = a + 1; b < numbers.length; b += 1) {
+          const key = `${Math.min(numbers[a], numbers[b])}-${Math.max(numbers[a], numbers[b])}`;
+          numberPairs.push((pairNumbersMap.get(key) ?? 0) / maxPairNumbers);
+        }
+      }
+      const starPairs: number[] = [];
+      for (let a = 0; a < stars.length; a += 1) {
+        for (let b = a + 1; b < stars.length; b += 1) {
+          const key = `${Math.min(stars[a], stars[b])}-${Math.max(stars[a], stars[b])}`;
+          starPairs.push((pairStarsMap.get(key) ?? 0) / maxPairStars);
+        }
+      }
+      const pairScore = average(numberPairs) * 0.8 + average(starPairs) * 0.2;
+
+      const sum = numbers.reduce((acc, value) => acc + value, 0);
+      const spread = numbers[numbers.length - 1] - numbers[0];
+      const oddCount = numbers.filter((value) => value % 2 !== 0).length;
+      const consecutiveCount = numbers.slice(1).filter((value, idx) => value === numbers[idx] + 1).length;
+      const decadesCovered = new Set(numbers.map((value) => Math.floor((value - 1) / 10))).size;
+
+      const sumScore = Math.exp(-Math.abs(sum - sumMean) / (sumStd + 1));
+      const spreadScore = Math.exp(-Math.abs(spread - spreadMean) / (spreadStd + 1));
+      const oddScore = 1 - Math.min(1, Math.abs(oddCount - oddCountMode) / Math.max(1, config.numbersCount));
+      const diversityScore = decadesCovered / Math.max(1, Math.ceil(config.maxNumber / 10));
+      const consecutivePenalty = Math.min(1, consecutiveCount / Math.max(1, config.numbersCount - 1));
+
+      const profileAdjustment = profile === 'low'
+        ? (sumScore * 0.22 + spreadScore * 0.26 + oddScore * 0.22 + diversityScore * 0.1)
+        : profile === 'high'
+          ? (pairScore * 0.3 + Math.max(0.15, diversityScore) * 0.2 + (1 - consecutivePenalty) * 0.12)
+          : (sumScore * 0.16 + spreadScore * 0.16 + oddScore * 0.16 + pairScore * 0.14 + diversityScore * 0.1);
+
+      const rawScore = numberCore * 0.34
+        + starCore * 0.2
+        + pairScore * 0.18
+        + sumScore * 0.1
+        + spreadScore * 0.07
+        + oddScore * 0.06
+        + diversityScore * 0.05
+        - consecutivePenalty * 0.08
+        + profileAdjustment;
+
+      const confidenceIndex = Math.max(42, Math.min(98, Math.round(46 + rawScore * 52)));
+      const rationale = `${config.label}: frequence + recence + retard + paires historiques + equilibre statistique (somme, parite, dispersion), ajuste au profil ${profile}.`;
+
+      candidateGrids.push({
+        id: `${game}-grid-${i + 1}-${j + 1}`,
+        game,
+        numbers,
+        stars,
+        confidenceIndex,
+        rationale,
+      });
+    }
+  }
+
+  const uniqueByGrid = new Map<string, LotteryPrediction>();
+  candidateGrids.forEach((grid) => {
+    const key = `${grid.numbers.join('-')}|${grid.stars.join('-')}`;
+    if (!uniqueByGrid.has(key)) {
+      uniqueByGrid.set(key, grid);
+    }
+  });
+
+  const hotNumberScores = numberComposite.map((score, index) => index === 0 ? -1 : score + (numbersRecency[index] ?? 0) * 0.08);
+  const hotStarScores = starComposite.map((score, index) => index === 0 ? -1 : score + (starsRecency[index] ?? 0) * 0.08);
+
+  return {
+    hotNumbers: buildRankedByScore(hotNumberScores).slice(0, 10),
+    hotStars: buildRankedByScore(hotStarScores).slice(0, Math.min(6, config.maxStar)),
+    predictedGrids: [...uniqueByGrid.values()]
+      .sort((a, b) => b.confidenceIndex - a.confidenceIndex)
+      .slice(0, topCount),
+    totalDraws: history.length,
+  };
+}
 
 type AgentQuotaConfig = {
   enabled: boolean;
@@ -501,8 +991,7 @@ function buildOperationsFromSyncActions(
         tax_intermediary: realFee,
         intermediary,
       };
-    })
-    .slice(0, 40);
+    });
 }
 
 function buildAllPortfolios(
@@ -510,7 +999,8 @@ function buildAllPortfolios(
   integrations: IntegrationConnection[],
   visibility: Record<string, boolean>,
   activation: Record<string, boolean>,
-  virtualSimulation: FinanceVirtualSimulation | null
+  virtualSimulation: FinanceVirtualSimulation | null,
+  localOperationsByPortfolio: Record<string, Portfolio['operations']> = {}
 ): Portfolio[] {
   if (!dashboard) {
     return [];
@@ -519,11 +1009,21 @@ function buildAllPortfolios(
   const dashboardByProvider = new Map(
     dashboard.portfolios
       .filter((item) => item.provider_code !== 'virtual_alpha')
+      .filter((item) => {
+        const text = `${item.provider_code ?? ''} ${item.label ?? ''}`.toLowerCase();
+        return !/\b(test|demo|sandbox|paper)\b/.test(text);
+      })
       .map((item) => [item.provider_code, item])
   );
 
-  const integrationPortfolios: Portfolio[] = integrations.map((connection) => {
-    const item = dashboardByProvider.get(connection.provider_code);
+  const integrationPortfolios: Portfolio[] = integrations
+    .filter((connection) => {
+      const linkedItem = dashboardByProvider.get(connection.provider_code);
+      const text = `${connection.provider_code ?? ''} ${connection.account_label ?? ''} ${connection.provider_name ?? ''} ${linkedItem?.label ?? ''}`.toLowerCase();
+      return !/\b(test|demo|sandbox|paper)\b/.test(text);
+    })
+    .map((connection) => {
+      const item = dashboardByProvider.get(connection.provider_code);
     const rawValue = item?.current_value !== null && item?.current_value !== undefined
       ? parseFloat(item.current_value)
       : connection.last_snapshot_total_value
@@ -535,6 +1035,8 @@ function buildAllPortfolios(
     const operations = backendActions.length > 0
       ? buildOperationsFromSyncActions(backendActions, connection.provider_code, connection.provider_name)
       : [];
+    const localOps = localOperationsByPortfolio[connection.provider_code] ?? [];
+    const mergedOperations = [...localOps, ...operations].filter((operation, index, arr) => arr.findIndex((entry) => entry.id === operation.id) === index);
 
     return {
       id: connection.provider_code,
@@ -552,7 +1054,7 @@ function buildAllPortfolios(
       last_sync_at: connection.last_sync_at ?? null,
       agent_name: item?.agent_name || resolveAgentNameFe(connection.provider_code),
       history,
-      operations,
+      operations: mergedOperations,
       ai_advice: [
         { kind: 'info', text: `${connection.provider_name} connecté. Statut sync: ${connection.last_sync_status ?? 'inconnu'}.` },
         { kind: 'hold', text: backendActions.length > 0 ? 'Les derniers mouvements proviennent des synchronisations Coinbase.' : rawValue > 0 ? 'Données disponibles. Synchronisez régulièrement pour des conseils IA affinés.' : 'Synchronisez pour récupérer vos positions et des conseils personnalisés.' },
@@ -604,6 +1106,57 @@ function buildAllPortfolios(
   };
 
   return [virtualPortfolio, ...integrationPortfolios];
+}
+
+function serializeBettingStrategySettings(strategies: BettingStrategy[]): Record<string, BettingStrategySettings> {
+  return strategies.reduce<Record<string, BettingStrategySettings>>((acc, strategy) => {
+    acc[strategy.id] = {
+      enabled: strategy.enabled,
+      ai_enabled: strategy.ai_enabled,
+      mode: strategy.mode,
+      max_stake: Math.max(1, Number(strategy.max_stake) || 1),
+      max_bets_per_day: Math.max(1, Number(strategy.max_bets_per_day) || 1),
+      risk_profile: strategy.risk_profile,
+    };
+    return acc;
+  }, {});
+}
+
+function applyBettingStrategySettings(
+  baseStrategies: BettingStrategy[],
+  rawSettings: unknown,
+): BettingStrategy[] {
+  if (!rawSettings || typeof rawSettings !== 'object') {
+    return baseStrategies;
+  }
+  const settings = rawSettings as Record<string, unknown>;
+  return baseStrategies.map((strategy) => {
+    const raw = settings[strategy.id];
+    if (!raw || typeof raw !== 'object') {
+      return strategy;
+    }
+    const source = raw as Record<string, unknown>;
+    const rawMode = String(source.mode ?? '').toLowerCase();
+    const mode: BettingStrategy['mode'] = rawMode === 'autonomous'
+      ? 'autonomous'
+      : rawMode === 'supervised'
+        ? 'supervised'
+        : 'manual';
+    const riskSource = source.risk_profile;
+    const riskProfile: BettingStrategy['risk_profile'] =
+      riskSource === 'low' || riskSource === 'medium' || riskSource === 'high'
+        ? riskSource
+        : strategy.risk_profile;
+    return {
+      ...strategy,
+      enabled: source.enabled !== false,
+      ai_enabled: source.ai_enabled !== false,
+      mode,
+      max_stake: Math.max(1, Number(source.max_stake ?? strategy.max_stake) || strategy.max_stake),
+      max_bets_per_day: Math.max(1, Number(source.max_bets_per_day ?? strategy.max_bets_per_day) || strategy.max_bets_per_day),
+      risk_profile: riskProfile,
+    };
+  });
 }
 
 function Sparkline({ data, color = 'var(--brand)' }: { data: Array<{ value: number }>; color?: string }) {
@@ -861,16 +1414,16 @@ function statusDotClass(status: string) {
 
 function statusLabel(status: string) {
   if (status === 'active') {
-    return 'Actif';
+    return 'Connecte';
   }
   if (status === 'disabled') {
-    return 'Desactive';
+    return 'Non connecte';
   }
   if (status === 'pending_user_consent') {
     return 'En attente';
   }
   if (status === 'available') {
-    return 'Disponible';
+    return 'Connecte';
   }
   return status;
 }
@@ -978,6 +1531,40 @@ function formatPortfolioEvolution(history: Array<{ date: string; value: number }
   };
 }
 
+function computePortfolioEvolutionPct(history: Array<{ date: string; value: number }>, days: number) {
+  if (history.length < 2) {
+    return null;
+  }
+  const points = history
+    .map((point) => ({ ...point, ts: Date.parse(point.date) }))
+    .filter((point) => Number.isFinite(point.ts))
+    .sort((a, b) => a.ts - b.ts);
+  if (points.length < 2) {
+    return null;
+  }
+  const nowTs = points[points.length - 1].ts;
+  const targetTs = nowTs - days * 24 * 60 * 60 * 1000;
+  const basePoint = [...points].reverse().find((point) => point.ts <= targetTs) ?? points[0];
+  const current = points[points.length - 1]?.value ?? 0;
+  const base = basePoint?.value ?? 0;
+  if (base <= 0) {
+    return null;
+  }
+  return ((current - base) / base) * 100;
+}
+
+function buildRecentWeeksEvolution(history: Array<{ date: string; value: number }>) {
+  return [1, 2, 4].map((weeks) => {
+    const evolution = formatPortfolioEvolution(history, weeks * 7);
+    return {
+      key: `${weeks}w`,
+      label: `${weeks} sem`,
+      value: evolution.value,
+      tone: evolution.tone,
+    };
+  });
+}
+
 function aggregatePortfolioHistory(portfolios: Portfolio[]) {
   const withHistory = portfolios.filter((portfolio) => portfolio.history.length > 1);
   if (withHistory.length === 0) {
@@ -1047,24 +1634,6 @@ const MARKET_SIGNALS: MarketSignal[] = [
    ============================================================ */
 const MOCK_STRATEGIES: BettingStrategy[] = [
   {
-    id: 'sv0', name: 'Portefeuille Virtuel Tipster', type: 'personal',
-    description: 'Portefeuille de simulation 100 € sans trafic réel. Les transactions sont simulées selon votre niveau de risque.',
-    isVirtual: true,
-    bankroll: 100, roi: 0, winRate: 0, variance: 0, enabled: true, betsTotal: 0, betsWon: 0,
-    ai_enabled: true,
-    mode: 'autonomous',
-    max_stake: 12,
-    max_bets_per_day: 6,
-    risk_profile: 'medium',
-    history: [
-      { date: '2026-03-01', value: 100 },
-      { date: '2026-03-05', value: 100 },
-      { date: '2026-03-10', value: 100 },
-      { date: '2026-03-14', value: 100 },
-    ],
-    recentBets: [],
-  },
-  {
     id: 's1', name: 'Value Betting Ligue 1', type: 'value_betting',
     description: 'Identification de cotes sous-évaluées sur les matchs de Ligue 1 via modèle ELO ajusté.',
     isVirtual: false,
@@ -1121,6 +1690,21 @@ const MOCK_STRATEGIES: BettingStrategy[] = [
       { id: 'b6', date: '2026-03-14', sport: 'football', event: 'Bayern vs Dortmund', market: 'Arb 2.1%', bookmaker: 'Multi', odds: 0, stake: 200, result: 'won', profit: 4.2, strategyId: 's3' },
     ],
   },
+  {
+    id: 's4', name: 'Portefeuille Virtuel IA', type: 'predictive',
+    description: 'Simulation locale paris sportifs. Budget initial 100 €. Aucune transaction réelle.',
+    isVirtual: true,
+    bankroll: 100, roi: 0, winRate: 0, variance: 0, enabled: false, betsTotal: 0, betsWon: 0,
+    ai_enabled: true,
+    mode: 'supervised',
+    max_stake: 20,
+    max_bets_per_day: 4,
+    risk_profile: 'medium',
+    history: [
+      { date: '2026-03-14', value: 100 },
+    ],
+    recentBets: [],
+  },
 ];
 
 const TIPSTER_SIGNALS: TipsterSignal[] = [
@@ -1170,8 +1754,8 @@ const VIRTUAL_RISK_PRESETS: Record<VirtualRiskProfile, {
 
 export default function RobinApp() {
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
-  const [activeApp, setActiveApp] = useState<'finance' | 'betting'>('finance');
-  const [appView, setAppView] = useState<'dashboard' | 'portfolios' | 'settings' | 'admin' | 'strategies' | 'account'>('dashboard');
+  const [activeApp, setActiveApp] = useState<'finance' | 'betting' | 'loto'>('finance');
+  const [appView, setAppView] = useState<'overview' | 'dashboard' | 'portfolios' | 'settings' | 'admin' | 'strategies' | 'account'>('overview');
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState<string | null>(null);
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -1221,6 +1805,15 @@ export default function RobinApp() {
   const [commGoogleChat, setCommGoogleChat] = useState({ enabled: false, webhook: '' });
   const [commTelegram, setCommTelegram] = useState({ enabled: false, botToken: '', chatId: '' });
   const [selectedInsight, setSelectedInsight] = useState<InsightItem | null>(null);
+  const [selectedDecisionPortfolioId, setSelectedDecisionPortfolioId] = useState<string>('');
+  const [selectedDecisionSide, setSelectedDecisionSide] = useState<'buy' | 'sell'>('buy');
+  const [selectedDecisionAmount, setSelectedDecisionAmount] = useState<number>(25);
+  const [assistantDockOpen, setAssistantDockOpen] = useState(false);
+  const [assistantWizardDecisionId, setAssistantWizardDecisionId] = useState<string | null>(null);
+  const [assistantExecutionMode] = useState<'recommendation' | 'direct'>('recommendation');
+  const [pendingDecisionConfirmation, setPendingDecisionConfirmation] = useState<PendingDecisionConfirmation | null>(null);
+  const [virtualAppsEnabled, setVirtualAppsEnabled] = useState<{ finance: boolean; betting: boolean }>({ finance: true, betting: false });
+  const [bettingThemeVisibility, setBettingThemeVisibility] = useState<BettingThemeVisibility>(DEFAULT_BETTING_THEME_VISIBILITY);
   const [settingsTileCollapsed, setSettingsTileCollapsed] = useState<Record<string, boolean>>({
     intro: true,
     profile: true,
@@ -1251,9 +1844,17 @@ export default function RobinApp() {
   const [selectedStrategy, setSelectedStrategy] = useState<BettingStrategy | null>(null);
   const [strategyDetailOpen, setStrategyDetailOpen] = useState(false);
   const [bettingAlert, setBettingAlert] = useState<string | null>(null);
+  const [bettingAnalytics, setBettingAnalytics] = useState<BettingAnalyticsSummary | null>(null);
+  const [overviewAppFilter, setOverviewAppFilter] = useState<'all' | 'finance' | 'betting' | 'loto'>('all');
+  const [overviewTargetFilter, setOverviewTargetFilter] = useState<string>('all');
+  const [lotteryGameFocus, setLotteryGameFocus] = useState<LotteryGame>('loto');
+  const [myActivityTrail, setMyActivityTrail] = useState<AuditEntry[]>([]);
+  const [loadingMyActivity, setLoadingMyActivity] = useState(false);
   const [virtualRiskProfile, setVirtualRiskProfile] = useState<VirtualRiskProfile>('medium');
   const [financeVirtualSimulation, setFinanceVirtualSimulation] = useState<FinanceVirtualSimulation | null>(null);
+  const [localPortfolioOperations, setLocalPortfolioOperations] = useState<Record<string, Portfolio['operations']>>({});
   const defaultAgentConfig = useMemo(() => defaultAgentConfigFromUserRisk(user), [user]);
+  const allowedApps = useMemo(() => normalizeFrontendAppAccess(user?.app_access), [user?.app_access]);
 
   useEffect(() => {
     const storedAccess = sessionStorage.getItem(ACCESS_TOKEN_KEY);
@@ -1347,9 +1948,10 @@ export default function RobinApp() {
       }
       const source = raw as Record<string, unknown>;
       const domainSource = (source.domain_policy ?? {}) as Record<string, unknown>;
+      const sourceMode = String(source.mode ?? '').toLowerCase();
       nextAgentConfigs[portfolioId] = {
         enabled: source.enabled === true,
-        mode: source.mode === 'autopilot' ? 'autopilot' : 'manual',
+        mode: sourceMode === 'autopilot' ? 'autopilot' : sourceMode === 'supervised' ? 'supervised' : 'manual',
         max_amount: Math.max(1, Number(source.max_amount ?? riskBasedDefaults.max_amount) || riskBasedDefaults.max_amount),
         max_transactions_per_day: Math.max(1, Number(source.max_transactions_per_day ?? riskBasedDefaults.max_transactions_per_day) || riskBasedDefaults.max_transactions_per_day),
         domain_policy: {
@@ -1377,6 +1979,31 @@ export default function RobinApp() {
 
     const adminLimitRaw = Number(user.personal_settings.admin_transaction_daily_limit);
     setAdminDailyTransactionLimit(Math.max(1, Math.min(1000, Number.isFinite(adminLimitRaw) && adminLimitRaw > 0 ? adminLimitRaw : 1000)));
+
+    const rawVirtualApps = (user.personal_settings.virtual_apps ?? {}) as Record<string, unknown>;
+    setVirtualAppsEnabled({
+      finance: rawVirtualApps.finance !== false,
+      betting: rawVirtualApps.betting === true,
+    });
+
+    const rawBettingThemes = (user.personal_settings.betting_theme_visibility ?? {}) as Record<string, unknown>;
+    setBettingThemeVisibility({
+      football: rawBettingThemes.football !== false,
+      tennis: rawBettingThemes.tennis !== false,
+      basketball: rawBettingThemes.basketball !== false,
+      rugby: rawBettingThemes.rugby !== false,
+      other: rawBettingThemes.other === true,
+    });
+
+    const rawBettingStrategies = user.personal_settings.betting_strategy_settings;
+    const hydratedStrategies = applyBettingStrategySettings(MOCK_STRATEGIES, rawBettingStrategies);
+    setBettingStrategies(hydratedStrategies);
+    setSelectedStrategy((current) => {
+      if (!current) {
+        return current;
+      }
+      return hydratedStrategies.find((strategy) => strategy.id === current.id) ?? null;
+    });
   }, [user]);
 
   useEffect(() => {
@@ -1562,6 +2189,73 @@ export default function RobinApp() {
   }, [appView, accessToken, user]);
 
   useEffect(() => {
+    if (appView !== 'account' || !accessToken) {
+      return;
+    }
+    let cancelled = false;
+    const loadMyActivity = async () => {
+      setLoadingMyActivity(true);
+      try {
+        const response = await fetch(apiUrl('/api/v1/me/activity'), {
+          headers: { ...authHeader(accessToken) },
+          credentials: 'include',
+        });
+        const payload = await readJsonResponse<AuditEntry[] | { detail?: unknown }>(response);
+        if (!response.ok) {
+          return;
+        }
+        if (!cancelled) {
+          setMyActivityTrail((payload as AuditEntry[] | null) ?? []);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingMyActivity(false);
+        }
+      }
+    };
+    void loadMyActivity();
+    return () => {
+      cancelled = true;
+    };
+  }, [appView, accessToken]);
+
+  useEffect(() => {
+    if (!accessToken || !user) {
+      setBettingAnalytics(null);
+      return;
+    }
+    let cancelled = false;
+
+    const loadBettingAnalytics = async () => {
+      try {
+        const response = await fetch(apiUrl('/api/v1/betting/analytics/summary'), {
+          headers: { ...authHeader(accessToken) },
+          credentials: 'include',
+        });
+        const payload = await readJsonResponse<BettingAnalyticsSummary | { detail?: unknown }>(response);
+        if (!response.ok || !payload) {
+          return;
+        }
+        if (!cancelled) {
+          setBettingAnalytics(payload as BettingAnalyticsSummary);
+        }
+      } catch {
+        // Keep existing frontend-only metrics if backend analytics are unavailable.
+      }
+    };
+
+    void loadBettingAnalytics();
+    const intervalId = window.setInterval(() => {
+      void loadBettingAnalytics();
+    }, 30000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [accessToken, user?.id]);
+
+  useEffect(() => {
     if (!dashboard?.virtual_portfolio) {
       setFinanceVirtualSimulation(null);
       return;
@@ -1646,7 +2340,7 @@ export default function RobinApp() {
     setDashboard(null);
     setMfaRequired(false);
     setActiveApp('finance');
-    setAppView('dashboard');
+    setAppView('overview');
     setMfaQrDataUrl(null);
   }
 
@@ -1684,7 +2378,9 @@ export default function RobinApp() {
   function buildPersonalSettingsPayload(
     overrides: Record<string, unknown> = {},
     visibilityState: Record<string, boolean> = portfolioVisibility,
-    decisionState: Record<string, true> = resolvedDecisionKeys
+    decisionState: Record<string, true> = resolvedDecisionKeys,
+    virtualAppsState: { finance: boolean; betting: boolean } = virtualAppsEnabled,
+    bettingStrategiesState: BettingStrategy[] = bettingStrategies,
   ) {
     return {
       currency: settingsForm.currency,
@@ -1713,6 +2409,12 @@ export default function RobinApp() {
       admin_transaction_daily_limit: Math.max(1, Math.min(1000, Number(adminDailyTransactionLimit) || 1000)),
       portfolio_visibility: visibilityState,
       portfolio_activation: portfolioActivation,
+      virtual_apps: {
+        finance: virtualAppsState.finance !== false,
+        betting: virtualAppsState.betting === true,
+      },
+      betting_theme_visibility: bettingThemeVisibility,
+      betting_strategy_settings: serializeBettingStrategySettings(bettingStrategiesState),
       decision_resolutions: decisionState,
       agent_quotas: agentConfigs,
       communication_google_chat: {
@@ -1726,6 +2428,41 @@ export default function RobinApp() {
       },
       ...overrides,
     };
+  }
+
+  async function updateVirtualAppPreference(app: 'finance' | 'betting', enabled: boolean) {
+    const nextVirtualApps = {
+      ...virtualAppsEnabled,
+      [app]: enabled,
+    };
+    setVirtualAppsEnabled(nextVirtualApps);
+
+    if (!accessToken) {
+      return;
+    }
+
+    try {
+      const response = await fetch(apiUrl('/auth/me/settings'), {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeader(accessToken),
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          full_name: settingsForm.fullName,
+          phone_number: settingsForm.phoneNumber || null,
+          client_context: clientContext,
+          personal_settings: buildPersonalSettingsPayload({}, portfolioVisibility, resolvedDecisionKeys, nextVirtualApps),
+        }),
+      });
+      const payload = await readJsonResponse<UserProfile>(response);
+      if (response.ok && payload) {
+        setUser(payload);
+      }
+    } catch {
+      // Keep local state even if persistence fails.
+    }
   }
 
   async function persistDashboardPreferences(nextVisibility: Record<string, boolean>, successMessage = 'Préférences du dashboard mises à jour.') {
@@ -2157,7 +2894,7 @@ export default function RobinApp() {
       setRefreshToken(COOKIE_SESSION_MARKER);
       setUser(payload.user ?? null);
       setActiveApp('finance');
-      setAppView('dashboard');
+      setAppView('overview');
       setMfaRequired(false);
       setMfaDeliveryHint(null);
       setMfaPreviewCode(null);
@@ -2563,7 +3300,12 @@ export default function RobinApp() {
     }
   }
 
-  async function updateAdminUser(target: UserProfile, assignedRoles: string[], isActive: boolean) {
+  async function updateAdminUser(
+    target: UserProfile,
+    assignedRoles: string[],
+    isActive: boolean,
+    appAccess?: Array<'finance' | 'betting' | 'loto'>,
+  ) {
     if (!accessToken) {
       return;
     }
@@ -2577,7 +3319,11 @@ export default function RobinApp() {
           ...authHeader(accessToken),
         },
         credentials: 'include',
-        body: JSON.stringify({ assigned_roles: assignedRoles, is_active: isActive }),
+        body: JSON.stringify({
+          assigned_roles: assignedRoles,
+          is_active: isActive,
+          app_access: normalizeFrontendAppAccess([...(appAccess ?? target.app_access ?? []), 'loto']),
+        }),
       });
       const payload = await readJsonResponse<UserProfile | { detail?: unknown }>(response);
       if (!response.ok) {
@@ -2621,7 +3367,8 @@ export default function RobinApp() {
     integrationConnections,
     portfolioVisibility,
     portfolioActivation,
-    financeVirtualSimulation
+    financeVirtualSimulation,
+    localPortfolioOperations,
   );
   const visiblePortfolios = allPortfolios.filter((portfolio) => portfolio.visible && portfolio.status === 'active');
   const realVisiblePortfolios = visiblePortfolios.filter((portfolio) => portfolio.type === 'integration');
@@ -2701,10 +3448,165 @@ export default function RobinApp() {
   const decisionInsightKey = (insight: InsightItem) => `${insight.portfolio_id ?? 'none'}||${insight.title}||${insight.detail}||${insight.trend}`;
   const decisionInsights: InsightItem[] = [...suggestionInsights, ...aiDecisionInsights].filter((insight) => !resolvedDecisionKeys[decisionInsightKey(insight)]);
   const pendingDecisionCount = decisionInsights.length;
+  const userBettingRiskProfile = resolveUserRiskProfile(user);
+  const lotteryPredictions = useMemo(() => ({
+    loto: computeLotteryPredictions('loto', LOTO_HISTORY, userBettingRiskProfile, 5),
+    euromillions: computeLotteryPredictions('euromillions', EUROMILLIONS_HISTORY, userBettingRiskProfile, 5),
+  }), [userBettingRiskProfile]);
+  const lotteryUpcoming = useMemo(
+    () => LOTTERY_UPCOMING_DRAWS.slice().sort((a, b) => Date.parse(a.drawDate) - Date.parse(b.drawDate)),
+    [],
+  );
   const pendingTipsterSignals = useMemo(
     () => tipsterSignals.filter((signal) => signal.status === 'pending'),
     [tipsterSignals]
   );
+  const archivedTipsterSignals = useMemo(
+    () => tipsterSignals.filter((signal) => signal.status !== 'pending').slice(0, 12),
+    [tipsterSignals]
+  );
+  const confidenceIndexForSignal = (signal: TipsterSignal) => {
+    const riskAlignment = userBettingRiskProfile === 'low'
+      ? (signal.risk === 'faible' ? 1.12 : signal.risk === 'modere' ? 0.96 : 0.78)
+      : userBettingRiskProfile === 'medium'
+        ? (signal.risk === 'modere' ? 1.08 : signal.risk === 'faible' ? 1.0 : 0.9)
+        : (signal.risk === 'eleve' ? 1.1 : signal.risk === 'modere' ? 1.0 : 0.9);
+    const base = (signal.confidence / 5) * 72 + Math.min(28, signal.value_pct * 2.4);
+    return Math.max(0, Math.min(100, Math.round(base * riskAlignment)));
+  };
+  const topTipsterRecommendations = useMemo(
+    () => [...pendingTipsterSignals]
+      .map((signal) => ({
+        ...signal,
+        profileConfidenceIndex: confidenceIndexForSignal(signal),
+      }))
+      .sort((a, b) => b.profileConfidenceIndex - a.profileConfidenceIndex)
+      .slice(0, 5),
+    [pendingTipsterSignals, userBettingRiskProfile]
+  );
+  const filteredTopTipsterRecommendations = useMemo(
+    () => topTipsterRecommendations.filter((signal) => bettingThemeVisibility[signal.sport as BettingThemeKey] !== false),
+    [topTipsterRecommendations, bettingThemeVisibility]
+  );
+  const activeBettingVirtualPortfolio = useMemo(
+    () => bettingStrategies.find((strategy) => strategy.isVirtual),
+    [bettingStrategies]
+  );
+  const bettingVirtualEvolution = useMemo(() => {
+    if (!activeBettingVirtualPortfolio) {
+      return { delta: 0, label: '0.00 €', tone: 'neutral' as const };
+    }
+    const history = activeBettingVirtualPortfolio.history;
+    const last = history[history.length - 1]?.value ?? activeBettingVirtualPortfolio.bankroll;
+    const prev = history[history.length - 2]?.value ?? 100;
+    const delta = Number((last - prev).toFixed(2));
+    return {
+      delta,
+      label: `${delta >= 0 ? '+' : ''}${delta.toFixed(2)} €`,
+      tone: delta > 0 ? 'up' as const : delta < 0 ? 'down' as const : 'neutral' as const,
+    };
+  }, [activeBettingVirtualPortfolio]);
+  const overviewItems = useMemo(() => {
+    const financeItems = allPortfolios
+      .filter((portfolio) => portfolio.status === 'active')
+      .map((portfolio) => {
+        const evo7 = formatPortfolioEvolution(portfolio.history, 7);
+        return {
+          key: `finance:${portfolio.id}`,
+          app: 'finance' as const,
+          id: portfolio.id,
+          label: portfolio.label,
+          portfolioKind: portfolio.type,
+          valueLabel: `${portfolio.current_value.toFixed(2)} €`,
+          trendLabel: `7j: ${evo7.value}`,
+          riskLabel: portfolio.type === 'virtual' ? 'Simulation' : 'Réel',
+        };
+      });
+    const bettingItems = bettingStrategies
+      .filter((strategy) => strategy.enabled)
+      .map((strategy) => ({
+        key: `betting:${strategy.id}`,
+        app: 'betting' as const,
+        id: strategy.id,
+        label: strategy.name,
+        portfolioKind: 'real' as const,
+        valueLabel: `${strategy.bankroll.toFixed(0)} €`,
+        trendLabel: `ROI ${strategy.roi >= 0 ? '+' : ''}${strategy.roi.toFixed(1)} %`,
+        riskLabel: strategy.mode === 'autonomous' ? 'Auto' : strategy.mode === 'supervised' ? 'Supervisé' : 'Manuel',
+      }));
+    const lotoItems = (['loto', 'euromillions'] as LotteryGame[]).map((game) => {
+      const prediction = lotteryPredictions[game];
+      const nextDraw = lotteryUpcoming.find((entry) => entry.game === game);
+      return {
+        key: `loto:${game}`,
+        app: 'loto' as const,
+        id: game,
+        label: LOTTERY_CONFIG[game].label,
+        portfolioKind: 'real' as const,
+        valueLabel: nextDraw?.jackpotLabel ?? 'Jackpot a confirmer',
+        trendLabel: `Confiance max ${prediction.predictedGrids[0]?.confidenceIndex ?? 0}/100`,
+        riskLabel: `${prediction.totalDraws} tirages analyses`,
+      };
+    });
+    return [...financeItems, ...bettingItems, ...lotoItems];
+  }, [allPortfolios, bettingStrategies, lotteryPredictions, lotteryUpcoming]);
+  const filteredOverviewItems = useMemo(
+    () => overviewItems.filter((item) => {
+      const allowedMatch = allowedApps.includes(item.app);
+      const appMatch = overviewAppFilter === 'all' || item.app === overviewAppFilter;
+      const targetMatch = overviewTargetFilter === 'all' || item.key === overviewTargetFilter;
+      return allowedMatch && appMatch && targetMatch;
+    }),
+    [overviewItems, overviewAppFilter, overviewTargetFilter, allowedApps]
+  );
+  const assistantOptimizationTips = useMemo<AssistantTip[]>(() => {
+    if (activeApp === 'finance') {
+      const decisionTips = decisionInsights.slice(0, 4).map((insight) => ({
+        id: `assistant-decision-${insight.id}`,
+        title: insight.title,
+        detail: insight.detail,
+        insight,
+        value: insight.value,
+        trend: insight.trend,
+      }));
+      if (decisionTips.length > 0) {
+        return decisionTips;
+      }
+      const tips = visiblePortfolios.slice(0, 4).map((portfolio) => {
+        const evo7 = formatPortfolioEvolution(portfolio.history, 7);
+        if (evo7.tone === 'down') {
+          return {
+            id: `finance-tip-${portfolio.id}`,
+            title: `${portfolio.label}: ralentissement détecté`,
+            detail: 'Réduire l exposition sur les actifs les plus volatils et renforcer le suivi quotidien.',
+          };
+        }
+        return {
+          id: `finance-tip-${portfolio.id}`,
+          title: `${portfolio.label}: momentum exploitable`,
+          detail: 'Maintenir le cap et prioriser les opportunités IA à forte confiance sur ce portefeuille.',
+        };
+      });
+      return tips;
+    }
+    if (activeApp === 'loto') {
+      const focusPrediction = lotteryPredictions[lotteryGameFocus];
+      const tips = focusPrediction.predictedGrids.slice(0, 4).map((grid, index) => ({
+        id: `loto-tip-${grid.id}`,
+        title: `Grille #${index + 1} ${LOTTERY_CONFIG[lotteryGameFocus].label}`,
+        detail: `Indice ${grid.confidenceIndex}/100 · ${grid.rationale}`,
+      }));
+      return tips;
+    }
+    const tips = filteredTopTipsterRecommendations.slice(0, 4).map((signal) => ({
+      id: `betting-tip-${signal.id}`,
+      title: `${signal.event} (${signal.bookmaker})`,
+      detail: `Indice confiance profil ${signal.profileConfidenceIndex}/100 · Value +${signal.value_pct.toFixed(1)}%.`,
+    }));
+    return tips;
+  }, [activeApp, visiblePortfolios, filteredTopTipsterRecommendations, lotteryPredictions, lotteryGameFocus, decisionInsights]);
+  const showAssistantDock = appView === 'dashboard' && assistantOptimizationTips.length > 0;
+  const assistantDockVisible = showAssistantDock && assistantDockOpen;
   const activeBettingBets = useMemo(
     () => bettingStrategies
       .flatMap((strategy) => strategy.recentBets
@@ -2724,6 +3626,157 @@ export default function RobinApp() {
       .slice(0, 10),
     [bettingStrategies]
   );
+  const financeValueDistribution = useMemo(() => {
+    const total = Math.max(1, realVisiblePortfolios.reduce((sum, portfolio) => sum + Math.max(0, portfolio.current_value || 0), 0));
+    return realVisiblePortfolios
+      .map((portfolio) => {
+        const value = Math.max(0, portfolio.current_value || 0);
+        return {
+          id: portfolio.id,
+          label: portfolio.label,
+          value,
+          weight: (value / total) * 100,
+        };
+      })
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 6);
+  }, [realVisiblePortfolios]);
+  const financeMomentumBars = useMemo(() => {
+    const rows = visiblePortfolios.map((portfolio) => {
+      const change7d = computePortfolioEvolutionPct(portfolio.history, 7);
+      return {
+        id: portfolio.id,
+        label: portfolio.label,
+        change7d,
+      };
+    });
+    const maxAbs = Math.max(1, ...rows.map((row) => Math.abs(row.change7d ?? 0)));
+    return rows
+      .map((row) => ({
+        ...row,
+        normalized: Math.max(6, Math.round((Math.abs(row.change7d ?? 0) / maxAbs) * 100)),
+      }))
+      .sort((a, b) => Math.abs(b.change7d ?? 0) - Math.abs(a.change7d ?? 0));
+  }, [visiblePortfolios]);
+  const financeOps7d = useMemo(() => {
+    const keys = Array.from({ length: 7 }, (_, index) => {
+      const day = new Date();
+      day.setHours(0, 0, 0, 0);
+      day.setDate(day.getDate() - (6 - index));
+      const key = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+      return {
+        key,
+        label: day.toLocaleDateString('fr-FR', { weekday: 'short' }).replace('.', ''),
+        full: day.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }),
+      };
+    });
+    const counts = new Map<string, number>();
+    visiblePortfolios.forEach((portfolio) => {
+      portfolio.operations.forEach((operation) => {
+        const ts = Date.parse(operation.date);
+        if (!Number.isFinite(ts)) {
+          return;
+        }
+        const d = new Date(ts);
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      });
+    });
+    const rows = keys.map((day) => ({ ...day, count: counts.get(day.key) ?? 0 }));
+    const max = Math.max(1, ...rows.map((row) => row.count));
+    return rows.map((row) => ({ ...row, normalized: Math.round((row.count / max) * 100) }));
+  }, [visiblePortfolios]);
+  const bettingBankrollDistribution = useMemo(() => {
+    const enabledStrategies = bettingStrategies.filter((strategy) => strategy.enabled);
+    const total = Math.max(1, enabledStrategies.reduce((sum, strategy) => sum + Math.max(0, strategy.bankroll), 0));
+    return enabledStrategies
+      .map((strategy) => ({
+        id: strategy.id,
+        label: strategy.name,
+        bankroll: strategy.bankroll,
+        roi: strategy.roi,
+        weight: (Math.max(0, strategy.bankroll) / total) * 100,
+      }))
+      .sort((a, b) => b.bankroll - a.bankroll)
+      .slice(0, 6);
+  }, [bettingStrategies]);
+  const bettingRoiMomentum = useMemo(() => {
+    const rows = bettingStrategies.map((strategy) => ({
+      id: strategy.id,
+      label: strategy.name,
+      change7d: computePortfolioEvolutionPct(strategy.history, 7),
+    }));
+    const maxAbs = Math.max(1, ...rows.map((row) => Math.abs(row.change7d ?? 0)));
+    return rows
+      .map((row) => ({
+        ...row,
+        normalized: Math.max(6, Math.round((Math.abs(row.change7d ?? 0) / maxAbs) * 100)),
+      }))
+      .sort((a, b) => Math.abs(b.change7d ?? 0) - Math.abs(a.change7d ?? 0));
+  }, [bettingStrategies]);
+  const bettingActivity7d = useMemo(() => {
+    const keys = Array.from({ length: 7 }, (_, index) => {
+      const day = new Date();
+      day.setHours(0, 0, 0, 0);
+      day.setDate(day.getDate() - (6 - index));
+      const key = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+      return {
+        key,
+        label: day.toLocaleDateString('fr-FR', { weekday: 'short' }).replace('.', ''),
+        full: day.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }),
+      };
+    });
+    const counts = new Map<string, number>();
+    bettingStrategies.forEach((strategy) => {
+      strategy.recentBets.forEach((bet) => {
+        const ts = Date.parse(bet.date);
+        if (!Number.isFinite(ts)) {
+          return;
+        }
+        const d = new Date(ts);
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      });
+    });
+    const rows = keys.map((day) => ({ ...day, count: counts.get(day.key) ?? 0 }));
+    const max = Math.max(1, ...rows.map((row) => row.count));
+    return rows.map((row) => ({ ...row, normalized: Math.round((row.count / max) * 100) }));
+  }, [bettingStrategies]);
+  const supervisedFinanceMessages = useMemo(() => {
+    const supervisedPortfolios = allPortfolios.filter((portfolio) => {
+      if (portfolio.status !== 'active') {
+        return false;
+      }
+      const cfg = getAgentConfig(portfolio.id);
+      return cfg.enabled && cfg.mode === 'supervised';
+    });
+    return supervisedPortfolios.map((portfolio) => {
+      const pending = decisionInsights.filter((insight) => insight.portfolio_id === portfolio.id).length;
+      const evolution = formatPortfolioEvolution(portfolio.history, 7);
+      return {
+        id: `supervised-finance-${portfolio.id}`,
+        title: `${portfolio.label} en mode supervisé`,
+        detail: pending > 0
+          ? `${pending} recommandation(s) en attente de validation utilisateur.`
+          : 'Aucune recommandation bloquante pour le moment, surveillance active.',
+        trend: `7j ${evolution.value}`,
+      };
+    });
+  }, [allPortfolios, decisionInsights, agentConfigs]);
+  const supervisedBettingMessages = useMemo(() => {
+    const supervisedStrategies = bettingStrategies.filter((strategy) => strategy.enabled && strategy.ai_enabled && strategy.mode === 'supervised');
+    return supervisedStrategies.map((strategy) => {
+      const pendingSignals = filteredTopTipsterRecommendations.length;
+      return {
+        id: `supervised-betting-${strategy.id}`,
+        title: `${strategy.name} en mode supervisé`,
+        detail: pendingSignals > 0
+          ? `${pendingSignals} signal(s) IA visible(s) à valider avant exécution.`
+          : 'Aucun signal prioritaire en attente, veille Tipster IA active.',
+        trend: `ROI ${strategy.roi >= 0 ? '+' : ''}${strategy.roi.toFixed(1)}%`,
+      };
+    });
+  }, [bettingStrategies, filteredTopTipsterRecommendations]);
   const annualizedProjectionConfidence = projectionConfidenceFromHistory(aggregateAllHistory);
   const indicatorInsights: InsightItem[] = (dashboard?.key_indicators ?? []).map((item, index) => ({
     id: `indicator-${index}`,
@@ -2754,6 +3807,26 @@ export default function RobinApp() {
     return insight.portfolio_id ?? null;
   }
 
+  function resolveDecisionPortfolioId(requestedPortfolioId: string | null): string | null {
+    const activePortfolios = allPortfolios.filter((portfolio) => portfolio.status === 'active');
+    if (requestedPortfolioId) {
+      const requested = allPortfolios.find((portfolio) => portfolio.id === requestedPortfolioId);
+      if (requested?.status === 'active') {
+        return requested.id;
+      }
+      if (requested?.type === 'virtual' && virtualAppsEnabled.finance === false) {
+        return activePortfolios.find((portfolio) => portfolio.type === 'integration')?.id ?? activePortfolios[0]?.id ?? null;
+      }
+      if (requested) {
+        return activePortfolios.find((portfolio) => portfolio.type === requested.type)?.id ?? activePortfolios[0]?.id ?? null;
+      }
+    }
+    return activePortfolios.find((portfolio) => portfolio.type === 'integration')?.id
+      ?? activePortfolios.find((portfolio) => portfolio.type === 'virtual')?.id
+      ?? activePortfolios[0]?.id
+      ?? null;
+  }
+
   function inferDecisionDomain(assetSymbol: string, insight: InsightItem): AgentDomain {
     const normalizedAsset = assetSymbol.toUpperCase();
     const text = `${insight.title} ${insight.detail}`.toLowerCase();
@@ -2771,6 +3844,19 @@ export default function RobinApp() {
 
   function getAgentConfig(portfolioId: string): AgentQuotaConfig {
     return agentConfigs[portfolioId] ?? defaultAgentConfig;
+  }
+
+  function pushLocalPortfolioOperation(portfolioId: string, operation: Portfolio['operations'][number]) {
+    setLocalPortfolioOperations((prev) => {
+      const current = prev[portfolioId] ?? [];
+      if (current.some((entry) => entry.id === operation.id)) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [portfolioId]: [operation, ...current],
+      };
+    });
   }
 
   function countTodayOperations(portfolioId: string) {
@@ -2818,7 +3904,11 @@ export default function RobinApp() {
     return { allowed: true, reason: '' };
   }
 
-  async function runDecisionAction(insight: InsightItem, approved: boolean, options: { silent?: boolean; source?: 'manual' | 'autopilot' } = {}) {
+  async function runDecisionAction(
+    insight: InsightItem,
+    approved: boolean,
+    options: DecisionActionOptions = {},
+  ) {
     if (!accessToken) {
       return;
     }
@@ -2828,9 +3918,10 @@ export default function RobinApp() {
       }
       return;
     }
-    const portfolioId = inferDecisionPortfolioId(insight);
+    const requestedPortfolioId = options.targetPortfolioId ?? inferDecisionPortfolioId(insight);
+    const portfolioId = resolveDecisionPortfolioId(requestedPortfolioId);
     if (!portfolioId) {
-      setError('Cette décision n est liée à aucun portefeuille cible.');
+      setError('Aucun portefeuille actif disponible pour exécuter cette décision.');
       return;
     }
 
@@ -2839,8 +3930,11 @@ export default function RobinApp() {
       setError(null);
     }
     try {
-      const side = inferDecisionSide(insight);
+      const side = options.side ?? inferDecisionSide(insight);
       const linkedPortfolio = allPortfolios.find((portfolio) => portfolio.id === portfolioId);
+      if (!linkedPortfolio || linkedPortfolio.status !== 'active') {
+        throw new Error('Le portefeuille cible est inactif. Activez-le depuis Mon compte.');
+      }
       let notional = linkedPortfolio && linkedPortfolio.current_value > 0
         ? Math.max(10, Math.min(250, linkedPortfolio.current_value * 0.03))
         : 25;
@@ -2849,7 +3943,98 @@ export default function RobinApp() {
       if (!policyCheck.allowed) {
         throw new Error(policyCheck.reason);
       }
-      notional = Math.min(notional, config.max_amount);
+      const requestedAmount = typeof options.amount === 'number' && Number.isFinite(options.amount)
+        ? Math.max(1, options.amount)
+        : notional;
+      notional = Math.min(requestedAmount, config.max_amount);
+
+      const processedKey = decisionInsightKey(insight);
+
+      if (linkedPortfolio.type === 'virtual') {
+        if (virtualAppsEnabled.finance === false) {
+          throw new Error('Le portefeuille virtuel Finance est désactivé dans Mon compte.');
+        }
+
+        if (approved) {
+          const nowIso = new Date().toISOString();
+          const simulatedMove = side === 'buy'
+            ? ((Math.random() * 0.05) - 0.012)
+            : ((Math.random() * 0.05) - 0.02);
+          const delta = Number((notional * simulatedMove).toFixed(2));
+          const asset = inferDecisionAsset(insight);
+          const operation: Portfolio['operations'][number] = {
+            id: `finance-virtual-manual-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            date: nowIso,
+            side,
+            asset,
+            amount: Number(notional.toFixed(2)),
+            tax_state: null,
+            tax_intermediary: null,
+            intermediary: 'Robin IA (virtuel)',
+          };
+          setFinanceVirtualSimulation((prev) => {
+            const fallbackHistory = linkedPortfolio.history.length > 0
+              ? linkedPortfolio.history
+              : [{ date: nowIso, value: linkedPortfolio.current_value > 0 ? linkedPortfolio.current_value : 100 }];
+            const fallbackOps = linkedPortfolio.operations;
+            const current = prev ?? {
+              currentValue: linkedPortfolio.current_value > 0 ? linkedPortfolio.current_value : 100,
+              history: fallbackHistory,
+              operations: fallbackOps,
+            };
+            const nextValue = Math.max(20, Number((current.currentValue + delta).toFixed(2)));
+            return {
+              currentValue: nextValue,
+              history: [...current.history, { date: nowIso, value: nextValue }].slice(-180),
+              operations: [operation, ...current.operations],
+            };
+          });
+          if (hasAdminRole(user)) {
+            setAdminTransactionLog((prev) => [{
+              id: `virtual-decision-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              user_id: user?.id ?? 'system',
+              user_name: user?.full_name ?? 'Utilisateur',
+              portfolio_id: portfolioId,
+              asset: inferDecisionAsset(insight),
+              side,
+              amount: Number(notional.toFixed(2)),
+              status: 'simulated',
+              created_at: nowIso,
+            }, ...prev].slice(0, 100));
+          }
+        }
+
+        const nextResolvedVirtual: Record<string, true> = { ...resolvedDecisionKeys, [processedKey]: true };
+        setResolvedDecisionKeys(nextResolvedVirtual);
+        await persistDecisionResolutions(nextResolvedVirtual);
+        if (approved) {
+          setAppliedDecisions((state) => [
+            {
+              id: processedKey,
+              title: insight.title,
+              portfolio_label: linkedPortfolio.label,
+              action: side,
+              amount: Number(notional.toFixed(2)),
+              applied_at: new Date().toISOString(),
+            },
+            ...state.filter((entry) => entry.id !== processedKey),
+          ].slice(0, 12));
+        }
+        setSelectedInsight((current) => {
+          if (!current) {
+            return current;
+          }
+          return decisionInsightKey(current) === processedKey ? null : current;
+        });
+        if (!options.silent) {
+          setError(
+            approved
+              ? 'Décision validée. Simulation exécutée sur le portefeuille virtuel (aucune transaction réelle).'
+              : 'Décision refusée. Aucune simulation exécutée.'
+          );
+        }
+        return;
+      }
 
       const proposalResponse = await fetch(apiUrl('/api/v1/orders/propose'), {
         method: 'POST',
@@ -2894,16 +4079,26 @@ export default function RobinApp() {
       }
 
       await refreshWorkspaceData(accessToken);
-      const processedKey = decisionInsightKey(insight);
       const nextResolved: Record<string, true> = { ...resolvedDecisionKeys, [processedKey]: true };
       setResolvedDecisionKeys(nextResolved);
       await persistDecisionResolutions(nextResolved);
       if (approved && finalStatus === 'approved') {
+        const localOperation: Portfolio['operations'][number] = {
+          id: `local-order-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          date: new Date().toISOString(),
+          side,
+          asset: inferDecisionAsset(insight),
+          amount: Number(notional.toFixed(2)),
+          tax_state: null,
+          tax_intermediary: null,
+          intermediary: options.source === 'autopilot' ? 'Robin IA (autopilot)' : 'Robin IA',
+        };
+        pushLocalPortfolioOperation(portfolioId, localOperation);
         setAppliedDecisions((state) => [
           {
             id: processedKey,
             title: insight.title,
-            portfolio_label: insight.portfolio_label ?? 'Portefeuille connecté',
+            portfolio_label: linkedPortfolio?.label ?? insight.portfolio_label ?? 'Portefeuille connecté',
             action: side,
             amount: Number(notional.toFixed(2)),
             applied_at: new Date().toISOString(),
@@ -2945,6 +4140,19 @@ export default function RobinApp() {
     } finally {
       setDecisionActionLoading(false);
     }
+  }
+
+  function requestDecisionAction(insight: InsightItem, approved: boolean, options: DecisionActionOptions = {}) {
+    if (assistantExecutionMode === 'recommendation' && options.source !== 'autopilot') {
+      setPendingDecisionConfirmation({ insight, approved, options });
+      return;
+    }
+    void runDecisionAction(insight, approved, options);
+  }
+
+  function openDecisionWizard(insight: InsightItem) {
+    setSelectedInsight(insight);
+    setAssistantWizardDecisionId(decisionInsightKey(insight));
   }
 
   useEffect(() => {
@@ -2992,8 +4200,30 @@ export default function RobinApp() {
   }
 
   function updateBettingStrategy(strategyId: string, patch: Partial<BettingStrategy>) {
-    setBettingStrategies((prev) => prev.map((s) => s.id === strategyId ? { ...s, ...patch } : s));
+    const nextStrategies = bettingStrategies.map((strategy) => strategy.id === strategyId ? { ...strategy, ...patch } : strategy);
+    setBettingStrategies(nextStrategies);
     setSelectedStrategy((prev) => prev && prev.id === strategyId ? { ...prev, ...patch } : prev);
+
+    if (!accessToken) {
+      return;
+    }
+
+    void fetch(apiUrl('/auth/me/settings'), {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeader(accessToken),
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        full_name: settingsForm.fullName,
+        phone_number: settingsForm.phoneNumber || null,
+        client_context: clientContext,
+        personal_settings: buildPersonalSettingsPayload({}, portfolioVisibility, resolvedDecisionKeys, virtualAppsEnabled, nextStrategies),
+      }),
+    }).catch(() => {
+      // Keep local state even if persistence fails.
+    });
   }
 
   function simulateFinanceVirtualCycle() {
@@ -3062,7 +4292,7 @@ export default function RobinApp() {
       return {
         currentValue: nextValue,
         history: [...prev.history, { date: now.toISOString(), value: nextValue }].slice(-180),
-        operations: [operation, ...prev.operations].slice(0, 120),
+        operations: [operation, ...prev.operations],
       };
     });
   }
@@ -3236,12 +4466,83 @@ export default function RobinApp() {
   }, [agentConfigs, portfolioActivation, emergencyStopActive, dashboard?.virtual_portfolio?.portfolio_id]);
 
   useEffect(() => {
+    const virtualPortfolioId = dashboard?.virtual_portfolio?.portfolio_id;
+    if (!virtualPortfolioId) {
+      return;
+    }
+    setPortfolioActivation((prev) => {
+      const currentlyActive = prev[virtualPortfolioId] !== false;
+      if (currentlyActive === virtualAppsEnabled.finance) {
+        return prev;
+      }
+      return { ...prev, [virtualPortfolioId]: virtualAppsEnabled.finance };
+    });
+    setPortfolioVisibility((prev) => {
+      const currentlyVisible = prev[virtualPortfolioId] !== false;
+      if (currentlyVisible === virtualAppsEnabled.finance) {
+        return prev;
+      }
+      return { ...prev, [virtualPortfolioId]: virtualAppsEnabled.finance };
+    });
+  }, [dashboard?.virtual_portfolio?.portfolio_id, virtualAppsEnabled.finance]);
+
+  useEffect(() => {
+    setBettingStrategies((prev) => prev.map((strategy) => {
+      if (!strategy.isVirtual) {
+        return strategy;
+      }
+      if (strategy.enabled === virtualAppsEnabled.betting) {
+        return strategy;
+      }
+      return {
+        ...strategy,
+        enabled: virtualAppsEnabled.betting,
+      };
+    }));
+  }, [virtualAppsEnabled.betting]);
+
+  useEffect(() => {
     if (!bettingAlert) {
       return;
     }
     const timer = window.setTimeout(() => setBettingAlert(null), 7000);
     return () => window.clearTimeout(timer);
   }, [bettingAlert]);
+
+  useEffect(() => {
+    if (!allowedApps.includes(activeApp)) {
+      const fallback = allowedApps[0] ?? 'finance';
+      setActiveApp(fallback);
+      setAppView('overview');
+      setPortfolioDetailOpen(false);
+      setSelectedPortfolio(null);
+      setStrategyDetailOpen(false);
+      setSelectedStrategy(null);
+    }
+    if (overviewAppFilter !== 'all' && !allowedApps.includes(overviewAppFilter)) {
+      setOverviewAppFilter('all');
+      setOverviewTargetFilter('all');
+    }
+  }, [allowedApps, activeApp, overviewAppFilter]);
+
+  useEffect(() => {
+    if (!selectedInsight || selectedInsight.section !== 'decisions') {
+      return;
+    }
+    const defaultPortfolioId = resolveDecisionPortfolioId(
+      selectedInsight.portfolio_id
+        ?? allPortfolios.find((portfolio) => portfolio.type === 'virtual')?.id
+        ?? allPortfolios[0]?.id
+        ?? null
+    ) ?? '';
+    setSelectedDecisionPortfolioId(defaultPortfolioId);
+    setSelectedDecisionSide(inferDecisionSide(selectedInsight));
+    const linkedPortfolio = allPortfolios.find((portfolio) => portfolio.id === defaultPortfolioId);
+    const suggestedAmount = linkedPortfolio && linkedPortfolio.current_value > 0
+      ? Math.max(10, Math.min(250, linkedPortfolio.current_value * 0.03))
+      : 25;
+    setSelectedDecisionAmount(Number(suggestedAmount.toFixed(2)));
+  }, [selectedInsight, allPortfolios]);
 
   return (
     <main className={`investShell appTheme-${activeApp}`}>
@@ -3269,7 +4570,7 @@ export default function RobinApp() {
           <div className="brandInfo">
             <strong>
               <span className="robinWord">ROBIN</span>
-              {user ? ` ${activeApp === 'betting' ? '• Paris en ligne' : '• Finance'}` : ''}
+              {user ? ` • ${APP_LABELS[activeApp]}` : ''}
             </strong>
             <div
               className={`trendArrowTrack ${goalTrajectoryTone} ${goalReached ? 'achieved' : ''}`}
@@ -3320,8 +4621,7 @@ export default function RobinApp() {
               <button
                 className={goalReached ? 'smallPill selectedPortfolioPill up' : 'smallPill selectedPortfolioPill'}
                 onClick={() => {
-                  setAppView('settings');
-                  setActiveApp('finance');
+                  setAppView('account');
                   window.scrollTo({ top: 0, behavior: 'smooth' });
                 }}
                 type="button"
@@ -3356,11 +4656,38 @@ export default function RobinApp() {
       </header>
 
       {error ? <p className="formMessage">{error}</p> : null}
+      {pendingDecisionConfirmation ? (
+        <article className="featureCard" style={{ borderColor: 'var(--brand-border)', background: 'var(--brand-soft)' }}>
+          <div className="cardHeader">
+            <h2>Confirmation recommandation IA</h2>
+            <span>Validation utilisateur requise avant exécution</span>
+          </div>
+          <p style={{ margin: 0, fontSize: '.86rem' }}>
+            {pendingDecisionConfirmation.insight.title} · {pendingDecisionConfirmation.options.side === 'sell' ? 'Cas Vente' : 'Cas Achat'} · {Number(pendingDecisionConfirmation.options.amount ?? selectedDecisionAmount).toFixed(2)} €
+          </p>
+          <p className="helperText" style={{ marginTop: 6 }}>Cible: {pendingDecisionConfirmation.options.targetPortfolioId ?? pendingDecisionConfirmation.insight.portfolio_label ?? 'portefeuille actif'}</p>
+          <div className="providerActions fullWidth" style={{ marginTop: 10 }}>
+            <button
+              className="secondaryButton"
+              disabled={decisionActionLoading}
+              onClick={() => {
+                const queued = pendingDecisionConfirmation;
+                setPendingDecisionConfirmation(null);
+                void runDecisionAction(queued.insight, queued.approved, queued.options);
+              }}
+              type="button"
+            >
+              {decisionActionLoading ? 'Traitement...' : (pendingDecisionConfirmation.approved ? 'Confirmer et appliquer' : 'Confirmer le refus')}
+            </button>
+            <button className="ghostButton" onClick={() => setPendingDecisionConfirmation(null)} type="button">Annuler</button>
+          </div>
+        </article>
+      ) : null}
       {selectedInsight ? (
         <article className="featureCard indicatorFocusCard">
           <div className="cardHeader">
             <h2>{selectedInsight.title}</h2>
-            <button className="ghostButton" onClick={() => setSelectedInsight(null)} type="button">Fermer</button>
+            <button className="ghostButton" onClick={() => { setSelectedInsight(null); setAssistantWizardDecisionId(null); }} type="button">Fermer</button>
           </div>
           <div className="compactList">
             <div className="compactRow">
@@ -3375,13 +4702,9 @@ export default function RobinApp() {
           <p className="helperText" style={{ marginTop: 10 }}>{selectedInsight.detail}</p>
           {selectedInsight.section === 'decisions' && selectedInsight.portfolio_label ? <p className="helperText">Portefeuille cible: {selectedInsight.portfolio_label}</p> : null}
           {selectedInsight.section === 'decisions' ? (
-            <div className="providerActions fullWidth" style={{ marginTop: 12 }}>
-              <button className="secondaryButton" disabled={decisionActionLoading} onClick={() => void runDecisionAction(selectedInsight, true)} type="button">
-                {decisionActionLoading ? 'Traitement...' : 'Confirmer la transaction'}
-              </button>
-              <button className="ghostButton" disabled={decisionActionLoading} onClick={() => void runDecisionAction(selectedInsight, false)} type="button">
-                Refuser la transaction
-              </button>
+            <div className="infoPanel mutedPanel" style={{ marginTop: 10 }}>
+              <strong>Mode wizard activé</strong>
+              <p>Cette recommandation se configure et se confirme directement dans la cellule concernée.</p>
             </div>
           ) : null}
         </article>
@@ -3561,24 +4884,44 @@ export default function RobinApp() {
           </article>
         </section>
       ) : (
-        <section className="workspaceShell">
+        <section className={assistantDockVisible ? 'workspaceShell withAssistantDock' : 'workspaceShell'}>
           {/* App switcher */}
           <div className="appSwitcher">
             <div className="appSwitcherSide left">
               <button
-                className={activeApp === 'finance' && appView !== 'account' && appView !== 'admin' ? 'appSwitchBtn finance active' : 'appSwitchBtn finance'}
-                onClick={() => { setActiveApp('finance'); setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                className={appView === 'overview' ? 'appSwitchBtn active' : 'appSwitchBtn'}
+                onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('overview'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
                 type="button"
               >
-                🏦 Finance
+                🏠 Home
               </button>
-              <button
-                className={activeApp === 'betting' && appView !== 'account' && appView !== 'admin' ? 'appSwitchBtn betting active' : 'appSwitchBtn betting'}
-                onClick={() => { setActiveApp('betting'); setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                type="button"
-              >
-                ⚽ Paris en ligne
-              </button>
+              {allowedApps.includes('finance') ? (
+                <button
+                  className={activeApp === 'finance' && appView !== 'account' && appView !== 'admin' ? 'appSwitchBtn finance active' : 'appSwitchBtn finance'}
+                  onClick={() => { setActiveApp('finance'); setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setAppView('overview'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                  type="button"
+                >
+                  🏦 Finance
+                </button>
+              ) : null}
+              {allowedApps.includes('betting') ? (
+                <button
+                  className={activeApp === 'betting' && appView !== 'account' && appView !== 'admin' ? 'appSwitchBtn betting active' : 'appSwitchBtn betting'}
+                  onClick={() => { setActiveApp('betting'); setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setAppView('overview'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                  type="button"
+                >
+                  ⚽ Paris en ligne
+                </button>
+              ) : null}
+              {allowedApps.includes('loto') ? (
+                <button
+                  className={activeApp === 'loto' && appView !== 'account' && appView !== 'admin' ? 'appSwitchBtn loto active' : 'appSwitchBtn loto'}
+                  onClick={() => { setActiveApp('loto'); setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('overview'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                  type="button"
+                >
+                  🎟️ Loto
+                </button>
+              ) : null}
             </div>
             <div className="appSwitcherSide right">
               {canAccessAdmin ? (
@@ -3602,22 +4945,323 @@ export default function RobinApp() {
 
           {(appView !== 'admin' && appView !== 'account') ? (
             <nav className="workspaceNav">
-              <button className={appView === 'dashboard' && !portfolioDetailOpen && !strategyDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                Tableau de bord
-              </button>
               {activeApp === 'finance' ? (
-                <button className={appView === 'portfolios' && !portfolioDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                  Portefeuilles
-                </button>
+                <>
+                  <button className={appView === 'dashboard' ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                    2.1 Accueil cockpit Finance
+                  </button>
+                  <button className={appView === 'portfolios' ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                    2.2 Portefeuilles
+                  </button>
+                  <button className={appView === 'settings' ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                    2.3 Options
+                  </button>
+                </>
+              ) : activeApp === 'betting' ? (
+                <>
+                  <button className={appView === 'dashboard' ? 'navButton active' : 'navButton'} onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                    3.1 Accueil cockpit Paris
+                  </button>
+                  <button className={appView === 'strategies' ? 'navButton active' : 'navButton'} onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('strategies'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                    3.2 Portefeuilles
+                  </button>
+                  <button className={appView === 'settings' ? 'navButton active' : 'navButton'} onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                    3.3 Options
+                  </button>
+                </>
               ) : (
-                <button className={appView === 'strategies' && !strategyDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('strategies'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                  Portefeuilles
+                <button className={appView === 'dashboard' ? 'navButton active' : 'navButton'} onClick={() => { setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                  4. Loto
                 </button>
               )}
-              <button className={appView === 'settings' && !portfolioDetailOpen && !strategyDetailOpen ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                Configuration
-              </button>
             </nav>
+          ) : null}
+
+          {appView === 'overview' ? (
+            <section className="workspaceGrid" style={{ gap: 16 }}>
+              <article className="featureCard" style={{ gridColumn: '1 / -1' }}>
+                <div className="cardHeader">
+                  <h2>{APP_LABELS[activeApp]} · Vue synthétique</h2>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span>État global, évolution récente et recommandations IA</span>
+                    {activeApp === 'finance' ? (
+                      <>
+                        <button className="ghostButton" onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Détail portefeuilles</button>
+                        <button className="secondaryButton" onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Accompagnement IA</button>
+                      </>
+                    ) : activeApp === 'betting' ? (
+                      <>
+                        <button className="ghostButton" onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('strategies'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Détail portefeuilles</button>
+                        <button className="secondaryButton" onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Accompagnement IA</button>
+                      </>
+                    ) : (
+                      <>
+                        <button className="ghostButton" onClick={() => { setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Historique détaillé</button>
+                        <button className="secondaryButton" onClick={() => { setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Prédictions IA</button>
+                      </>
+                    )}
+                  </div>
+                </div>
+                {activeApp === 'finance' ? (
+                  <div style={{ display: 'grid', gap: 10 }}>
+                    {supervisedFinanceMessages.length > 0 ? (
+                      <article className="featureCard" style={{ borderColor: 'var(--gold-border)', background: 'linear-gradient(120deg,var(--gold-soft),#fff)' }}>
+                        <div className="cardHeader">
+                          <h2>Mode supervisé Finance</h2>
+                          <span>{supervisedFinanceMessages.length} portefeuille(s)</span>
+                        </div>
+                        <div style={{ display: 'grid', gap: 8 }}>
+                          {supervisedFinanceMessages.map((message) => (
+                            <div key={message.id} className="compactRow" style={{ alignItems: 'center' }}>
+                              <div style={{ display: 'grid', gap: 2 }}>
+                                <strong style={{ fontSize: '.86rem' }}>{message.title}</strong>
+                                <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>{message.detail}</p>
+                              </div>
+                              <span className="metaPill">{message.trend}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </article>
+                    ) : null}
+                    {allPortfolios.map((portfolio) => {
+                      const evo7 = formatPortfolioEvolution(portfolio.history, 7);
+                      const weeklyTrend = buildRecentWeeksEvolution(portfolio.history);
+                      const miniHistory = filterHistoryByScale(portfolio.history, '1m').slice(-24);
+                      const recos = decisionInsights.filter((item) => item.portfolio_id === portfolio.id).slice(0, 2);
+                      return (
+                        <div key={`home-finance-${portfolio.id}`} className={`compactRow ${portfolio.type === 'virtual' ? 'portfolioRowVirtual' : 'portfolioRowReal'}`} style={{ alignItems: 'center' }}>
+                          <div style={{ display: 'grid', gap: 4 }}>
+                            <strong style={{ fontSize: '.9rem' }}>{portfolio.label}</strong>
+                            <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>Évolution 7j: {evo7.value} · {portfolio.agent_name}</p>
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                              {weeklyTrend.map((item) => (
+                                <span key={`home-finance-trend-${portfolio.id}-${item.key}`} className={`metaPill ${item.tone}`} style={{ fontSize: '.7rem' }}>
+                                  {item.label}: {item.value}
+                                </span>
+                              ))}
+                            </div>
+                            {miniHistory.length >= 2 ? (
+                              <div style={{ width: '100%', maxWidth: 210 }}>
+                                <Sparkline data={miniHistory} color={evo7.tone === 'up' ? 'var(--ok)' : evo7.tone === 'down' ? 'var(--danger)' : 'var(--brand)'} />
+                              </div>
+                            ) : null}
+                            {recos.length > 0 ? (
+                              recos.map((reco) => (
+                                <p key={reco.id} style={{ margin: 0, fontSize: '.75rem', color: 'var(--text-2)' }}>IA: {reco.title}</p>
+                              ))
+                            ) : (
+                              <p style={{ margin: 0, fontSize: '.75rem', color: 'var(--muted)' }}>IA: aucune recommandation prioritaire pour ce portefeuille.</p>
+                            )}
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span className={portfolio.type === 'virtual' ? 'portfolioTypeBadge virtual' : 'portfolioTypeBadge real'}>{portfolio.type === 'virtual' ? 'Fictif' : 'Réel'}</span>
+                            <span className="metaPill">{portfolio.current_value.toFixed(2)} €</span>
+                            {recos[0] ? (
+                              <button className="secondaryButton" onClick={() => { openDecisionWizard(recos[0]); setAppView('dashboard'); window.scrollTo({ top: 120, behavior: 'smooth' }); }} type="button">Assistant IA</button>
+                            ) : null}
+                            <button className="ghostButton" onClick={() => { setSelectedPortfolio(portfolio); setPortfolioDetailOpen(true); setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Voir</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : activeApp === 'betting' ? (
+                  <div style={{ display: 'grid', gap: 10 }}>
+                    {supervisedBettingMessages.length > 0 ? (
+                      <article className="featureCard" style={{ borderColor: 'var(--gold-border)', background: 'linear-gradient(120deg,var(--gold-soft),#fff)' }}>
+                        <div className="cardHeader">
+                          <h2>Mode supervisé Paris</h2>
+                          <span>{supervisedBettingMessages.length} stratégie(s)</span>
+                        </div>
+                        <div style={{ display: 'grid', gap: 8 }}>
+                          {supervisedBettingMessages.map((message) => (
+                            <div key={message.id} className="compactRow" style={{ alignItems: 'center' }}>
+                              <div style={{ display: 'grid', gap: 2 }}>
+                                <strong style={{ fontSize: '.86rem' }}>{message.title}</strong>
+                                <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>{message.detail}</p>
+                              </div>
+                              <span className="metaPill">{message.trend}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </article>
+                    ) : null}
+                    {activeBettingVirtualPortfolio ? (
+                      <div className="compactRow" style={{ alignItems: 'center' }}>
+                        <div style={{ display: 'grid', gap: 4 }}>
+                          <strong style={{ fontSize: '.9rem' }}>Portefeuille fictif Paris</strong>
+                          <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>
+                            Statut: {activeBettingVirtualPortfolio.enabled ? 'Actif' : 'Inactif'} · Bankroll {activeBettingVirtualPortfolio.bankroll.toFixed(2)} €
+                          </p>
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            {buildRecentWeeksEvolution(activeBettingVirtualPortfolio.history).map((item) => (
+                              <span key={`home-betting-virtual-trend-${item.key}`} className={`metaPill ${item.tone}`} style={{ fontSize: '.7rem' }}>
+                                {item.label}: {item.value}
+                              </span>
+                            ))}
+                          </div>
+                          {activeBettingVirtualPortfolio.history.length >= 2 ? (
+                            <div style={{ width: '100%', maxWidth: 210 }}>
+                              <Sparkline data={filterHistoryByScale(activeBettingVirtualPortfolio.history, '1m').slice(-24)} color={bettingVirtualEvolution.tone === 'up' ? 'var(--ok)' : bettingVirtualEvolution.tone === 'down' ? 'var(--danger)' : 'var(--brand)'} />
+                            </div>
+                          ) : null}
+                          {activeBettingVirtualPortfolio.enabled ? (
+                            <p style={{ margin: 0, fontSize: '.75rem', color: 'var(--text-2)' }}>
+                              Évolution récente: <span className={bettingVirtualEvolution.tone}>{bettingVirtualEvolution.label}</span> · ROI {activeBettingVirtualPortfolio.roi >= 0 ? '+' : ''}{activeBettingVirtualPortfolio.roi.toFixed(1)}%
+                            </p>
+                          ) : (
+                            <p style={{ margin: 0, fontSize: '.75rem', color: 'var(--muted)' }}>Activez-le dans Mon compte pour suivre son évolution.</p>
+                          )}
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span className="metaPill">{activeBettingVirtualPortfolio.betsTotal} paris</span>
+                          <button className="ghostButton" onClick={() => { setSelectedStrategy(activeBettingVirtualPortfolio); setStrategyDetailOpen(true); setAppView('strategies'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Voir</button>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {bettingStrategies.filter((strategy) => !strategy.isVirtual).map((strategy) => {
+                      const weeklyTrend = buildRecentWeeksEvolution(strategy.history);
+                      const trend7d = formatPortfolioEvolution(strategy.history, 7);
+                      const miniHistory = filterHistoryByScale(strategy.history, '1m').slice(-24);
+                      return (
+                        <div key={`home-betting-strategy-${strategy.id}`} className="compactRow" style={{ alignItems: 'center' }}>
+                          <div style={{ display: 'grid', gap: 4 }}>
+                            <strong style={{ fontSize: '.9rem' }}>{strategy.name}</strong>
+                            <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>
+                              Mode: {strategy.mode === 'autonomous' ? 'Autonome' : strategy.mode === 'supervised' ? 'Supervisé' : 'Manuel'} · Bankroll {strategy.bankroll.toFixed(0)} €
+                            </p>
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                              {weeklyTrend.map((item) => (
+                                <span key={`home-betting-trend-${strategy.id}-${item.key}`} className={`metaPill ${item.tone}`} style={{ fontSize: '.7rem' }}>
+                                  {item.label}: {item.value}
+                                </span>
+                              ))}
+                            </div>
+                            {miniHistory.length >= 2 ? (
+                              <div style={{ width: '100%', maxWidth: 210 }}>
+                                <Sparkline data={miniHistory} color={trend7d.tone === 'up' ? 'var(--ok)' : trend7d.tone === 'down' ? 'var(--danger)' : 'var(--brand)'} />
+                              </div>
+                            ) : null}
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span className={`metaPill ${trend7d.tone}`}>7j: {trend7d.value}</span>
+                            <button className="ghostButton" onClick={() => { setSelectedStrategy(strategy); setStrategyDetailOpen(true); setAppView('strategies'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Voir</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    <article className="featureCard" style={{ borderStyle: 'dashed' }}>
+                      <div className="cardHeader">
+                        <h2 style={{ margin: 0, fontSize: '.95rem' }}>Meilleures recommandations Paris en ligne</h2>
+                        <span>{filteredTopTipsterRecommendations.length} visible(s)</span>
+                      </div>
+                      {filteredTopTipsterRecommendations.length === 0 ? (
+                        <p className="helperText">Aucune recommandation visible avec vos thèmes actuels. Ajustez-les dans Mon compte.</p>
+                      ) : (
+                        <div style={{ display: 'grid', gap: 8 }}>
+                          {filteredTopTipsterRecommendations.slice(0, 5).map((signal) => (
+                            <div key={`home-betting-reco-${signal.id}`} className="compactRow" style={{ alignItems: 'center' }}>
+                              <div style={{ display: 'grid', gap: 2 }}>
+                                <strong style={{ fontSize: '.88rem' }}>{signal.event}</strong>
+                                <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>{BETTING_THEME_LABELS[signal.sport as BettingThemeKey]} · {signal.market} · {signal.bookmaker}</p>
+                                <p style={{ margin: 0, fontSize: '.75rem', color: 'var(--text-2)' }}>Confiance profil {signal.profileConfidenceIndex}/100 · Value +{signal.value_pct.toFixed(1)}%</p>
+                              </div>
+                              <button className="secondaryButton" onClick={() => { setAppView('dashboard'); window.scrollTo({ top: 200, behavior: 'smooth' }); }} type="button">Voir IA</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </article>
+                  </div>
+                ) : (
+                  <div style={{ display: 'grid', gap: 10 }}>
+                    {(['loto', 'euromillions'] as LotteryGame[]).map((game) => {
+                      const next = lotteryUpcoming.find((entry) => entry.game === game);
+                      const grids = lotteryPredictions[game].predictedGrids.slice(0, 3);
+                      return (
+                        <article key={`home-loto-${game}`} className="featureCard" style={{ borderStyle: 'dashed' }}>
+                          <div className="cardHeader" style={{ marginBottom: 6 }}>
+                            <h2 style={{ margin: 0, fontSize: '.95rem' }}>{LOTTERY_CONFIG[game].label}</h2>
+                            <span>Prochain tirage: {next ? formatDateTimeFr(next.drawDate) : 'n/d'}</span>
+                          </div>
+                          <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>Jackpot: {next?.jackpotLabel ?? 'n/d'}</p>
+                          <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+                            {grids.map((grid, index) => (
+                              <div key={`home-loto-grid-${grid.id}`} className="compactRow" style={{ alignItems: 'center' }}>
+                                <div style={{ display: 'grid', gap: 4 }}>
+                                  <strong style={{ fontSize: '.82rem' }}>Grille #{index + 1} · Indice {grid.confidenceIndex}/100</strong>
+                                  <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                                    {grid.numbers.map((value) => (
+                                      <span key={`home-loto-grid-${grid.id}-n-${value}`} className="lotteryBall">{value}</span>
+                                    ))}
+                                    {grid.stars.map((value) => (
+                                      <span key={`home-loto-grid-${grid.id}-s-${value}`} className="lotteryBall star">{value}</span>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                            <button className="ghostButton" onClick={() => { setLotteryGameFocus(game); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Analyse complète</button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+              </article>
+            </section>
+          ) : null}
+
+          {showAssistantDock ? (
+            assistantDockOpen ? (
+              <aside className="featureCard assistantDock">
+                <div className="cardHeader">
+                  <h2>Assistant IA — Conseils & optimisations</h2>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span>{activeApp === 'finance' ? 'Optimisations portefeuilles Finance' : activeApp === 'betting' ? 'Optimisations portefeuilles Paris en ligne' : 'Optimisations probabilistes Loto'}</span>
+                    <button className="ghostButton" onClick={() => setAssistantDockOpen(false)} type="button">Réduire</button>
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gap: 8 }}>
+                  {assistantOptimizationTips.map((tip) => (
+                    <button
+                      className="compactRow compactRowButton"
+                      key={tip.id}
+                      onClick={() => {
+                        if (tip.insight) {
+                          openDecisionWizard(tip.insight);
+                          return;
+                        }
+                        setSelectedInsight({
+                          id: `assistant-info-${tip.id}`,
+                          title: tip.title,
+                          value: tip.value ?? 'Information',
+                          trend: tip.trend ?? '→ Conseil IA',
+                          detail: tip.detail,
+                          section: 'coach',
+                        });
+                      }}
+                      type="button"
+                      style={{ textAlign: 'left' }}
+                    >
+                      <div style={{ display: 'grid', gap: 2 }}>
+                        <strong style={{ fontSize: '.88rem' }}>{tip.title}</strong>
+                        <p style={{ margin: 0, fontSize: '.78rem', color: 'var(--muted)' }}>{tip.detail}</p>
+                      </div>
+                      <span className="metaPill">Voir détail</span>
+                    </button>
+                  ))}
+                </div>
+              </aside>
+            ) : (
+              <button className="assistantDockToggle" onClick={() => setAssistantDockOpen(true)} type="button">
+                Assistant IA ({assistantOptimizationTips.length})
+              </button>
+            )
           ) : null}
 
           {appView === 'account' ? (
@@ -3649,13 +5293,25 @@ export default function RobinApp() {
                     <input value={settingsForm.phoneNumber} onChange={(event) => setSettingsForm((state) => ({ ...state, phoneNumber: event.target.value }))} type="tel" placeholder="+33 6 12 34 56 78" />
                   </label>
                   <label>
+                    Date de naissance
+                    <input
+                      type="date"
+                      value={String(user.birth_date ?? user.personal_settings.birth_date ?? '').slice(0, 10)}
+                      disabled
+                    />
+                  </label>
+                  <label>
                     Pays de référence
                     <input value={settingsForm.country} onChange={(event) => setSettingsForm((state) => ({ ...state, country: event.target.value }))} type="text" placeholder={clientContext.country || 'France'} />
                   </label>
                   <div className="infoPanel mutedPanel" style={{ marginTop: 4 }}>
                     <strong>Accès du compte</strong>
                     <p>MFA: {user.mfa_enabled ? 'activé' : 'non activé'} · Méthode privilégiée: {String(user.personal_settings.preferred_mfa_method ?? 'email')}.</p>
-                    <button className="secondaryButton" onClick={() => { setActiveApp('finance'); setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Configurer MFA</button>
+                    <p>Applications autorisées: {allowedApps.map((app) => APP_LABELS[app]).join(' · ')}</p>
+                    <div className="providerActions fullWidth" style={{ marginTop: 6 }}>
+                      <button className="secondaryButton" onClick={() => { setAppView('account'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Configurer MFA</button>
+                      <button className="ghostButton" onClick={() => { setActiveApp('finance'); setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Intégrations & communication</button>
+                    </div>
                   </div>
                   <button className="primaryButton" disabled={submitting} type="submit">
                     {submitting ? 'Enregistrement...' : 'Sauvegarder mes informations'}
@@ -3739,6 +5395,140 @@ export default function RobinApp() {
                   </button>
                 </div>
               </article>
+
+              <article className="featureCard settingsCard">
+                <div className="cardHeader">
+                  <h2>Paris en ligne — thèmes visibles</h2>
+                  <span>Contrôle des recommandations affichées</span>
+                </div>
+                <div style={{ display: 'grid', gap: 12 }}>
+                  <p className="helperText" style={{ margin: 0 }}>Choisissez les thèmes que Robin affiche dans vos meilleures recommandations Paris en ligne.</p>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                    {(Object.keys(BETTING_THEME_LABELS) as BettingThemeKey[]).map((theme) => (
+                      <label className="checkRow" key={`theme-visible-${theme}`} style={{ margin: 0, padding: '6px 10px' }}>
+                        <input
+                          type="checkbox"
+                          checked={bettingThemeVisibility[theme]}
+                          onChange={(event) => setBettingThemeVisibility((state) => ({ ...state, [theme]: event.target.checked }))}
+                        />
+                        <span style={{ fontSize: '.78rem' }}>{BETTING_THEME_LABELS[theme]}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <button className="primaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
+                    {submitting ? 'Sauvegarde...' : 'Sauvegarder les thèmes Paris en ligne'}
+                  </button>
+                </div>
+              </article>
+
+              <article className="featureCard settingsCard">
+                <div className="cardHeader">
+                  <h2>Réinitialiser le mot de passe</h2>
+                  <span>Demande de code puis validation</span>
+                </div>
+                <div style={{ display: 'grid', gap: 12 }}>
+                  <form className="authForm" onSubmit={handlePasswordResetRequest}>
+                    <label>
+                      Email du compte
+                      <input
+                        value={resetRequestEmail}
+                        onChange={(event) => setResetRequestEmail(event.target.value)}
+                        type="email"
+                        placeholder={user.email}
+                        required
+                      />
+                    </label>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <button className="secondaryButton" disabled={submitting} type="submit">
+                        {submitting ? 'Envoi...' : 'Demander un code'}
+                      </button>
+                      <button className="ghostButton" disabled={submitting} onClick={() => setResetRequestEmail(user.email)} type="button">
+                        Utiliser mon email
+                      </button>
+                    </div>
+                  </form>
+                  <form className="authForm" onSubmit={handlePasswordResetConfirm}>
+                    <label>
+                      Code de réinitialisation
+                      <input value={resetToken} onChange={(event) => setResetToken(event.target.value)} type="text" required />
+                    </label>
+                    <label>
+                      Nouveau mot de passe
+                      <input value={resetNewPassword} onChange={(event) => setResetNewPassword(event.target.value)} type="password" required />
+                    </label>
+                    <button className="primaryButton" disabled={submitting} type="submit">
+                      {submitting ? 'Validation...' : 'Valider le nouveau mot de passe'}
+                    </button>
+                  </form>
+                  {resetMessage ? <p className="helperText" style={{ margin: 0 }}>{resetMessage}</p> : null}
+                </div>
+              </article>
+
+              <article className="featureCard settingsCard">
+                <div className="cardHeader">
+                  <h2>Vue globale des portefeuilles</h2>
+                    <span>Tous vos portefeuilles (réels et fictifs)</span>
+                </div>
+                {allPortfolios.length === 0 ? (
+                  <p className="helperText">Aucun portefeuille disponible pour le moment.</p>
+                ) : (
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    {allPortfolios.map((portfolio) => (
+                      <div
+                        className={`compactRow ${portfolio.type === 'virtual' ? 'portfolioRowVirtual' : 'portfolioRowReal'}`}
+                        key={`account-portfolio-${portfolio.id}`}
+                        style={{ alignItems: 'center' }}
+                      >
+                        <div>
+                          <strong style={{ fontSize: '.9rem' }}>{portfolio.label}</strong>
+                          <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>
+                            {portfolio.agent_name} · {portfolio.status === 'active' ? 'Actif' : 'Inactif'}
+                          </p>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span className={portfolio.type === 'virtual' ? 'portfolioTypeBadge virtual' : 'portfolioTypeBadge real'}>
+                            {portfolio.type === 'virtual' ? 'Fictif' : 'Réel'}
+                          </span>
+                          <span className="metaPill">{portfolio.current_value.toFixed(2)} €</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </article>
+
+              <article className="featureCard settingsCard">
+                <div className="cardHeader">
+                  <h2>Historique de mes actions</h2>
+                  <span>Activité récente de votre compte</span>
+                </div>
+                {loadingMyActivity ? (
+                  <p className="helperText">Chargement de l historique...</p>
+                ) : myActivityTrail.length === 0 ? (
+                  <p className="helperText">Aucune action enregistrée pour le moment.</p>
+                ) : (
+                  <table className="txLogTable">
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Action</th>
+                        <th>Sévérité</th>
+                        <th>Détails</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {myActivityTrail.slice(0, 20).map((entry) => (
+                        <tr key={entry.id}>
+                          <td>{formatDateTimeFr(entry.created_at)}</td>
+                          <td>{entry.event_type}</td>
+                          <td>{entry.severity}</td>
+                          <td style={{ maxWidth: '360px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{JSON.stringify(entry.payload)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </article>
             </section>
           ) : null}
 
@@ -3751,13 +5541,16 @@ export default function RobinApp() {
                   const modeClass = !cfg.enabled ? '' : cfg.mode === 'autopilot' ? 'modeAutopilot' : 'modeSupervised';
                   return (
                     <button className={`${portfolioVisibility[portfolio.id] !== false ? 'smallPill selectedPortfolioPill selected' : 'smallPill selectedPortfolioPill'} ${modeClass}`} key={portfolio.id} onClick={() => void updatePortfolioVisibilityPreference(portfolio.id, portfolioVisibility[portfolio.id] === false)} type="button">
-                      {portfolio.type === 'virtual' ? '⚗️ ' : ''}{portfolio.label}
+                      <span className={portfolio.type === 'virtual' ? 'portfolioTypeBadge virtual' : 'portfolioTypeBadge real'} style={{ marginRight: 6 }}>
+                        {portfolio.type === 'virtual' ? 'Fictif' : 'Réel'}
+                      </span>
+                      {portfolio.label}
                     </button>
                   );
                 })}
               </div>
               {allPortfolios.filter((p) => p.status === 'active').length === 0 ? (
-                <span className="helperText" style={{ fontSize: '.76rem' }}>Le portefeuille virtuel ⚗️ est disponible. Connectez une intégration pour suivre vos actifs réels.</span>
+                <span className="helperText" style={{ fontSize: '.76rem' }}>Le portefeuille fictif ⚗️ est disponible. Connectez une intégration pour suivre vos actifs réels.</span>
               ) : null}
             </section>
           ) : null}
@@ -3768,6 +5561,9 @@ export default function RobinApp() {
                 <button className="breadcrumbBack" onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
                   ← Retour
                 </button>
+                <button className="breadcrumbBack" onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('overview'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
+                  Vue d ensemble
+                </button>
                 <span className="breadcrumbSep">/</span>
                 <span className="breadcrumbCurrent">{selectedPortfolio.label}</span>
               </nav>
@@ -3775,7 +5571,7 @@ export default function RobinApp() {
                 <div className="infoPanel" style={{ background: 'var(--indigo-soft)', border: '1px solid var(--indigo-border)', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
                   <span style={{ fontSize: '1.5rem' }}>⚗️</span>
                   <div>
-                    <strong>Bac à sable virtuel — 100 € simulés</strong>
+                    <strong>Bac à sable fictif — 100 € simulés</strong>
                     <p style={{ margin: '4px 0 0', fontSize: '.82rem' }}>Ce portefeuille est un espace d entraînement sans argent réel. Robin IA teste ici ses stratégies avant de vous les proposer sur vos vrais portefeuilles. Utilisez-le pour évaluer ses performances et vous familiariser avec l application.</p>
                     <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                       <span className="metaPill">Budget initial : {selectedPortfolio.budget.toFixed(0)} €</span>
@@ -3793,7 +5589,9 @@ export default function RobinApp() {
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
                     <span className="agentBadge">{selectedPortfolio.agent_name}</span>
-                    <span className="metaPill">{selectedPortfolio.type === 'virtual' ? '⚗️ Virtuel' : 'Intégration'}</span>
+                    <span className={selectedPortfolio.type === 'virtual' ? 'portfolioTypeBadge virtual' : 'portfolioTypeBadge real'}>
+                      {selectedPortfolio.type === 'virtual' ? 'Fictif' : 'Réel'}
+                    </span>
                   </div>
                   <h1 style={{ fontSize: '1.6rem' }}>{selectedPortfolio.label}</h1>
                 </div>
@@ -3959,10 +5757,10 @@ export default function RobinApp() {
                 <div className="preferenceGroup">
                   {selectedPortfolio.type === 'virtual' ? (
                     <>
-                      <p className="helperText">Le portefeuille virtuel sert de bac à sable pour Robin IA. Vous pouvez l activer ou le désactiver, puis choisir de l afficher ou non sur le cockpit.</p>
+                      <p className="helperText">Le portefeuille fictif sert de bac à sable pour Robin IA. Vous pouvez l activer ou le désactiver, puis choisir de l afficher ou non sur le cockpit.</p>
                       <label className="checkRow">
                         <input type="checkbox" checked={selectedPortfolio.status === 'active'} onChange={(e) => void togglePortfolioActivation(selectedPortfolio, e.target.checked)} />
-                        <span>Activer le portefeuille virtuel</span>
+                        <span>Activer le portefeuille fictif</span>
                       </label>
                       <label className="checkRow">
                         <input type="checkbox" checked={portfolioVisibility[selectedPortfolio.id] !== false} onChange={(e) => void updatePortfolioVisibilityPreference(selectedPortfolio.id, e.target.checked)} />
@@ -3995,6 +5793,25 @@ export default function RobinApp() {
 
           {activeApp === 'finance' && !portfolioDetailOpen && appView === 'dashboard' ? (
             <>
+              {supervisedFinanceMessages.length > 0 ? (
+                <article className="featureCard" style={{ borderColor: 'var(--gold-border)', background: 'linear-gradient(120deg,var(--gold-soft),#fff)' }}>
+                  <div className="cardHeader">
+                    <h2>Messages supervisés · Finance</h2>
+                    <span>Validation utilisateur requise</span>
+                  </div>
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    {supervisedFinanceMessages.map((message) => (
+                      <div key={`finance-dash-${message.id}`} className="compactRow" style={{ alignItems: 'center' }}>
+                        <div style={{ display: 'grid', gap: 2 }}>
+                          <strong style={{ fontSize: '.86rem' }}>{message.title}</strong>
+                          <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>{message.detail}</p>
+                        </div>
+                        <button className="secondaryButton" onClick={() => { setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Traiter</button>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              ) : null}
               <div className="heroKpiStrip">
                 <div className="heroKpiItem">
                   <span>Patrimoine total</span>
@@ -4072,6 +5889,71 @@ export default function RobinApp() {
                 </div>
               </section>
 
+              <section className="dashboardChartsGrid" style={{ marginTop: 4 }}>
+                <article className="featureCard dynamicChartCard">
+                  <div className="cardHeader">
+                    <h2>Répartition du patrimoine réel</h2>
+                    <span>{financeValueDistribution.length} portefeuille(s)</span>
+                  </div>
+                  {financeValueDistribution.length === 0 ? (
+                    <p className="helperText">Ajoutez un portefeuille réel pour visualiser la répartition.</p>
+                  ) : (
+                    <>
+                      <div className="stackedBarTrack">
+                        {financeValueDistribution.map((row) => (
+                          <span key={`finance-share-${row.id}`} className="stackedBarSegment" style={{ width: `${Math.max(4, row.weight)}%` }} title={`${row.label}: ${row.weight.toFixed(1)}%`} />
+                        ))}
+                      </div>
+                      <div className="miniLegendGrid">
+                        {financeValueDistribution.map((row) => (
+                          <div key={`finance-share-legend-${row.id}`} className="miniLegendItem">
+                            <span className="miniLegendDot" />
+                            <strong>{row.label}</strong>
+                            <span>{row.weight.toFixed(1)}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </article>
+
+                <article className="featureCard dynamicChartCard">
+                  <div className="cardHeader">
+                    <h2>Momentum 7 jours</h2>
+                    <span>Hausse / baisse par portefeuille</span>
+                  </div>
+                  <div className="barRowsGrid">
+                    {financeMomentumBars.map((row) => (
+                      <div key={`finance-momentum-${row.id}`} className="barRowItem">
+                        <span>{row.label}</span>
+                        <div className="barTrack">
+                          <div className={`barFill ${(row.change7d ?? 0) >= 0 ? 'up' : 'down'}`} style={{ width: `${row.normalized}%` }} />
+                        </div>
+                        <strong className={(row.change7d ?? 0) >= 0 ? 'up' : 'down'}>{row.change7d === null ? 'n/d' : `${row.change7d >= 0 ? '+' : ''}${row.change7d.toFixed(1)}%`}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+
+                <article className="featureCard dynamicChartCard">
+                  <div className="cardHeader">
+                    <h2>Activité transactions 7 jours</h2>
+                    <span>Achats + ventes</span>
+                  </div>
+                  <div className="activityColumns">
+                    {financeOps7d.map((row) => (
+                      <div key={`finance-ops-day-${row.key}`} className="activityColumnItem" title={`${row.full}: ${row.count} transaction(s)`}>
+                        <span className="activityColumnValue">{row.count}</span>
+                        <div className="activityColumnTrack">
+                          <div className="activityColumnBar" style={{ height: `${Math.max(8, row.normalized)}%` }} />
+                        </div>
+                        <span className="activityColumnLabel">{row.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              </section>
+
               {/* Vigilance section — priority alert strip */}
               {(() => {
                 const vigilanceItems: Array<{ level: 'danger' | 'warn' | 'info'; message: string; action?: string; actionView?: 'portfolios' | 'settings' }> = [];
@@ -4141,6 +6023,8 @@ export default function RobinApp() {
                         <div className="decisionQueue">
                           {decisionInsights.slice(0, 3).map((decision) => {
                             const side = inferDecisionSide(decision);
+                            const decisionKey = decisionInsightKey(decision);
+                            const isWizardOpen = assistantWizardDecisionId === decisionKey;
                             return (
                               <div className={`decisionCard ${side}`} key={decision.id}>
                                 <div className="decisionCardTop">
@@ -4151,9 +6035,36 @@ export default function RobinApp() {
                                 </div>
                                 <p className="decisionRationale">{decision.detail}</p>
                                 <div className="decisionActions">
-                                  <button className="approveButton" disabled={decisionActionLoading} onClick={() => void runDecisionAction(decision, true)} type="button">✓ Approuver</button>
-                                  <button className="rejectButton" disabled={decisionActionLoading} onClick={() => void runDecisionAction(decision, false)} type="button">✕ Refuser</button>
+                                  <button className="secondaryButton" onClick={() => openDecisionWizard(decision)} type="button">Assistant IA</button>
+                                  <span className="helperText" style={{ fontSize: '.72rem', margin: 0 }}>Mode recommandation: confirmation requise</span>
                                 </div>
+                                {isWizardOpen ? (
+                                  <div className="infoPanel" style={{ marginTop: 8, display: 'grid', gap: 8 }}>
+                                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                      <button className={selectedDecisionSide === 'buy' ? 'tagButton active' : 'tagButton'} onClick={() => setSelectedDecisionSide('buy')} type="button">Cas Achat</button>
+                                      <button className={selectedDecisionSide === 'sell' ? 'tagButton active' : 'tagButton'} onClick={() => setSelectedDecisionSide('sell')} type="button">Cas Vente</button>
+                                    </div>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                                      <label>
+                                        Portefeuille
+                                        <select value={selectedDecisionPortfolioId} onChange={(event) => setSelectedDecisionPortfolioId(event.target.value)}>
+                                          {allPortfolios.map((portfolio) => (
+                                            <option key={`decision-cell-target-${portfolio.id}`} value={portfolio.id}>{portfolio.type === 'virtual' ? '⚗️ Virtuel' : 'Réel'} · {portfolio.label}{portfolio.status !== 'active' ? ' (inactif)' : ''}</option>
+                                          ))}
+                                        </select>
+                                      </label>
+                                      <label>
+                                        Montant (€)
+                                        <input type="number" min={1} step="1" value={selectedDecisionAmount} onChange={(event) => setSelectedDecisionAmount(Math.max(1, Number(event.target.value) || 1))} />
+                                      </label>
+                                    </div>
+                                    <div className="providerActions fullWidth" style={{ marginTop: 2 }}>
+                                      <button className="approveButton" disabled={decisionActionLoading || !selectedDecisionPortfolioId} onClick={() => requestDecisionAction(decision, true, { targetPortfolioId: selectedDecisionPortfolioId, side: selectedDecisionSide, amount: selectedDecisionAmount })} type="button">Confirmer recommandation</button>
+                                      <button className="ghostButton" disabled={decisionActionLoading || !selectedDecisionPortfolioId} onClick={() => requestDecisionAction(decision, false, { targetPortfolioId: selectedDecisionPortfolioId, side: selectedDecisionSide, amount: selectedDecisionAmount })} type="button">Refuser recommandation</button>
+                                      <button className="ghostButton" onClick={() => setAssistantWizardDecisionId(null)} type="button">Fermer wizard</button>
+                                    </div>
+                                  </div>
+                                ) : null}
                               </div>
                             );
                           })}
@@ -4516,6 +6427,7 @@ export default function RobinApp() {
                   {allPortfolios.map((p) => {
                     const cfg = getAgentConfig(p.id);
                     const portfolioDecisions = decisionInsights.filter((d) => d.portfolio_id === p.id);
+                    const maxAmountCap = Math.max(250, Math.min(5000, Math.round((p.current_value > 0 ? p.current_value : 1000) * 1.2)));
                     return (
                       <article key={p.id} className="featureCard" style={{ display: 'grid', gap: 18 }}>
                         {/* Portfolio header */}
@@ -4563,12 +6475,47 @@ export default function RobinApp() {
                                   {cfg.enabled && cfg.mode === 'autopilot' ? (
                                     <p className="helperText" style={{ color: 'var(--warn)', marginTop: 6 }}>⚡ Pilote auto — exécution automatique selon vos quotas</p>
                                   ) : (
-                                    <div className="providerActions fullWidth" style={{ marginTop: 8 }}>
-                                      <button className="secondaryButton" disabled={decisionActionLoading} onClick={() => void runDecisionAction(decision, true)} type="button">
-                                        {decisionActionLoading ? 'Traitement...' : 'Valider la transaction'}
-                                      </button>
-                                      <button className="ghostButton" disabled={decisionActionLoading} onClick={() => void runDecisionAction(decision, false)} type="button">Refuser</button>
-                                    </div>
+                                    (() => {
+                                      const decisionKey = decisionInsightKey(decision);
+                                      const isWizardOpen = assistantWizardDecisionId === decisionKey;
+                                      return (
+                                        <>
+                                          <div className="providerActions fullWidth" style={{ marginTop: 8 }}>
+                                            <button className="secondaryButton" onClick={() => openDecisionWizard(decision)} type="button">Assistant IA</button>
+                                            <span className="helperText" style={{ margin: 0, fontSize: '.72rem' }}>Wizard contextuel</span>
+                                          </div>
+                                          {isWizardOpen ? (
+                                            <div className="infoPanel" style={{ marginTop: 8, display: 'grid', gap: 8 }}>
+                                              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                                <button className={selectedDecisionSide === 'buy' ? 'tagButton active' : 'tagButton'} onClick={() => setSelectedDecisionSide('buy')} type="button">Cas Achat</button>
+                                                <button className={selectedDecisionSide === 'sell' ? 'tagButton active' : 'tagButton'} onClick={() => setSelectedDecisionSide('sell')} type="button">Cas Vente</button>
+                                              </div>
+                                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                                                <label>
+                                                  Portefeuille
+                                                  <select value={selectedDecisionPortfolioId} onChange={(event) => setSelectedDecisionPortfolioId(event.target.value)}>
+                                                    {allPortfolios.map((portfolio) => (
+                                                      <option key={`decision-wizard-target-${portfolio.id}`} value={portfolio.id}>{portfolio.type === 'virtual' ? '⚗️ Virtuel' : 'Réel'} · {portfolio.label}{portfolio.status !== 'active' ? ' (inactif)' : ''}</option>
+                                                    ))}
+                                                  </select>
+                                                </label>
+                                                <label>
+                                                  Montant (€)
+                                                  <input type="number" min={1} step="1" value={selectedDecisionAmount} onChange={(event) => setSelectedDecisionAmount(Math.max(1, Number(event.target.value) || 1))} />
+                                                </label>
+                                              </div>
+                                              <div className="providerActions fullWidth" style={{ marginTop: 2 }}>
+                                                <button className="secondaryButton" disabled={decisionActionLoading || !selectedDecisionPortfolioId} onClick={() => requestDecisionAction(decision, true, { targetPortfolioId: selectedDecisionPortfolioId, side: selectedDecisionSide, amount: selectedDecisionAmount })} type="button">
+                                                  {decisionActionLoading ? 'Traitement...' : 'Confirmer recommandation'}
+                                                </button>
+                                                <button className="ghostButton" disabled={decisionActionLoading || !selectedDecisionPortfolioId} onClick={() => requestDecisionAction(decision, false, { targetPortfolioId: selectedDecisionPortfolioId, side: selectedDecisionSide, amount: selectedDecisionAmount })} type="button">Refuser recommandation</button>
+                                                <button className="ghostButton" onClick={() => setAssistantWizardDecisionId(null)} type="button">Fermer wizard</button>
+                                              </div>
+                                            </div>
+                                          ) : null}
+                                        </>
+                                      );
+                                    })()
                                   )}
                                 </div>
                               ))}
@@ -4584,8 +6531,8 @@ export default function RobinApp() {
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                               <h3 style={{ margin: 0, fontSize: '.95rem' }}>Pilotage Agent IA</h3>
                               {cfg.enabled ? (
-                                <span className={`aiModeBadge ${cfg.mode === 'autopilot' ? 'autopilot' : 'supervised'}`}>
-                                  {cfg.mode === 'autopilot' ? '🤖 Autopilote' : '👁 Supervisé'}
+                                <span className={`aiModeBadge ${cfg.mode === 'autopilot' ? 'autopilot' : cfg.mode === 'supervised' ? 'supervised' : 'manual'}`}>
+                                  {cfg.mode === 'autopilot' ? '🤖 Autopilote' : cfg.mode === 'supervised' ? '👁 Supervisé' : '🖐 Manuel'}
                                 </span>
                               ) : (
                                 <span className="aiModeBadge manual">🖐 Manuel</span>
@@ -4613,8 +6560,8 @@ export default function RobinApp() {
                                     <small>Vous validez chaque ordre</small>
                                   </button>
                                   <button
-                                    className={`aiModeOption${cfg.mode !== 'manual' && cfg.mode !== 'autopilot' ? ' active supervised' : ''}`}
-                                    onClick={() => void updateAgentConfig(p.id, { mode: 'manual' })}
+                                    className={`aiModeOption${cfg.mode === 'supervised' ? ' active supervised' : ''}`}
+                                    onClick={() => void updateAgentConfig(p.id, { mode: 'supervised' })}
                                     type="button"
                                   >
                                     <span>👁</span>
@@ -4643,21 +6590,33 @@ export default function RobinApp() {
                                 <p style={{ margin: '0 0 8px', fontSize: '.72rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>Limites & quotas</p>
                                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                                   <label style={{ fontSize: '.82rem', display: 'grid', gap: 5 }}>
-                                    <span style={{ fontSize: '.72rem', textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)', fontWeight: 700 }}>Montant max / ordre (€)</span>
+                                    <span style={{ fontSize: '.72rem', textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)', fontWeight: 700 }}>Montant max / ordre</span>
+                                    <div className="compactRow" style={{ margin: 0 }}>
+                                      <strong>{cfg.max_amount.toFixed(0)} €</strong>
+                                      <span className="metaPill">Plage 10 - {maxAmountCap} €</span>
+                                    </div>
                                     <input
-                                      type="number" min={1}
-                                      value={cfg.max_amount}
-                                      onChange={(e) => void updateAgentConfig(p.id, { max_amount: Number(e.target.value) || 1 })}
-                                      style={{ padding: '9px 11px', borderRadius: 10, border: '1.5px solid var(--border-md)', background: 'var(--surface)', fontSize: '.86rem' }}
+                                      type="range"
+                                      min={10}
+                                      max={maxAmountCap}
+                                      step={5}
+                                      value={Math.min(maxAmountCap, Math.max(10, Math.round(cfg.max_amount)))}
+                                      onChange={(e) => void updateAgentConfig(p.id, { max_amount: Math.max(10, Number(e.target.value) || 10) })}
                                     />
                                   </label>
                                   <label style={{ fontSize: '.82rem', display: 'grid', gap: 5 }}>
                                     <span style={{ fontSize: '.72rem', textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)', fontWeight: 700 }}>Max ordres / jour</span>
+                                    <div className="compactRow" style={{ margin: 0 }}>
+                                      <strong>{cfg.max_transactions_per_day} ordre(s)</strong>
+                                      <span className="metaPill">Plage 1 - 20</span>
+                                    </div>
                                     <input
-                                      type="number" min={1}
-                                      value={cfg.max_transactions_per_day}
-                                      onChange={(e) => void updateAgentConfig(p.id, { max_transactions_per_day: Number(e.target.value) || 1 })}
-                                      style={{ padding: '9px 11px', borderRadius: 10, border: '1.5px solid var(--border-md)', background: 'var(--surface)', fontSize: '.86rem' }}
+                                      type="range"
+                                      min={1}
+                                      max={20}
+                                      step={1}
+                                      value={Math.min(20, Math.max(1, Math.round(cfg.max_transactions_per_day)))}
+                                      onChange={(e) => void updateAgentConfig(p.id, { max_transactions_per_day: Math.max(1, Number(e.target.value) || 1) })}
                                     />
                                   </label>
                                 </div>
@@ -4715,7 +6674,7 @@ export default function RobinApp() {
             <section className="workspaceGrid settingsGrid">
               <article className="featureCard settingsIntroCard">
                 <div className="cardHeader">
-                  <h2>Configuration</h2>
+                  <h2>2.3 Options Finance</h2>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span>Compte, intégrations et communication</span>
                     <button className="ghostButton" onClick={() => toggleSettingsTile('intro')} type="button">{settingsTileCollapsed.intro ? 'Expand' : 'Réduire'}</button>
@@ -4851,7 +6810,7 @@ export default function RobinApp() {
               {/* Virtual Portfolio settings tile */}
               <article className="featureCard settingsCard">
                 <div className="cardHeader">
-                  <h2>⚗️ Portefeuille Virtuel IA</h2>
+                  <h2>⚗️ Portefeuille Fictif IA</h2>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span>Bac à sable &bull; 100 €</span>
                     <button className="ghostButton" onClick={() => toggleSettingsTile('virtual')} type="button">{settingsTileCollapsed.virtual ? 'Expand' : 'Réduire'}</button>
@@ -4865,14 +6824,31 @@ export default function RobinApp() {
                     </div>
                     {(() => {
                       const vp = allPortfolios.find((p) => p.type === 'virtual');
-                      if (!vp) return <p className="helperText">Chargement du portefeuille virtuel…</p>;
+                      if (!vp) return <p className="helperText">Chargement du portefeuille fictif…</p>;
                       const isVisible = portfolioVisibility[vp.id] !== false;
                       return (
                         <div style={{ display: 'grid', gap: 10 }}>
                           <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
                             <input
                               type="checkbox"
-                              checked={isVisible}
+                              checked={virtualAppsEnabled.finance}
+                              onChange={(e) => void updateVirtualAppPreference('finance', e.target.checked)}
+                            />
+                            <span><strong>Application Finance</strong> — {virtualAppsEnabled.finance ? 'portefeuille fictif activé (100 € simulés)' : 'portefeuille fictif désactivé'}</span>
+                          </label>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={virtualAppsEnabled.betting}
+                              onChange={(e) => void updateVirtualAppPreference('betting', e.target.checked)}
+                            />
+                            <span><strong>Application Paris en ligne</strong> — {virtualAppsEnabled.betting ? 'portefeuille fictif activé (100 € simulés)' : 'portefeuille fictif désactivé'}</span>
+                          </label>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={isVisible && virtualAppsEnabled.finance}
+                              disabled={!virtualAppsEnabled.finance}
                               onChange={(e) => void updatePortfolioVisibilityPreference(vp.id, e.target.checked)}
                             />
                             <span><strong>{isVisible ? 'Actif' : 'Désactivé'}</strong> — {isVisible ? 'Visible sur le tableau de bord et dans Portefeuilles.' : 'Masqué. Vous pouvez le réactiver à tout moment.'}</span>
@@ -5293,6 +7269,25 @@ export default function RobinApp() {
 
           {activeApp === 'betting' && !strategyDetailOpen && appView === 'dashboard' ? (
             <>
+              {supervisedBettingMessages.length > 0 ? (
+                <article className="featureCard" style={{ borderColor: 'var(--gold-border)', background: 'linear-gradient(120deg,var(--gold-soft),#fff)' }}>
+                  <div className="cardHeader">
+                    <h2>Messages supervisés · Paris</h2>
+                    <span>Validation utilisateur requise</span>
+                  </div>
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    {supervisedBettingMessages.map((message) => (
+                      <div key={`betting-dash-${message.id}`} className="compactRow" style={{ alignItems: 'center' }}>
+                        <div style={{ display: 'grid', gap: 2 }}>
+                          <strong style={{ fontSize: '.86rem' }}>{message.title}</strong>
+                          <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>{message.detail}</p>
+                        </div>
+                        <button className="secondaryButton" onClick={() => { setAppView('dashboard'); window.scrollTo({ top: 140, behavior: 'smooth' }); }} type="button">Voir signaux</button>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              ) : null}
               {/* === BETTING COCKPIT — Hero KPI strip === */}
               <div className="heroKpiStrip">
                 {(() => {
@@ -5301,6 +7296,9 @@ export default function RobinApp() {
                   const totalBets = bettingStrategies.reduce((s, st) => s + st.betsTotal, 0);
                   const totalWon = bettingStrategies.reduce((s, st) => s + st.betsWon, 0);
                   const globalWinRate = totalBets > 0 ? (totalWon / totalBets) * 100 : 0;
+                  const roiToShow = bettingAnalytics?.roi_pct ?? avgRoi;
+                  const winRateToShow = bettingAnalytics?.win_rate_pct ?? globalWinRate;
+                  const betsToShow = bettingAnalytics?.bets ?? totalBets;
                   const activeStrategies = bettingStrategies.filter((strategy) => strategy.enabled).length;
                   return (
                     <>
@@ -5311,14 +7309,21 @@ export default function RobinApp() {
                       </div>
                       <div className="heroKpiItem">
                         <span>ROI moyen</span>
-                        <strong className="up">+{avgRoi.toFixed(1)} %</strong>
-                        <small>sur toutes les stratégies</small>
+                        <strong className={roiToShow >= 0 ? 'up' : ''}>{roiToShow >= 0 ? '+' : ''}{roiToShow.toFixed(1)} %</strong>
+                        <small>{bettingAnalytics ? 'backend analytics' : 'sur toutes les stratégies'}</small>
                       </div>
                       <div className="heroKpiItem">
                         <span>Win Rate global</span>
-                        <strong>{globalWinRate.toFixed(0)} %</strong>
-                        <small>{totalWon} / {totalBets} paris</small>
+                        <strong>{winRateToShow.toFixed(0)} %</strong>
+                        <small>{bettingAnalytics ? `${betsToShow} paris` : `${totalWon} / ${totalBets} paris`}</small>
                       </div>
+                      {bettingAnalytics ? (
+                        <div className="heroKpiItem">
+                          <span>Drawdown max</span>
+                          <strong style={{ color: 'var(--danger)' }}>-{bettingAnalytics.max_drawdown_pct.toFixed(1)} %</strong>
+                          <small>Yield {bettingAnalytics.yield_pct.toFixed(1)} %</small>
+                        </div>
+                      ) : null}
                       <div className="heroKpiItem">
                         <span>Tipster IA</span>
                         <strong style={{ color: 'var(--brand)' }}>{pendingTipsterSignals.length}</strong>
@@ -5350,20 +7355,86 @@ export default function RobinApp() {
                 </div>
               ) : null}
 
+              <section className="dashboardChartsGrid" style={{ marginTop: 4 }}>
+                <article className="featureCard dynamicChartCard">
+                  <div className="cardHeader">
+                    <h2>Répartition bankroll</h2>
+                    <span>{bettingBankrollDistribution.length} stratégie(s)</span>
+                  </div>
+                  {bettingBankrollDistribution.length === 0 ? (
+                    <p className="helperText">Aucune stratégie active actuellement.</p>
+                  ) : (
+                    <>
+                      <div className="stackedBarTrack betting">
+                        {bettingBankrollDistribution.map((row) => (
+                          <span key={`betting-share-${row.id}`} className="stackedBarSegment" style={{ width: `${Math.max(4, row.weight)}%` }} title={`${row.label}: ${row.weight.toFixed(1)}%`} />
+                        ))}
+                      </div>
+                      <div className="miniLegendGrid">
+                        {bettingBankrollDistribution.map((row) => (
+                          <div key={`betting-share-legend-${row.id}`} className="miniLegendItem">
+                            <span className="miniLegendDot" />
+                            <strong>{row.label}</strong>
+                            <span>{row.weight.toFixed(1)}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </article>
+
+                <article className="featureCard dynamicChartCard">
+                  <div className="cardHeader">
+                    <h2>Forme 7 jours</h2>
+                    <span>Évolution des stratégies</span>
+                  </div>
+                  <div className="barRowsGrid">
+                    {bettingRoiMomentum.map((row) => (
+                      <div key={`betting-momentum-${row.id}`} className="barRowItem">
+                        <span>{row.label}</span>
+                        <div className="barTrack">
+                          <div className={`barFill ${(row.change7d ?? 0) >= 0 ? 'up' : 'down'}`} style={{ width: `${row.normalized}%` }} />
+                        </div>
+                        <strong className={(row.change7d ?? 0) >= 0 ? 'up' : 'down'}>{row.change7d === null ? 'n/d' : `${row.change7d >= 0 ? '+' : ''}${row.change7d.toFixed(1)}%`}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+
+                <article className="featureCard dynamicChartCard">
+                  <div className="cardHeader">
+                    <h2>Cadence des paris 7 jours</h2>
+                    <span>Toutes stratégies confondues</span>
+                  </div>
+                  <div className="activityColumns">
+                    {bettingActivity7d.map((row) => (
+                      <div key={`betting-ops-day-${row.key}`} className="activityColumnItem" title={`${row.full}: ${row.count} pari(s)`}>
+                        <span className="activityColumnValue">{row.count}</span>
+                        <div className="activityColumnTrack">
+                          <div className="activityColumnBar" style={{ height: `${Math.max(8, row.normalized)}%` }} />
+                        </div>
+                        <span className="activityColumnLabel">{row.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              </section>
+
               {/* === Tipster decision queue === */}
-              {pendingTipsterSignals.length > 0 ? (
+              {filteredTopTipsterRecommendations.length > 0 ? (
                 <div className="decisionQueue">
                   <div className="decisionQueueHeader">
-                    <h2 style={{ margin: 0, fontSize: '1rem' }}>🎯 Recommandations Tipster IA</h2>
-                    <span className="smallPill">{pendingTipsterSignals.length} en attente</span>
+                    <h2 style={{ margin: 0, fontSize: '1rem' }}>3.1 Cockpit Paris en ligne · recommandations IA</h2>
+                    <span className="smallPill">{filteredTopTipsterRecommendations.length} / {pendingTipsterSignals.length} affichées</span>
                   </div>
-                  {pendingTipsterSignals.map((signal) => (
+                  {filteredTopTipsterRecommendations.map((signal) => (
                     <div className="decisionCard" key={signal.id}>
                       <div className="decisionCardMeta">
                         <span className="decisionCardBadge">{sportEmoji(signal.sport)} {signal.sport === 'football' ? 'Football' : signal.sport === 'tennis' ? 'Tennis' : signal.sport === 'basketball' ? 'Basketball' : signal.sport === 'rugby' ? 'Rugby' : 'Sport'}</span>
                         <span className="decisionCardBadge" style={{ background: signal.risk === 'faible' ? 'var(--ok-soft)' : signal.risk === 'modere' ? 'var(--warn-soft)' : 'var(--danger-soft)', color: signal.risk === 'faible' ? 'var(--ok)' : signal.risk === 'modere' ? 'var(--warn)' : 'var(--danger)' }}>Risque {signal.risk}</span>
                         <span className="decisionCardBadge" style={{ background: 'var(--brand-soft)', color: 'var(--brand)' }}>Value +{signal.value_pct.toFixed(1)}%</span>
                         <span className="decisionCardBadge">📚 {signal.bookmaker}</span>
+                        <span className="decisionCardBadge" style={{ background: 'var(--indigo-soft)', color: '#3730a3' }}>Indice confiance profil: {signal.profileConfidenceIndex}/100</span>
                       </div>
                       <strong style={{ fontSize: '.95rem' }}>{signal.event}</strong>
                       <p style={{ margin: '4px 0 2px', fontSize: '.82rem', color: 'var(--muted)' }}>{signal.market} — Cote <strong style={{ color: 'var(--text)' }}>{signal.odds}</strong></p>
@@ -5397,6 +7468,30 @@ export default function RobinApp() {
                   ))}
                 </div>
               ) : null}
+
+              <article className="featureCard" style={{ gridColumn: '1 / -1' }}>
+                <div className="cardHeader">
+                  <h2>Archives recommandations IA</h2>
+                  <span>{archivedTipsterSignals.length} recommandation(s) consultée(s)/traitée(s)</span>
+                </div>
+                {archivedTipsterSignals.length === 0 ? (
+                  <p className="helperText">Aucune recommandation archivée pour le moment.</p>
+                ) : (
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    {archivedTipsterSignals.map((signal) => (
+                      <div className="compactRow" key={`archive-signal-${signal.id}`} style={{ alignItems: 'center' }}>
+                        <div style={{ display: 'grid', gap: 2 }}>
+                          <strong style={{ fontSize: '.88rem' }}>{signal.event}</strong>
+                          <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>{signal.market} · {signal.bookmaker}</p>
+                        </div>
+                        <span className={signal.status === 'approved' ? 'statusBadge ok' : 'statusBadge warn'}>
+                          {signal.status === 'approved' ? 'Appliquée' : 'Ignorée'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </article>
 
               {/* === Active bets list === */}
               <article className="featureCard" style={{ gridColumn: '1 / -1' }}>
@@ -5465,6 +7560,7 @@ export default function RobinApp() {
             <div style={{ display: 'grid', gap: 22 }}>
               <nav className="breadcrumbNav">
                 <button className="breadcrumbBack" onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('strategies'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">← Retour</button>
+                <button className="breadcrumbBack" onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('overview'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Vue d ensemble</button>
                 <span className="breadcrumbSep">/</span><span className="breadcrumbCurrent">{selectedStrategy.name}</span>
               </nav>
               <section className="portfolioHero">
@@ -5487,6 +7583,12 @@ export default function RobinApp() {
               {/* Tipster AI mode selector — same pattern as Robin Finance */}
               <article className="featureCard">
                 <div className="cardHeader"><h2>Mode de pilotage</h2><span>Comment Tipster IA intervient sur cette stratégie</span></div>
+                <div className="compactRow" style={{ marginBottom: 10 }}>
+                  <span style={{ fontSize: '.82rem' }}>Mode actif</span>
+                  <span className={`metaPill ${selectedStrategy.mode === 'autonomous' ? 'up' : selectedStrategy.mode === 'supervised' ? '' : 'neutral'}`}>
+                    {selectedStrategy.mode === 'autonomous' ? '🤖 Tipster IA autonome' : selectedStrategy.mode === 'supervised' ? '👁 Tipster IA supervisé' : '🖐 Manuel'}
+                  </span>
+                </div>
                 <div className="compactRow" style={{ marginBottom: 10 }}>
                   <span style={{ fontSize: '.82rem' }}>Portefeuille actif</span>
                   <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
@@ -5533,16 +7635,38 @@ export default function RobinApp() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: 10, marginTop: 12 }}>
                   <label style={{ fontSize: '.78rem', color: 'var(--muted)', display: 'grid', gap: 4 }}>
                     Mise max / pari
-                    <input type="number" min="1" value={selectedStrategy.max_stake} onChange={(event) => updateBettingStrategy(selectedStrategy.id, { max_stake: Math.max(1, Number(event.target.value || 1)) })} />
+                    <div className="compactRow" style={{ margin: 0 }}>
+                      <strong>{selectedStrategy.max_stake.toFixed(0)} €</strong>
+                      <span className="metaPill">Plage 5 - {Math.max(50, Math.min(2000, Math.round(selectedStrategy.bankroll * 0.8)))} €</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={5}
+                      max={Math.max(50, Math.min(2000, Math.round(selectedStrategy.bankroll * 0.8)))}
+                      step={5}
+                      value={Math.max(5, Math.round(selectedStrategy.max_stake))}
+                      onChange={(event) => updateBettingStrategy(selectedStrategy.id, { max_stake: Math.max(5, Number(event.target.value || 5)) })}
+                    />
                   </label>
                   <label style={{ fontSize: '.78rem', color: 'var(--muted)', display: 'grid', gap: 4 }}>
                     Paris max / jour
-                    <input type="number" min="1" value={selectedStrategy.max_bets_per_day} onChange={(event) => updateBettingStrategy(selectedStrategy.id, { max_bets_per_day: Math.max(1, Number(event.target.value || 1)) })} />
+                    <div className="compactRow" style={{ margin: 0 }}>
+                      <strong>{selectedStrategy.max_bets_per_day} pari(s)</strong>
+                      <span className="metaPill">Plage 1 - 25</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={1}
+                      max={25}
+                      step={1}
+                      value={Math.max(1, Math.round(selectedStrategy.max_bets_per_day))}
+                      onChange={(event) => updateBettingStrategy(selectedStrategy.id, { max_bets_per_day: Math.max(1, Number(event.target.value || 1)) })}
+                    />
                   </label>
                 </div>
                 {selectedStrategy.isVirtual ? (
                   <div className="infoPanel" style={{ marginTop: 12, background: 'var(--indigo-soft)', border: '1px solid var(--indigo-border)' }}>
-                    <strong>⚗️ Portefeuille virtuel — simulation uniquement</strong>
+                    <strong>⚗️ Portefeuille fictif — simulation uniquement</strong>
                     <p>Aucun trafic réel n est généré. Les paris sont simulés selon votre risque accepté.</p>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
                       <button className={`smallPill ${virtualRiskProfile === 'low' ? 'selectedPortfolioPill selected' : ''}`} onClick={() => { setVirtualRiskProfile('low'); updateBettingStrategy(selectedStrategy.id, { risk_profile: 'low' }); }} type="button">Risque faible · capital garanti</button>
@@ -5551,7 +7675,7 @@ export default function RobinApp() {
                     </div>
                     <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                       <button className="secondaryButton" onClick={() => simulateVirtualBetCycle()} type="button">Simuler un cycle</button>
-                      <button className="ghostButton" onClick={resetVirtualBettingPortfolio} type="button">Reset virtuel à 100 €</button>
+                      <button className="ghostButton" onClick={resetVirtualBettingPortfolio} type="button">Reset fictif à 100 €</button>
                     </div>
                   </div>
                 ) : null}
@@ -5602,7 +7726,7 @@ export default function RobinApp() {
                   <article className="featureCard portfolioCard" key={strategy.id} style={{ '--card-top-color': strategy.type === 'arbitrage' ? 'var(--ok)' : strategy.type === 'value_betting' ? 'var(--brand)' : 'var(--teal)' } as Record<string, string>}>
                     <div className="portfolioCardHeader">
                       <div>
-                        <p className="sectionTag" style={{ marginBottom: 2 }}>{strategy.isVirtual ? 'Portefeuille virtuel' : typeLabels[strategy.type]}</p>
+                        <p className="sectionTag" style={{ marginBottom: 2 }}>{strategy.isVirtual ? 'Portefeuille fictif' : typeLabels[strategy.type]}</p>
                         <h2 style={{ margin: 0, fontSize: '1.05rem' }}>{strategy.name}</h2>
                         <p style={{ margin: '3px 0 0', fontSize: '.78rem', color: 'var(--muted)' }}>{strategy.description}</p>
                       </div>
@@ -5644,7 +7768,7 @@ export default function RobinApp() {
             <section className="workspaceGrid settingsGrid">
               <article className="featureCard settingsIntroCard">
                 <div className="cardHeader">
-                  <h2>Configuration Paris en ligne</h2>
+                  <h2>3.3 Options Paris en ligne</h2>
                   <span>Compte, bookmakers et alertes</span>
                 </div>
                 <p style={{ fontSize: '.85rem', color: 'var(--muted)', margin: 0 }}>Gérez votre profil, vos connexions aux bookmakers, vos limites de jeu responsable et vos préférences de notification.</p>
@@ -5715,6 +7839,115 @@ export default function RobinApp() {
                     </div>
                   ))}
                   <button className="primaryButton" onClick={() => setBettingAlert('Préférences de notification sauvegardées.')} type="button">Enregistrer</button>
+                </div>
+              </article>
+            </section>
+          ) : null}
+
+          {activeApp === 'loto' && appView === 'dashboard' ? (
+            <section style={{ display: 'grid', gap: 18 }}>
+              <article className="featureCard" style={{ background: 'linear-gradient(135deg,#edf4ff 0%,#ffffff 60%,#fff6df 100%)', border: '1px solid rgba(40,85,190,.18)' }}>
+                <div className="cardHeader">
+                  <h2>Loto — Grilles probables</h2>
+                  <span>Top 5 grilles IA par jeu selon profil {userBettingRiskProfile}</span>
+                </div>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+                  <button
+                    className={lotteryGameFocus === 'loto' ? 'smallPill selectedPortfolioPill selected' : 'smallPill selectedPortfolioPill'}
+                    onClick={() => setLotteryGameFocus('loto')}
+                    type="button"
+                  >
+                    🎯 Loto
+                  </button>
+                  <button
+                    className={lotteryGameFocus === 'euromillions' ? 'smallPill selectedPortfolioPill selected' : 'smallPill selectedPortfolioPill'}
+                    onClick={() => setLotteryGameFocus('euromillions')}
+                    type="button"
+                  >
+                    🌟 Euromillions
+                  </button>
+                </div>
+                <div style={{ display: 'grid', gap: 10 }}>
+                  {lotteryPredictions[lotteryGameFocus].predictedGrids.map((grid, index) => (
+                    <div key={grid.id} className="compactRow" style={{ alignItems: 'center' }}>
+                      <div style={{ display: 'grid', gap: 6 }}>
+                        <strong style={{ fontSize: '.9rem' }}>Grille #{index + 1} · Indice {grid.confidenceIndex}/100</strong>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {grid.numbers.map((value) => (
+                            <span key={`${grid.id}-n-${value}`} className="lotteryBall">{value}</span>
+                          ))}
+                          {grid.stars.map((value) => (
+                            <span key={`${grid.id}-s-${value}`} className="lotteryBall star">{value}</span>
+                          ))}
+                        </div>
+                        <p style={{ margin: 0, fontSize: '.78rem', color: 'var(--muted)' }}>{grid.rationale}</p>
+                      </div>
+                      <span className="metaPill">Confiance: {grid.confidenceIndex}%</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="helperText" style={{ marginTop: 10 }}>Predictions statistiques basees sur l historique recent. Elles n augmentent pas mathematiquement la probabilite de gain garantie.</p>
+              </article>
+
+              <article className="featureCard">
+                <div className="cardHeader">
+                  <h2>Prochains tirages & jackpots</h2>
+                  <span>Fermeture des prises de jeu incluse</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', gap: 10 }}>
+                  {lotteryUpcoming.map((draw) => (
+                    <div key={`${draw.game}-${draw.drawDate}`} className="lotteryUpcomingCard">
+                      <p className="sectionTag" style={{ marginBottom: 4 }}>{LOTTERY_CONFIG[draw.game].label}</p>
+                      <strong style={{ fontSize: '1rem' }}>{new Date(draw.drawDate).toLocaleString('fr-FR', { weekday: 'long', day: '2-digit', month: 'long', hour: '2-digit', minute: '2-digit' })}</strong>
+                      <p style={{ margin: '4px 0 0', fontSize: '.8rem', color: 'var(--muted)' }}>Cloture des grilles: {draw.closeAt}</p>
+                      <div style={{ marginTop: 8 }}>
+                        <span className="metaPill" style={{ fontWeight: 800 }}>{draw.jackpotLabel}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </article>
+            </section>
+          ) : null}
+
+          {activeApp === 'loto' && appView === 'portfolios' ? (
+            <section style={{ display: 'grid', gap: 18 }}>
+              <article className="featureCard">
+                <div className="cardHeader">
+                  <h2>Historique & probabilites</h2>
+                  <span>Analyse des tirages Loto et Euromillions</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))', gap: 14 }}>
+                  {(['loto', 'euromillions'] as LotteryGame[]).map((game) => {
+                    const prediction = lotteryPredictions[game];
+                    const draws = game === 'loto' ? LOTO_HISTORY : EUROMILLIONS_HISTORY;
+                    return (
+                      <article key={`history-${game}`} className="lotteryHistoryCard">
+                        <div className="cardHeader">
+                          <h2>{LOTTERY_CONFIG[game].label}</h2>
+                          <span>{prediction.totalDraws} tirages</span>
+                        </div>
+                        <p style={{ margin: 0, fontSize: '.78rem', color: 'var(--muted)' }}>Numeros les plus frequents:</p>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+                          {prediction.hotNumbers.slice(0, 8).map((value) => (
+                            <span key={`${game}-hot-${value}`} className="lotteryBall">{value}</span>
+                          ))}
+                        </div>
+                        <p style={{ margin: '10px 0 0', fontSize: '.78rem', color: 'var(--muted)' }}>{LOTTERY_CONFIG[game].starLabel} recurrent(s):</p>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+                          {prediction.hotStars.slice(0, 4).map((value) => (
+                            <span key={`${game}-star-${value}`} className="lotteryBall star">{value}</span>
+                          ))}
+                        </div>
+                        <div style={{ marginTop: 12 }}>
+                          <p style={{ margin: 0, fontSize: '.78rem', color: 'var(--muted)' }}>Dernier tirage en base:</p>
+                          <p style={{ margin: '4px 0 0', fontSize: '.82rem' }}>
+                            {formatDateTimeFr(draws[draws.length - 1]?.date ?? '')}
+                          </p>
+                        </div>
+                      </article>
+                    );
+                  })}
                 </div>
               </article>
             </section>
@@ -5792,8 +8025,8 @@ export default function RobinApp() {
 
               <article className="featureCard">
                 <div className="cardHeader">
-                  <h2>Gestion des utilisateurs</h2>
-                  <span>Roles, bannissement, activite</span>
+                  <h2>5.1 Gestion des comptes</h2>
+                  <span>Roles, applications autorisées et activation des comptes</span>
                 </div>
                 {adminFeedback ? <p className="helperText">{adminFeedback}</p> : null}
                 {!user.mfa_enabled ? (
@@ -5831,29 +8064,54 @@ export default function RobinApp() {
                     <div className="adminList">
                     {filteredAdminUsers.map((entry) => {
                       const roles = new Set(entry.assigned_roles);
+                      const appAccess = normalizeFrontendAppAccess(entry.app_access);
                       const userConns = adminConnections[entry.id] ?? [];
                       const adminActionsDisabled = !user.mfa_enabled;
+                      const lastConnection = entry.last_login_at ? new Date(entry.last_login_at).toLocaleString('fr-FR') : 'Aucune connexion';
                       return (
                         <div className="adminUserCard" key={entry.id}>
                           <div className="adminUserCardHeader">
                             <div>
                               <strong>{entry.full_name}</strong>
                               <p>{entry.email}</p>
+                              <p style={{ marginTop: 4, fontSize: '.76rem', color: 'var(--muted)' }}>Derniere connexion: {lastConnection}</p>
                             </div>
                             <div className="adminActions">
-                              <button className={roles.has('user') ? 'tagButton active' : 'tagButton'} disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, roles.has('admin') ? ['admin', 'user'] : ['user'], entry.is_active)} type="button" title={adminActionsDisabled ? 'Activez MFA pour modifier les rôles.' : ''}>
+                              <button className={roles.has('user') ? 'tagButton active' : 'tagButton'} disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, roles.has('admin') ? ['admin', 'user'] : ['user'], entry.is_active, appAccess)} type="button" title={adminActionsDisabled ? 'Activez MFA pour modifier les rôles.' : ''}>
                                 Utilisateur
                               </button>
-                              <button className={roles.has('admin') ? 'tagButton active' : 'tagButton'} disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, ['admin', 'user'], entry.is_active)} type="button" title={adminActionsDisabled ? 'Activez MFA pour modifier les rôles.' : ''}>
+                              <button className={roles.has('admin') ? 'tagButton active' : 'tagButton'} disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, ['admin', 'user'], entry.is_active, appAccess)} type="button" title={adminActionsDisabled ? 'Activez MFA pour modifier les rôles.' : ''}>
                                 Admin
                               </button>
-                              <button className={roles.has('banned') ? 'tagButton danger active' : 'tagButton'} disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, ['banned'], false)} type="button" title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}>
+                              <button className={roles.has('banned') ? 'tagButton danger active' : 'tagButton'} disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, ['banned'], false, appAccess)} type="button" title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}>
                                 Banni
                               </button>
-                              <button className="ghostButton" disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, entry.assigned_roles, !entry.is_active)} type="button" title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}>
+                              <button className="ghostButton" disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, entry.assigned_roles, !entry.is_active, appAccess)} type="button" title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}>
                                 {entry.is_active ? 'Desactiver' : 'Reactiver'}
                               </button>
                             </div>
+                          </div>
+                          <div className="adminUserConnections" style={{ marginTop: 8 }}>
+                            <span className="adminUserConnLabel">Applications autorisées :</span>
+                            {ALL_APP_KEYS.map((appKey) => {
+                              const active = appAccess.includes(appKey);
+                              const nextApps = active
+                                ? appAccess.filter((entryApp) => entryApp !== appKey)
+                                : [...appAccess, appKey];
+                              const safeNextApps: Array<'finance' | 'betting' | 'loto'> = nextApps.length > 0 ? nextApps : ['finance'];
+                              return (
+                                <button
+                                  className={active ? 'tagButton active' : 'tagButton'}
+                                  disabled={adminActionsDisabled}
+                                  key={`user-app-${entry.id}-${appKey}`}
+                                  onClick={() => updateAdminUser(entry, entry.assigned_roles, entry.is_active, safeNextApps)}
+                                  title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}
+                                  type="button"
+                                >
+                                  {APP_LABELS[appKey]}
+                                </button>
+                              );
+                            })}
                           </div>
                           {userConns.length > 0 ? (
                             <div className="adminUserConnections">
@@ -5861,10 +8119,15 @@ export default function RobinApp() {
                               {userConns.map((c) => {
                                 const s = c.status === 'active' || c.status === 'available' ? 'ok'
                                         : c.status === 'pending_user_consent' ? 'warn' : 'error';
+                                const statusText = c.status === 'active' || c.status === 'available'
+                                  ? 'Connecte'
+                                  : c.status === 'pending_user_consent'
+                                    ? 'En attente'
+                                    : 'Non connecte';
                                 return (
                                   <span className={`statusBadge ${s}`} key={`${c.provider_code}-${c.account_label ?? 'x'}`}>
                                     <span className={`statusDot ${s}`} />
-                                    {c.provider_name}{c.account_label ? ` · ${c.account_label}` : ''}
+                                    {c.provider_name}{c.account_label ? ` · ${c.account_label}` : ''} · {statusText}
                                   </span>
                                 );
                               })}
@@ -5872,7 +8135,7 @@ export default function RobinApp() {
                           ) : (
                             <div className="adminUserConnections">
                               <span className="adminUserConnLabel">Connexions :</span>
-                              <span className="statusBadge idle"><span className="statusDot idle" />Aucune</span>
+                              <span className="statusBadge idle"><span className="statusDot idle" />Connexion: aucune</span>
                             </div>
                           )}
                         </div>
@@ -5927,7 +8190,7 @@ export default function RobinApp() {
 
               <article className="featureCard">
                 <div className="cardHeader">
-                  <h2>Audit trail</h2>
+                  <h2>5.2 Audit Trail</h2>
                   <span>Actions tracees</span>
                 </div>
                 <div className="adminToolbar">
@@ -5960,6 +8223,17 @@ export default function RobinApp() {
                       </div>
                     </div>
                   ))}
+                </div>
+              </article>
+
+              <article className="featureCard">
+                <div className="cardHeader">
+                  <h2>5.3 Configuration des intégrations</h2>
+                  <span>Activation des services tiers</span>
+                </div>
+                <div className="infoPanel mutedPanel">
+                  <strong>Activation administrateur des connecteurs</strong>
+                  <p>Les administrateurs définissent ici les intégrations disponibles (Coinbase, bookmakers, banques). Chaque utilisateur renseigne ensuite ses identifiants personnels dans Mon compte / Options.</p>
                 </div>
               </article>
             </section>

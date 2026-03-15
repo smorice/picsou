@@ -3,7 +3,6 @@ from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 import logging
-import math
 import random
 import secrets
 
@@ -82,6 +81,8 @@ from .schemas import (
     BettingPoissonRequest,
     BettingPoissonResponse,
     BettingAnalyticsResponse,
+    BettingCombinedDecisionRequest,
+    BettingCombinedDecisionResponse,
     BettingValueScanRequest,
     BettingValueScanResponse,
     BettingValueOpportunity,
@@ -209,17 +210,19 @@ def normalize_access_profile(profile: str | None) -> str:
 
 def normalize_app_access(apps: list[str] | None) -> list[str]:
     cleaned: list[str] = []
-    for app in apps or ["finance", "betting"]:
+    for app in apps or ["finance", "betting", "loto"]:
         normalized = app.strip().lower()
-        if normalized in {"finance", "betting"} and normalized not in cleaned:
+        if normalized in {"finance", "betting", "loto"} and normalized not in cleaned:
             cleaned.append(normalized)
     if not cleaned:
         cleaned = ["finance"]
+    if "loto" not in cleaned:
+        cleaned.append("loto")
     return cleaned
 
 
 def require_app_access(user: User, app_name: str) -> None:
-    app_access = normalize_app_access(user.app_access if isinstance(user.app_access, list) else ["finance", "betting"])
+    app_access = normalize_app_access(user.app_access if isinstance(user.app_access, list) else ["finance", "betting", "loto"])
     if app_name not in app_access:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Access denied for application '{app_name}'")
 
@@ -276,7 +279,7 @@ def primary_role_from_roles(roles: list[str]) -> str:
 def to_user_profile(user: User) -> UserProfileResponse:
     assigned_roles = normalize_roles(user.assigned_roles or [user.role], user.role)
     access_profile = normalize_access_profile(getattr(user, "access_profile", "write"))
-    app_access = normalize_app_access(getattr(user, "app_access", ["finance", "betting"]))
+    app_access = normalize_app_access(getattr(user, "app_access", ["finance", "betting", "loto"]))
     return UserProfileResponse(
         id=user.id,
         email=user.email,
@@ -287,6 +290,7 @@ def to_user_profile(user: User) -> UserProfileResponse:
         access_profile=access_profile,
         app_access=app_access,
         birth_date=getattr(user, "birth_date", None),
+        last_login_at=getattr(user, "last_login_at", None),
         is_verified=bool(getattr(user, "is_verified", False)),
         is_active=user.is_active,
         mfa_enabled=user.mfa_enabled,
@@ -417,6 +421,56 @@ def post_json_with_retry(url: str, payload: dict, timeout_seconds: float = 6.0, 
     return False, last_error
 
 
+def odds_cache_key(sport_key: str, regions: str, markets: str) -> str:
+    return f"betting:odds:{sport_key}:{regions}:{markets}"
+
+
+async def fetch_odds_with_cache(sport_key: str, regions: str, markets: str, ttl_seconds: int | None = None):
+    effective_ttl = settings.the_odds_cache_ttl_seconds if ttl_seconds is None else max(1, ttl_seconds)
+    cache_key = odds_cache_key(sport_key, regions, markets)
+    try:
+        cached = redis_client.get(cache_key)
+    except Exception:
+        cached = None
+    if cached:
+        try:
+            rows = orjson.loads(cached)
+            return rows, True
+        except Exception:
+            pass
+
+    events = await fetch_the_odds_api_events(
+        api_key=settings.the_odds_api_key or "",
+        sport_key=sport_key,
+        base_url=settings.the_odds_api_base_url,
+        regions=regions,
+        markets=markets,
+    )
+    rows = [
+        {
+            "event_id": item.event_id,
+            "sport_key": item.sport_key,
+            "commence_time": item.commence_time,
+            "home_team": item.home_team,
+            "away_team": item.away_team,
+            "selections": [
+                {
+                    "bookmaker": selection.bookmaker,
+                    "outcome": selection.outcome,
+                    "odds": selection.price,
+                }
+                for selection in item.selections
+            ],
+        }
+        for item in events
+    ]
+    try:
+        redis_client.setex(cache_key, effective_ttl, orjson.dumps(rows))
+    except Exception:
+        pass
+    return rows, False
+
+
 def send_google_chat_test_message(webhook_url: str, user: User) -> tuple[bool, str]:
     message = {
         "text": f"[Picsou IA] Test Google Chat valide pour {user.full_name} ({user.email})"
@@ -439,7 +493,7 @@ def ensure_runtime_schema(db: Session) -> None:
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number VARCHAR(32)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_roles JSON DEFAULT '[]'::json",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS access_profile VARCHAR(16) DEFAULT 'write'",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS app_access JSON DEFAULT '[\"finance\",\"betting\"]'::json",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS app_access JSON DEFAULT '[\"finance\",\"betting\",\"loto\"]'::json",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS birth_date DATE",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT false",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_channel VARCHAR(16)",
@@ -465,7 +519,7 @@ def ensure_runtime_schema(db: Session) -> None:
     db.commit()
     db.execute(text("UPDATE users SET assigned_roles = to_json(ARRAY[role]) WHERE assigned_roles IS NULL OR assigned_roles::text = 'null' OR assigned_roles::text = '[]'"))
     db.execute(text("UPDATE users SET access_profile = 'write' WHERE access_profile IS NULL OR access_profile = ''"))
-    db.execute(text("UPDATE users SET app_access = '[\"finance\",\"betting\"]'::json WHERE app_access IS NULL OR app_access::text = 'null' OR app_access::text = '[]'"))
+    db.execute(text("UPDATE users SET app_access = '[\"finance\",\"betting\",\"loto\"]'::json WHERE app_access IS NULL OR app_access::text = 'null' OR app_access::text = '[]'"))
     db.execute(text("UPDATE users SET is_verified = true WHERE is_verified IS NULL"))
     db.commit()
 
@@ -1594,6 +1648,29 @@ def admin_audit_trail(_: User = Depends(require_admin_user), db: Session = Depen
     ]
 
 
+@app.get("/api/v1/me/activity", response_model=list[AuditLogResponse])
+def me_activity(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[AuditLogResponse]:
+    logs = db.scalars(
+        select(AuditLog)
+        .where(AuditLog.actor_id == current_user.id)
+        .order_by(AuditLog.created_at.desc())
+        .limit(250)
+    ).all()
+    return [
+        AuditLogResponse(
+            id=entry.id,
+            actor_id=entry.actor_id,
+            event_type=entry.event_type,
+            severity=entry.severity,
+            device_fingerprint=entry.device_fingerprint,
+            ip_address=entry.ip_address,
+            payload=entry.payload,
+            created_at=entry.created_at.isoformat(),
+        )
+        for entry in logs
+    ]
+
+
 @app.get("/api/v1/admin/broker-connections")
 def admin_broker_connections(_: User = Depends(require_admin_user), db: Session = Depends(get_db)) -> list[dict]:
     """Return all broker connections keyed by user_id for the admin panel."""
@@ -1993,10 +2070,8 @@ async def betting_live_odds_fetch(payload: BettingLiveOddsFetchRequest, current_
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="THE_ODDS_API_KEY not configured")
 
     try:
-        events = await fetch_the_odds_api_events(
-            api_key=settings.the_odds_api_key,
+        rows, cache_hit = await fetch_odds_with_cache(
             sport_key=payload.sport_key,
-            base_url=settings.the_odds_api_base_url,
             regions=payload.regions,
             markets=payload.markets,
         )
@@ -2005,20 +2080,24 @@ async def betting_live_odds_fetch(payload: BettingLiveOddsFetchRequest, current_
 
     response = BettingLiveOddsFetchResponse(
         source="the-odds-api",
-        fetched_events=len(events),
+        fetched_events=len(rows),
         events=[
             BettingLiveOddsEvent(
-                event_id=event.event_id,
-                sport_key=event.sport_key,
-                commence_time=event.commence_time,
-                home_team=event.home_team,
-                away_team=event.away_team,
+                event_id=str(event.get("event_id") or ""),
+                sport_key=str(event.get("sport_key") or payload.sport_key),
+                commence_time=str(event.get("commence_time") or ""),
+                home_team=str(event.get("home_team") or ""),
+                away_team=str(event.get("away_team") or ""),
                 selections=[
-                    BettingLiveOddsSelection(bookmaker=selection.bookmaker, outcome=selection.outcome, odds=selection.price)
-                    for selection in event.selections
+                    BettingLiveOddsSelection(
+                        bookmaker=str(selection.get("bookmaker") or "unknown"),
+                        outcome=str(selection.get("outcome") or "unknown"),
+                        odds=float(selection.get("odds") or 0.0),
+                    )
+                    for selection in (event.get("selections") if isinstance(event.get("selections"), list) else [])
                 ],
             )
-            for event in events
+            for event in rows
         ],
     )
     write_audit_log(
@@ -2030,8 +2109,119 @@ async def betting_live_odds_fetch(payload: BettingLiveOddsFetchRequest, current_
             "regions": payload.regions,
             "markets": payload.markets,
             "fetched_events": response.fetched_events,
+            "cache_hit": cache_hit,
         },
     )
+    return response
+
+
+@app.post("/api/v1/betting/decision/combined", response_model=BettingCombinedDecisionResponse)
+async def betting_combined_decision(payload: BettingCombinedDecisionRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> BettingCombinedDecisionResponse:
+    require_app_access(current_user, "betting")
+    if not settings.the_odds_api_key:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="THE_ODDS_API_KEY not configured")
+
+    poisson = football_outcome_probabilities(
+        FootballPoissonInput(
+            expected_goals_home=payload.expected_goals_home,
+            expected_goals_away=payload.expected_goals_away,
+            max_goals=10,
+        )
+    )
+    model_home_prob = max(0.0, min(1.0, poisson.home_win_probability))
+
+    try:
+        rows, cache_hit = await fetch_odds_with_cache(
+            sport_key=payload.sport_key,
+            regions=payload.regions,
+            markets=payload.markets,
+        )
+    except OddsProviderError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    normalized_home = payload.home_team.strip().lower()
+    normalized_away = payload.away_team.strip().lower()
+    target_event = None
+    for row in rows:
+        home_team = str(row.get("home_team") or "").strip().lower()
+        away_team = str(row.get("away_team") or "").strip().lower()
+        if home_team == normalized_home and away_team == normalized_away:
+            target_event = row
+            break
+
+    event_label = f"{payload.home_team} vs {payload.away_team}"
+    if not target_event:
+        response = BettingCombinedDecisionResponse(
+            source="the-odds-api+poisson",
+            matched_event_id=None,
+            event_label=event_label,
+            model_home_win_probability=decimal_round(model_home_prob, "0.0001"),
+            decision="skip",
+            cache_hit=cache_hit,
+        )
+        write_audit_log(db, current_user.id, "betting.decision.combined", response.model_dump())
+        return response
+
+    quotes = []
+    for selection in (target_event.get("selections") if isinstance(target_event.get("selections"), list) else []):
+        if str(selection.get("outcome") or "").strip().lower() != normalized_home:
+            continue
+        try:
+            odds = float(selection.get("odds"))
+        except (TypeError, ValueError):
+            continue
+        if odds <= 1.0:
+            continue
+        quotes.append(OddsQuote(bookmaker=str(selection.get("bookmaker") or "unknown"), odds=odds))
+
+    if not quotes:
+        response = BettingCombinedDecisionResponse(
+            source="the-odds-api+poisson",
+            matched_event_id=str(target_event.get("event_id") or ""),
+            event_label=event_label,
+            model_home_win_probability=decimal_round(model_home_prob, "0.0001"),
+            decision="skip",
+            cache_hit=cache_hit,
+        )
+        write_audit_log(db, current_user.id, "betting.decision.combined", response.model_dump())
+        return response
+
+    decision_rows = scan_value_opportunities(
+        events=[
+            EventInput(
+                event_id=str(target_event.get("event_id") or ""),
+                event_label=event_label,
+                sport=payload.sport_key,
+                model_win_probability=model_home_prob,
+                quotes=quotes,
+            )
+        ],
+        risk=RiskInput(
+            bankroll_eur=payload.bankroll_eur,
+            kelly_fraction=payload.kelly_fraction,
+            min_edge=payload.min_edge,
+            max_stake_pct_per_bet=payload.max_stake_pct_per_bet,
+            max_stake_eur=payload.max_stake_eur,
+        ),
+    )
+    top = decision_rows[0] if decision_rows else None
+
+    response = BettingCombinedDecisionResponse(
+        source="the-odds-api+poisson",
+        matched_event_id=str(target_event.get("event_id") or ""),
+        event_label=event_label,
+        model_home_win_probability=decimal_round(model_home_prob, "0.0001"),
+        best_bookmaker=top.bookmaker if top else None,
+        best_odds=decimal_round(top.best_odds, "0.0001") if top else None,
+        implied_probability=decimal_round(top.implied_probability, "0.0001") if top else None,
+        edge_probability=decimal_round(top.edge_probability, "0.0001") if top else None,
+        value_score=decimal_round(top.value_score, "0.0001") if top else None,
+        stake_eur=decimal_round(top.stake_eur, "0.01") if top else None,
+        stake_pct_bankroll=decimal_round(top.stake_pct_bankroll, "0.0001") if top else None,
+        decision=("bet" if top and top.decision == "bet" else "skip"),
+        cache_hit=cache_hit,
+    )
+    write_audit_log(db, current_user.id, "betting.decision.combined", response.model_dump())
     return response
 
 

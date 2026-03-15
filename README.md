@@ -32,6 +32,7 @@ docker-compose.yml
 - `POST /api/v1/betting/value-scan`
 - `POST /api/v1/betting/odds/fetch`
 - `POST /api/v1/betting/model/poisson`
+- `POST /api/v1/betting/decision/combined`
 - `GET /api/v1/betting/analytics/summary`
 - `POST /api/v1/orders/propose`
 - `POST /api/v1/orders/approve`
@@ -100,6 +101,13 @@ Le script:
 - cree `.env` sur le VPS s'il n'existe pas
 - construit et demarre la stack
 
+### Domaine canonique et redirections
+
+- Domaine de reference/canonique: `https://nayonne.ovh`
+- Les acces via `http://79.137.75.219` et `https://79.137.75.219` sont rediriges en permanent vers `https://nayonne.ovh`.
+- `www.nayonne.ovh` est aussi redirige vers `https://nayonne.ovh`.
+- La variable `PUBLIC_BASE_URL` doit pointer vers `https://nayonne.ovh` pour que les liens emis par l API restent coherents (emails, callbacks OAuth).
+
 ## Limites actuelles
 
 - Le moteur de recommandation est un socle deterministe, pas encore un vrai systeme multi-agents branche a des flux marche temps reel.
@@ -135,6 +143,7 @@ Le backend inclut un premier moteur de decision paris en ligne base sur:
 - Variables env:
 	- `THE_ODDS_API_KEY`
 	- `THE_ODDS_API_BASE_URL` (defaut: `https://api.the-odds-api.com/v4`)
+	- `THE_ODDS_CACHE_TTL_SECONDS` (defaut: `20`)
 
 ### Endpoint modele Poisson football
 
@@ -156,6 +165,16 @@ Le backend inclut un premier moteur de decision paris en ligne base sur:
 	- max drawdown
 	- win rate
 	- nombre de paris
+
+### Endpoint combine (odds + Poisson + value)
+
+- `POST /api/v1/betting/decision/combined`
+- Pipeline execute:
+	- fetch des cotes live (avec cache Redis)
+	- probabilite home-win via modele Poisson
+	- calcul edge/value
+	- sizing Kelly fractionne
+	- decision finale `bet` ou `skip`
 
 Exemple logique:
 

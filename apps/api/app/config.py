@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     # Betting data providers
     the_odds_api_key: str | None = None
     the_odds_api_base_url: str = "https://api.the-odds-api.com/v4"
+    the_odds_cache_ttl_seconds: int = 20
 
 
 settings = Settings()

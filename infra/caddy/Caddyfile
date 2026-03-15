@@ -44,15 +44,14 @@
 }
 
 http://79.137.75.219 {
-  redir https://79.137.75.219{uri} permanent
+  redir https://nayonne.ovh{uri} permanent
 }
 
 https://79.137.75.219 {
   tls internal {
     key_type rsa2048
   }
-
-  import picsou_app
+  redir https://nayonne.ovh{uri} 308
 }
 
 http://www.nayonne.ovh {

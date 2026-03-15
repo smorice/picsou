@@ -1,5 +1,5 @@
 from decimal import Decimal
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field
@@ -19,8 +19,9 @@ class UserProfileResponse(BaseModel):
     role: str
     assigned_roles: list[str]
     access_profile: Literal["read", "write", "admin"]
-    app_access: list[Literal["finance", "betting"]]
+    app_access: list[Literal["finance", "betting", "loto"]]
     birth_date: date | None = None
+    last_login_at: datetime | None = None
     is_verified: bool
     is_active: bool
     mfa_enabled: bool
@@ -33,7 +34,7 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=14, max_length=128)
     birth_date: date | None = None
     access_profile: Literal["read", "write", "admin"] = "write"
-    app_access: list[Literal["finance", "betting"]] = Field(default_factory=lambda: ["finance", "betting"])
+    app_access: list[Literal["finance", "betting", "loto"]] = Field(default_factory=lambda: ["finance", "betting", "loto"])
     verification_channel: Literal["email", "sms"] = "email"
     personal_settings: dict = Field(default_factory=dict)
     client_context: ClientContext | None = None
@@ -231,7 +232,7 @@ class AdminUserUpdateRequest(BaseModel):
     full_name: str | None = Field(default=None, min_length=2, max_length=255)
     assigned_roles: list[str] | None = None
     access_profile: Literal["read", "write", "admin"] | None = None
-    app_access: list[Literal["finance", "betting"]] | None = None
+    app_access: list[Literal["finance", "betting", "loto"]] | None = None
     is_active: bool | None = None
     personal_settings: dict | None = None
 
@@ -390,6 +391,37 @@ class BettingAnalyticsResponse(BaseModel):
     max_drawdown_pct: float
     bets: int
     win_rate_pct: float
+
+
+class BettingCombinedDecisionRequest(BaseModel):
+    sport_key: str = Field(min_length=1, max_length=120)
+    home_team: str = Field(min_length=1, max_length=120)
+    away_team: str = Field(min_length=1, max_length=120)
+    expected_goals_home: float = Field(ge=0.0, le=8.0)
+    expected_goals_away: float = Field(ge=0.0, le=8.0)
+    bankroll_eur: float = Field(gt=0)
+    kelly_fraction: float = Field(default=0.35, gt=0, le=1.0)
+    min_edge: float = Field(default=0.01, ge=0.0, le=1.0)
+    max_stake_pct_per_bet: float = Field(default=0.03, gt=0.0, le=1.0)
+    max_stake_eur: float | None = Field(default=None, gt=0)
+    regions: str = Field(default="eu", min_length=1, max_length=32)
+    markets: str = Field(default="h2h", min_length=1, max_length=64)
+
+
+class BettingCombinedDecisionResponse(BaseModel):
+    source: str
+    matched_event_id: str | None = None
+    event_label: str
+    model_home_win_probability: float
+    best_bookmaker: str | None = None
+    best_odds: float | None = None
+    implied_probability: float | None = None
+    edge_probability: float | None = None
+    value_score: float | None = None
+    stake_eur: float | None = None
+    stake_pct_bankroll: float | None = None
+    decision: Literal["bet", "skip"]
+    cache_hit: bool
 
 
 class TradeProposalRequest(BaseModel):
