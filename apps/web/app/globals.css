@@ -117,10 +117,10 @@ h1,h2,h3,p { margin:0; }
 }
 
 .investShell.appTheme-loto {
-  --app-accent: #1d4ed8;
-  --app-accent-soft: #e9f0ff;
-  --app-accent-border: rgba(29,78,216,.24);
-  --app-accent-shadow: rgba(29,78,216,.28);
+  --app-accent: #1e3a8a;
+  --app-accent-soft: #dbeafe;
+  --app-accent-border: rgba(30,58,138,.28);
+  --app-accent-shadow: rgba(30,58,138,.32);
 }
 
 /* ============================================================ TOPBAR */
@@ -166,59 +166,56 @@ h1,h2,h3,p { margin:0; }
   background:linear-gradient(90deg,#f4f2ea,#ece7d7,#f4f2ea);
   border:1px solid rgba(47,93,55,.20);
 }
-.trendArrowLine {
+.batteryShell {
   position:absolute;
-  inset:0;
-  background:linear-gradient(90deg,rgba(47,93,55,.06),rgba(47,93,55,.2),rgba(47,93,55,.06));
-}
-.trendArrow {
-  position:absolute;
-  left:calc(10px + (var(--goal-progress, 0) * 132px));
-  top:1px;
-  font-size:16px;
-  line-height:1;
-  color:#2f5d37;
-  transform-origin:20% 50%;
-  transition:left .45s var(--ease), transform .35s var(--ease);
-  animation:trendSlide var(--trend-speed, 2.5s) ease-in-out infinite;
-}
-.trendGoalTarget {
-  position:absolute;
-  right:8px;
-  top:2px;
-  font-size:14px;
-  line-height:1;
-  filter:drop-shadow(0 1px 0 rgba(255,255,255,.5));
-}
-.trendArrowGlow {
-  position:absolute;
-  right:8px;
-  top:4px;
-  width:36px;
+  left:8px;
+  top:3px;
+  width:148px;
   height:14px;
   border-radius:999px;
-  background:radial-gradient(circle at 30% 50%,rgba(47,93,55,.42),transparent 70%);
-  animation:trendGlow calc(var(--trend-speed, 2.5s) * 1.2) ease-in-out infinite;
+  border:1px solid rgba(47,93,55,.35);
+  background:rgba(255,255,255,.75);
+  overflow:hidden;
 }
-.trendArrowTrack.up .trendArrow { color:var(--ok); }
-.trendArrowTrack.down .trendArrow { color:var(--danger); transform:rotate(8deg); }
-.trendArrowTrack.neutral .trendArrow { color:#2f5d37; opacity:.8; }
-.trendArrowTrack:not(.achieved) .trendArrow {
-  animation:trendSlide var(--trend-speed, 2.5s) ease-in-out infinite;
+
+.batteryLevel {
+  position:absolute;
+  left:0;
+  top:0;
+  height:100%;
+  width:var(--goal-progress-pct, 0%);
+  background:linear-gradient(90deg,#ef4444,#f59e0b 45%,#22c55e);
+  transition:width .45s var(--ease);
 }
+
+.batteryPercent {
+  position:absolute;
+  inset:0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-size:.62rem;
+  font-weight:800;
+  letter-spacing:.03em;
+  color:#0f172a;
+  text-shadow:0 1px 0 rgba(255,255,255,.65);
+}
+
+.batteryCap {
+  position:absolute;
+  right:6px;
+  top:7px;
+  width:3px;
+  height:8px;
+  border-radius:3px;
+  background:rgba(47,93,55,.45);
+}
+
 .trendArrowTrack.achieved {
   border-color:var(--ok-border);
   background:linear-gradient(90deg,#edfdf4,#ddfce8,#edfdf4);
 }
-.trendArrowTrack.achieved .trendArrow {
-  animation:none;
-  left:calc(10px + (1 * 132px));
-  transform:scale(1.12);
-  color:var(--ok);
-}
-.trendArrowTrack.achieved .trendGoalTarget {
-  transform:scale(1.07);
-}
+.trendArrowTrack.achieved .batteryShell { border-color:var(--ok-border); }
 .topbarKpis { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .topbarKpis .smallPill.up { color:var(--ok); border-color:var(--ok-border); background:var(--ok-soft); }
 .topbarKpis .smallPill.down { color:var(--danger); border-color:var(--danger-border); background:var(--danger-soft); }
@@ -548,6 +545,47 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
   border-color: var(--brand-border);
   background: var(--brand-soft);
   color: var(--brand);
+}
+
+.investShell.appTheme-loto .selectedPortfolioPill {
+  border-color: rgba(30, 64, 175, .18);
+  background: #f8fbff;
+  color: #1e3a8a;
+}
+
+.investShell.appTheme-loto .selectedPortfolioPill.selected {
+  border-color: rgba(30, 64, 175, .52);
+  background: linear-gradient(135deg, #1d4ed8, #1e40af);
+  color: #ffffff;
+  box-shadow: 0 10px 24px rgba(30, 64, 175, .22);
+}
+
+.lotoPrimaryCard {
+  background: linear-gradient(135deg, #eff6ff 0%, #ffffff 52%, #fff7e6 100%);
+  border: 1px solid rgba(30, 64, 175, .22);
+  box-shadow: 0 16px 34px rgba(30, 64, 175, .08);
+}
+
+.lotoSecondaryCard {
+  background: linear-gradient(180deg, #ffffff 0%, #f6f9ff 100%);
+  border: 1px solid rgba(148, 163, 184, .24);
+}
+
+.lotoPrimaryCard .cardHeader h2,
+.lotoSecondaryCard .cardHeader h2 {
+  color: #0f172a;
+}
+
+.lotoPrimaryCard .cardHeader span,
+.lotoSecondaryCard .cardHeader span,
+.lotoPrimaryCard p,
+.lotoSecondaryCard p {
+  color: #334155;
+}
+
+.lotoPrimaryCard .helperText,
+.lotoSecondaryCard .helperText {
+  color: #475569;
 }
 
 /* ============================================================ PORTFOLIO HERO */
@@ -965,6 +1003,25 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
   background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
 }
 
+.accountHeroStats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 10px;
+}
+
+.accountHealthGrid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.commTestGrid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
 .settingsStack { display:grid; gap:14px; }
 .infoPanel {
   padding:14px 16px; border-radius:var(--card-radius-sm);
@@ -1107,6 +1164,15 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
 .auditEntry strong { font-size:.85rem; font-weight:700; color:var(--text); }
 .auditEntry span   { font-size:.73rem; color:var(--muted); }
 .auditEntry p      { font-size:.78rem; color:var(--muted); margin-top:2px; line-height:1.4; }
+.compactAuditTimeline { display:grid; gap:10px; }
+.compactAuditTimeline .auditEntry {
+  padding:12px 14px;
+  border:1px solid var(--border);
+  border-radius:18px;
+  background:rgba(255,255,255,.78);
+}
+.compactAuditTimeline .auditEntry:last-child { border-bottom:1px solid var(--border); }
+.compactAuditTimeline .auditEntry p { font-size:.92rem; word-break:break-word; }
 
 /* ============================================================ RESPONSIVE */
 /* ============================================================ PORTFOLIO DECK */
@@ -2048,18 +2114,23 @@ small.neutral { color: var(--muted); font-weight: 700; }
 
 /* ---- SUBSCRIBE PANEL ---- */
 .subscribePanel {
-  padding: 16px;
-  border-radius: var(--card-radius-sm);
-  border: 1px solid var(--brand-border);
-  background: var(--brand-soft);
+  padding: 18px;
+  border-radius: 16px;
+  border: 1px solid rgba(30, 64, 175, .24);
+  background:
+    radial-gradient(circle at 92% 8%, rgba(191,219,254,.6), transparent 42%),
+    linear-gradient(145deg, #eef4ff 0%, #ffffff 62%, #f8fbff 100%);
   display: grid;
   gap: 12px;
   animation: popIn var(--dur-md) var(--ease-out) both;
+  box-shadow: 0 14px 28px rgba(30, 64, 175, .12);
 }
 .subscribePanelTitle {
-  font-size: .84rem;
+  font-size: .74rem;
   font-weight: 800;
-  color: var(--brand);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: #1d4ed8;
 }
 .subscribeFields {
   display: grid;
@@ -2098,6 +2169,20 @@ small.neutral { color: var(--muted); font-weight: 700; }
   display: flex;
   gap: 8px;
   align-items: center;
+}
+.lotteryWinningGrid {
+  border: 1px solid rgba(5, 150, 105, .36);
+  border-radius: 14px;
+  padding: 10px;
+  background: linear-gradient(120deg, rgba(236, 253, 245, .95), rgba(255, 255, 255, .95));
+  box-shadow: 0 10px 24px rgba(5, 150, 105, .12);
+}
+
+.lotteryWinnerPill {
+  border-color: rgba(5, 150, 105, .38);
+  color: #065f46;
+  background: rgba(209, 250, 229, .75);
+  font-weight: 800;
 }
 .subscribeConfirmBtn {
   flex: 1;
@@ -2366,6 +2451,51 @@ small.neutral { color: var(--muted); font-weight: 700; }
   box-shadow: 0 2px 10px rgba(154,52,18,.28);
 }
 
+  /* ============================================================
+     PARIS EN LIGNE — TIER 2 SUB-NAV
+     Shown below tier-1 when a Paris section is active
+     ============================================================ */
+  .parisSubNav {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 20px;
+    background: linear-gradient(90deg,rgba(15,118,110,.06),rgba(29,78,216,.04));
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .parisSubNavLabel {
+    font-size: .72rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--muted);
+    padding-right: 10px;
+    border-right: 1px solid var(--border-md);
+    margin-right: 4px;
+  }
+  .parisSubBtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 16px;
+    border-radius: 18px;
+    border: 1.5px solid var(--border-md);
+    background: transparent;
+    color: var(--muted);
+    font-size: .8rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all var(--dur) var(--ease);
+  }
+  .parisSubBtn:hover { background: var(--surface-3); color: var(--text); }
+  .parisSubBtn.active {
+    background: #0f766e;
+    color: #fff;
+    border-color: #0f766e;
+    box-shadow: 0 2px 8px rgba(15,118,110,.28);
+  }
+
 /* ============================================================
    BETTING STRATEGY CARD EXTRAS
    ============================================================ */
@@ -2433,34 +2563,55 @@ small.neutral { color: var(--muted); font-weight: 700; }
   align-items: center;
   justify-content: center;
   font-family: var(--font-mono), monospace;
-  font-size: .92rem;
+  font-size: 1rem;
   font-weight: 900;
   line-height: 1;
   letter-spacing: .01em;
-  color: #fff;
-  border: 1px solid rgba(255,255,255,.75);
+  color: #fff !important;
+  border: 1px solid rgba(15,23,42,.22);
   background:
-    radial-gradient(circle at 30% 28%, rgba(255,255,255,.38), transparent 35%),
-    linear-gradient(165deg,#1d4ed8,#2563eb 58%, #1e40af);
-  text-shadow: 0 1px 1px rgba(0,0,0,.38), 0 0 6px rgba(255,255,255,.12);
-  box-shadow: inset 0 -3px 6px rgba(0,0,0,.22), 0 5px 14px rgba(29,78,216,.24);
+    radial-gradient(circle at 30% 28%, rgba(255,255,255,.30), transparent 34%),
+    linear-gradient(165deg,#1e40af,#2563eb 58%, #1e3a8a);
+  text-shadow: 0 1px 2px rgba(0,0,0,.7), 0 0 4px rgba(0,0,0,.5);
+  box-shadow: inset 0 -4px 8px rgba(0,0,0,.28), 0 8px 18px rgba(29,78,216,.24);
 }
 
 .lotteryBall.star {
+  color: #fff !important;
   background:
-    radial-gradient(circle at 30% 28%, rgba(255,255,255,.35), transparent 35%),
-    linear-gradient(165deg,#d97706,#f59e0b 58%, #b45309);
-  box-shadow: inset 0 -3px 6px rgba(0,0,0,.2), 0 5px 14px rgba(217,119,6,.24);
+    radial-gradient(circle at 30% 28%, rgba(255,255,255,.28), transparent 34%),
+    linear-gradient(165deg,#b45309,#f59e0b 58%, #92400e);
+  text-shadow: 0 1px 2px rgba(0,0,0,.7), 0 0 4px rgba(0,0,0,.5);
+  box-shadow: inset 0 -4px 8px rgba(0,0,0,.24), 0 8px 18px rgba(217,119,6,.22);
 }
 
 .lotteryUpcomingCard,
 .lotteryHistoryCard {
   border-radius: 14px;
-  border: 1px solid var(--app-accent-border);
-  background: linear-gradient(165deg, rgba(255,255,255,.98), rgba(233,240,255,.72));
+  border: 1px solid rgba(30, 64, 175, .18);
+  background: linear-gradient(165deg, #ffffff, #eef4ff 78%);
   padding: 12px;
   display: grid;
   gap: 4px;
+  color: #0f172a;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, .05);
+}
+
+.lotteryUpcomingCard p,
+.lotteryHistoryCard p,
+.lotteryUpcomingCard span:not(.lotteryBall),
+.lotteryHistoryCard span:not(.lotteryBall) {
+  color: #334155;
+}
+/* Force white text on lottery balls regardless of container context */
+.lotteryUpcomingCard .lotteryBall,
+.lotteryHistoryCard .lotteryBall {
+  color: #fff;
+}
+
+.lotteryUpcomingCard strong,
+.lotteryHistoryCard strong {
+  color: #0f172a;
 }
 
 @media (max-width: 1100px) {

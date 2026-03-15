@@ -1,11 +1,23 @@
 import logging
 import smtplib
 from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
 from urllib.parse import quote
 
 from .config import settings
 
 logger = logging.getLogger(__name__)
+
+LOCAL_SMTP_HOSTS = {"postfix", "localhost", "127.0.0.1"}
+
+
+def apply_standard_headers(message: EmailMessage) -> None:
+    # RFC-compliant headers improve deliverability with strict providers (e.g. Gmail).
+    if "Date" not in message:
+        message["Date"] = formatdate(localtime=False, usegmt=True)
+    if "Message-ID" not in message:
+        domain = (settings.smtp_from_email or "").split("@")[-1] or "localhost"
+        message["Message-ID"] = make_msgid(domain=domain)
 
 
 def email_delivery_issue_reason() -> str | None:
@@ -20,7 +32,7 @@ def email_delivery_issue_reason() -> str | None:
     if settings.smtp_use_ssl and settings.smtp_starttls:
         return "Email delivery misconfigured: SMTP_USE_SSL and SMTP_STARTTLS cannot both be enabled."
 
-    if not settings.smtp_username or not settings.smtp_password:
+    if settings.smtp_host not in LOCAL_SMTP_HOSTS and (not settings.smtp_username or not settings.smtp_password):
         return "Email delivery likely to fail: SMTP authentication credentials are missing (SMTP_USERNAME/SMTP_PASSWORD)."
 
     return None
@@ -48,6 +60,7 @@ def send_password_reset_email(recipient_email: str, reset_token: str) -> bool:
         else settings.smtp_from_email
     )
     message["To"] = recipient_email
+    apply_standard_headers(message)
 
     reset_url = build_password_reset_url(reset_token)
     ttl_minutes = settings.password_reset_ttl_minutes
@@ -101,6 +114,7 @@ def send_mfa_email_code(recipient_email: str, code: str, purpose: str) -> bool:
         else settings.smtp_from_email
     )
     message["To"] = recipient_email
+    apply_standard_headers(message)
     context_label = "activation MFA" if purpose == "setup" else "connexion MFA"
     message.set_content(
         "Bonjour,\n\n"
@@ -150,6 +164,7 @@ def send_account_verification_email(recipient_email: str, code: str) -> bool:
         else settings.smtp_from_email
     )
     message["To"] = recipient_email
+    apply_standard_headers(message)
     message.set_content(
         "Bonjour,\n\n"
         "Pour activer votre compte Robin IA, saisissez ce code de verification.\n\n"

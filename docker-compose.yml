@@ -26,19 +26,21 @@ services:
       timeout: 5s
       retries: 5
 
-  postfix:
-    build:
-      context: ./apps/postfix
+  roundcube:
+    image: roundcube/roundcubemail:latest
     restart: unless-stopped
     environment:
-      POSTFIX_MYHOSTNAME: ${POSTFIX_MYHOSTNAME:-nayonne.ovh}
-      POSTFIX_MYDOMAIN: ${POSTFIX_MYDOMAIN:-nayonne.ovh}
-      POSTFIX_MYORIGIN: ${POSTFIX_MYORIGIN:-nayonne.ovh}
-      POSTFIX_MYNETWORKS: ${POSTFIX_MYNETWORKS:-127.0.0.0/8 172.16.0.0/12 10.0.0.0/8 192.168.0.0/16}
-      POSTFIX_MESSAGE_SIZE_LIMIT: ${POSTFIX_MESSAGE_SIZE_LIMIT:-26214400}
-      POSTFIX_RELAYHOST: ${POSTFIX_RELAYHOST:-}
+      ROUNDCUBEMAIL_DB_TYPE: sqlite
+      ROUNDCUBEMAIL_DB_NAME: roundcube
+      ROUNDCUBEMAIL_DEFAULT_HOST: ${ROUNDCUBE_DEFAULT_HOST:-ssl://imap.mail.ovh.net}
+      ROUNDCUBEMAIL_DEFAULT_PORT: ${ROUNDCUBE_DEFAULT_PORT:-993}
+      ROUNDCUBEMAIL_SMTP_SERVER: ${ROUNDCUBE_SMTP_SERVER:-tls://ssl0.ovh.net}
+      ROUNDCUBEMAIL_SMTP_PORT: ${ROUNDCUBE_SMTP_PORT:-587}
+      ROUNDCUBEMAIL_SKIN: elastic
+    volumes:
+      - roundcube_data:/var/roundcube
     expose:
-      - "25"
+      - "80"
 
   api:
     build:
@@ -49,7 +51,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      postfix:
+      roundcube:
         condition: service_started
     environment:
       ENVIRONMENT: ${ENVIRONMENT:-production}
@@ -65,13 +67,13 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://nayonne.ovh}
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
-      SMTP_HOST: ${SMTP_HOST:-postfix}
-      SMTP_PORT: ${SMTP_PORT:-25}
+      SMTP_HOST: ${SMTP_HOST:-ssl0.ovh.net}
+      SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USERNAME: ${SMTP_USERNAME:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-no-reply@nayonne.ovh}
       SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Picsou IA}
-      SMTP_STARTTLS: ${SMTP_STARTTLS:-false}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
       SMTP_USE_SSL: ${SMTP_USE_SSL:-false}
       SMTP_TIMEOUT_SECONDS: ${SMTP_TIMEOUT_SECONDS:-10}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
@@ -113,5 +115,6 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  roundcube_data:
   caddy_data:
   caddy_config:

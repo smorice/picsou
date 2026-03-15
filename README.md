@@ -54,17 +54,23 @@ docker-compose.yml
 - Si SMTP n est pas configure, l API conserve un fallback en renvoyant un code temporaire dans la reponse pour les environnements de test et d administration.
 - Variables utiles: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME`, `SMTP_STARTTLS`, `SMTP_USE_SSL`.
 
-## Postfix local pour les emails sortants
+## Roundcube pour la messagerie
 
-- Le monorepo peut demarrer un service Postfix interne via Docker Compose.
-- L API peut lui remettre les emails sortants en utilisant `SMTP_HOST=postfix`, `SMTP_PORT=25`, sans TLS ni authentification sur le reseau interne Docker.
-- L interface d information Postfix est disponible sur `/tools/postfix` via l application web.
-- Pour le domaine `nayonne.ovh`, les MX suivants peuvent rester chez OVH pour la reception:
+- Le monorepo demarre un service Roundcube via Docker Compose.
+- Roundcube est accessible sur `/roundcube` (proxy Caddy) et documente via `/tools/roundcube`.
+- L ancienne page `/tools/postfix` redirige vers `/tools/roundcube`.
+- L API envoie les emails applicatifs directement via SMTP OVH authentifie.
+- Configuration SMTP par defaut de l API:
+	- `SMTP_HOST=ssl0.ovh.net`
+	- `SMTP_PORT=587`
+	- `SMTP_STARTTLS=true`
+	- `SMTP_USE_SSL=false`
+	- `SMTP_USERNAME` et `SMTP_PASSWORD` requis en production
+- Pour le domaine `nayonne.ovh`, les MX suivants restent chez OVH pour la reception:
 	- priorite 1: `mx0.mail.ovh.net`
 	- priorite 5: `mx1.mail.ovh.net`
 	- priorite 50: `mx2.mail.ovh.net`
 	- priorite 100: `mx3.mail.ovh.net`
-- Dans cette configuration, Postfix sert d abord aux emails sortants applicatifs; la reception du domaine reste geree par OVH tant que ces MX ne sont pas modifies.
 
 ### Configuration OVHcloud (DNS + SMTP)
 
