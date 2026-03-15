@@ -13,6 +13,7 @@ type UserProfile = {
   assigned_roles: string[];
   access_profile?: 'read' | 'write' | 'admin';
   app_access?: Array<'finance' | 'betting' | 'racing' | 'loto'>;
+  is_verified: boolean;
   is_active: boolean;
   mfa_enabled: boolean;
   personal_settings: Record<string, unknown>;
@@ -70,6 +71,11 @@ type DashboardData = {
     latest_actions: Array<{ asset: string; action: string; amount: number }>;
     agent_name: string;
   };
+  suggestions?: Array<{
+    title: string;
+    score: number;
+    justification: string;
+  }>;
   next_steps: string[];
 };
 
@@ -534,6 +540,7 @@ const BETTING_THEME_LABELS: Record<BettingThemeKey, string> = {
 };
 
 const ALL_APP_KEYS: Array<'finance' | 'betting' | 'racing' | 'loto'> = ['finance', 'betting', 'racing', 'loto'];
+type FrontendAppKey = typeof ALL_APP_KEYS[number];
 
 function normalizeFrontendAppAccess(raw: unknown): Array<'finance' | 'betting' | 'racing' | 'loto'> {
   if (!Array.isArray(raw)) {
@@ -554,6 +561,23 @@ function normalizeFrontendAppAccess(raw: unknown): Array<'finance' | 'betting' |
   }
   if (!cleaned.includes('racing')) {
     cleaned.push('racing');
+  }
+  return cleaned;
+}
+
+function normalizeSelectedAppAccess(raw: unknown): Array<'finance' | 'betting' | 'racing' | 'loto'> {
+  if (!Array.isArray(raw)) {
+    return ['finance'];
+  }
+  const cleaned: Array<'finance' | 'betting' | 'racing' | 'loto'> = [];
+  raw.forEach((value) => {
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if ((normalized === 'finance' || normalized === 'betting' || normalized === 'racing' || normalized === 'loto') && !cleaned.includes(normalized as FrontendAppKey)) {
+      cleaned.push(normalized as FrontendAppKey);
+    }
+  });
+  if (cleaned.length === 0) {
+    cleaned.push('finance');
   }
   return cleaned;
 }
@@ -1300,6 +1324,8 @@ const GOAL_PERIOD_LABELS: Record<GoalPeriod, string> = {
 
 const ESTIMATED_TAX_RATE = 0.30;
 const MIN_MONETARY_LIMIT = 0.1;
+const MAX_AGENT_TRANSACTION_AMOUNT = 2000;
+const MAX_AGENT_TRANSACTIONS_PER_DAY = 1000;
 
 function normalizeGoalPeriod(value: unknown): GoalPeriod {
   const normalized = String(value ?? '').trim().toLowerCase();
@@ -1762,6 +1788,7 @@ const ACCESS_TOKEN_KEY = 'robin_access_token';
 const REFRESH_TOKEN_KEY = 'robin_refresh_token';
 const SESSION_LAST_ACTIVITY_AT_KEY = 'robin_session_last_activity_at';
 const SESSION_TIMEOUT_MS = 2 * 60 * 1000;
+const ADMIN_CONNECTED_WINDOW_MS = 15 * 60 * 1000;
 const COOKIE_SESSION_MARKER = '__cookie_session__';
 const OTHER_COUNTRY_VALUE = '__OTHER__';
 const COUNTRY_OPTIONS = [
@@ -1901,6 +1928,7 @@ function defaultSettingsFromUser(user: UserProfile | null) {
     objectiveNetGain: String(toPositiveNumber(goalConfig.target_eur, 250)),
     objectivePeriod: normalizeGoalPeriod(goalConfig.period),
     riskProfile: normalizeUserRiskProfile(user?.personal_settings.risk_profile),
+    realTradeMfaRequired: readBooleanSetting(user?.personal_settings.real_trade_mfa_required, false),
     maxLossType: lossGuardType,
     maxLossValue: String(toPositiveNumber(lossGuardConfig.value, lossGuardType === 'amount' ? 1000 : 30)),
     maxLossDays: String(Math.max(1, Math.min(365, Number(lossGuardConfig.days) || 30))),
@@ -2217,7 +2245,7 @@ const PEA_BANKS = [
 const MOCK_STRATEGIES: BettingStrategy[] = [
   {
     id: 's4', name: 'Portefeuille Virtuel IA', type: 'predictive',
-    description: 'Portefeuille Virtuel IA (inactif) : simulation Bitcoin 100 €. Aucune transaction réelle.',
+    description: 'Portefeuille Virtuel IA : simulation Bitcoin 100 € avec IA configurable (manuel, supervise, autopilot).',
     isVirtual: true,
     bankroll: 100, roi: 0, winRate: 0, variance: 0, enabled: false, betsTotal: 0, betsWon: 0,
     ai_enabled: true,
@@ -2333,6 +2361,7 @@ export default function RobinApp() {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingProgressPct, setLoadingProgressPct] = useState(12);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mfaRequired, setMfaRequired] = useState(false);
@@ -2344,7 +2373,12 @@ export default function RobinApp() {
   const [adminFeedback, setAdminFeedback] = useState<string | null>(null);
   const [adminUserSearch, setAdminUserSearch] = useState('');
   const [adminRoleFilter, setAdminRoleFilter] = useState<'all' | 'admin' | 'user' | 'banned'>('all');
-  const [adminStatusFilter, setAdminStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [adminStatusFilter, setAdminStatusFilter] = useState<'all' | 'active' | 'inactive' | 'pending'>('all');
+  const [adminSection, setAdminSection] = useState<'approvals' | 'users' | 'audit' | 'transactions' | 'security'>('approvals');
+  const [approvalsSearch, setApprovalsSearch] = useState('');
+  const [approvalsSort, setApprovalsSort] = useState<'newest' | 'oldest' | 'name'>('newest');
+  const [selectedApprovalIds, setSelectedApprovalIds] = useState<Record<string, true>>({});
+  const [approvalAppSelections, setApprovalAppSelections] = useState<Record<string, Array<'finance' | 'betting' | 'racing' | 'loto'>>>({});
   const [auditSearch, setAuditSearch] = useState('');
   const [auditSeverityFilter, setAuditSeverityFilter] = useState<'all' | 'info' | 'warning'>('all');
   const [resetRequestEmail, setResetRequestEmail] = useState('');
@@ -2423,6 +2457,8 @@ export default function RobinApp() {
   const [selectedRacingRecommendationStrategyId, setSelectedRacingRecommendationStrategyId] = useState<string>('');
   const [selectedStrategy, setSelectedStrategy] = useState<BettingStrategy | null>(null);
   const [strategyDetailOpen, setStrategyDetailOpen] = useState(false);
+  const [bettingDetailFocus, setBettingDetailFocus] = useState<'active' | 'recent' | null>(null);
+  const [collapsedCards, setCollapsedCards] = useState<Record<string, boolean>>({});
   const [bettingAlert, setBettingAlert] = useState<string | null>(null);
   const [bettingAnalytics, setBettingAnalytics] = useState<BettingAnalyticsSummary | null>(null);
   const [overviewAppFilter, setOverviewAppFilter] = useState<'all' | 'finance' | 'betting' | 'racing' | 'loto'>('all');
@@ -2455,11 +2491,113 @@ export default function RobinApp() {
   }, [bettingStrategies, selectedStrategy]);
 
   useEffect(() => {
-    if (lotteryAssignablePortfolios.some((portfolio) => portfolio.id === selectedLotteryRecommendationPortfolioId)) {
+    if (!loading) {
+      setLoadingProgressPct(100);
       return;
     }
-    setSelectedLotteryRecommendationPortfolioId(lotteryAssignablePortfolios[0]?.id ?? 'loto-virtual');
-  }, [lotteryAssignablePortfolios, selectedLotteryRecommendationPortfolioId]);
+    const timer = window.setInterval(() => {
+      setLoadingProgressPct((prev) => {
+        if (prev >= 94) {
+          return prev;
+        }
+        const step = prev < 35 ? 8 : prev < 70 ? 4 : 2;
+        return Math.min(94, prev + step);
+      });
+    }, 320);
+    return () => window.clearInterval(timer);
+  }, [loading]);
+
+  useEffect(() => {
+    const cards = Array.from(document.querySelectorAll<HTMLElement>('.featureCard'));
+    cards.forEach((card, index) => {
+      const header = card.querySelector<HTMLElement>('.cardHeader');
+      if (!header) {
+        return;
+      }
+      const title = header.querySelector('h2')?.textContent?.trim() ?? `bloc-${index + 1}`;
+      const normalizedTitle = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      if (!card.dataset.collapseKey) {
+        card.dataset.collapseKey = `${activeApp}-${appView}-${normalizedTitle || 'bloc'}-${index + 1}`;
+      }
+      header.classList.add('cardHeaderCollapsible');
+      if (!header.getAttribute('title')) {
+        header.setAttribute('title', 'Cliquez pour réduire ou étendre ce bloc');
+      }
+      const key = card.dataset.collapseKey;
+      if (key && collapsedCards[key]) {
+        card.classList.add('isCollapsed');
+      } else {
+        card.classList.remove('isCollapsed');
+      }
+    });
+  }, [activeApp, appView, collapsedCards, portfolioDetailOpen, strategyDetailOpen, racingStrategyDetailOpen]);
+
+  useEffect(() => {
+    const handleCollapseClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target) {
+        return;
+      }
+      if (target.closest('button, a, input, select, textarea, label, [role="button"]')) {
+        return;
+      }
+      const header = target.closest('.featureCard .cardHeader') as HTMLElement | null;
+      if (!header) {
+        return;
+      }
+      const card = header.closest('.featureCard') as HTMLElement | null;
+      const key = card?.dataset.collapseKey;
+      if (!card || !key) {
+        return;
+      }
+      setCollapsedCards((state) => ({ ...state, [key]: !state[key] }));
+    };
+    document.addEventListener('click', handleCollapseClick);
+    return () => {
+      document.removeEventListener('click', handleCollapseClick);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeApp !== 'betting' || appView !== 'dashboard') {
+      setBettingDetailFocus(null);
+    }
+  }, [activeApp, appView]);
+
+  useEffect(() => {
+    if (adminSection !== 'approvals') {
+      setSelectedApprovalIds({});
+      setApprovalAppSelections({});
+    }
+  }, [adminSection]);
+
+  useEffect(() => {
+    if (adminSection !== 'approvals') {
+      return;
+    }
+    setApprovalAppSelections((state) => {
+      const queueIds = new Set(approvalQueueRows.map((entry) => entry.id));
+      const next: Record<string, Array<'finance' | 'betting' | 'racing' | 'loto'>> = {};
+      approvalQueueRows.forEach((entry) => {
+        next[entry.id] = normalizeSelectedAppAccess(state[entry.id] ?? entry.app_access);
+      });
+      const hasSameSize = Object.keys(state).length === queueIds.size;
+      const hasSameKeys = hasSameSize && Object.keys(state).every((id) => queueIds.has(id));
+      if (hasSameKeys) {
+        const unchanged = approvalQueueRows.every((entry) => {
+          const current = state[entry.id] ?? [];
+          const normalizedCurrent = normalizeSelectedAppAccess(current);
+          const normalizedNext = normalizeSelectedAppAccess(next[entry.id]);
+          return normalizedCurrent.length === normalizedNext.length
+            && normalizedCurrent.every((app, index) => app === normalizedNext[index]);
+        });
+        if (unchanged) {
+          return state;
+        }
+      }
+      return next;
+    });
+  }, [adminSection, approvalQueueRows]);
 
   useEffect(() => {
     if (racingStrategies.some((strategy) => strategy.id === selectedRacingRecommendationStrategyId)) {
@@ -2611,7 +2749,7 @@ export default function RobinApp() {
     const rawTickets = Array.isArray(rawLotteryVirtual.tickets) ? rawLotteryVirtual.tickets : [];
     const hydratedLotteryTickets: LotteryVirtualTicket[] = rawTickets
       .filter((item) => item && typeof item === 'object')
-      .map((item) => {
+      .map<LotteryVirtualTicket>((item) => {
         const source = item as Record<string, unknown>;
         const game = source.game === 'euromillions' ? 'euromillions' : 'loto';
         return {
@@ -2654,7 +2792,7 @@ export default function RobinApp() {
     setLotteryExecutionRequests(
       rawLotteryRequests
         .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
-        .map((item) => ({
+        .map<LotteryExecutionRequest>((item) => ({
           id: String(item.id ?? `lottery-request-${Math.random().toString(36).slice(2, 7)}`),
           game: item.game === 'euromillions' ? 'euromillions' : 'loto',
           drawDate: String(item.drawDate ?? new Date().toISOString()),
@@ -3166,6 +3304,7 @@ export default function RobinApp() {
         period: normalizeGoalPeriod(settingsForm.objectivePeriod),
       },
       risk_profile: settingsForm.riskProfile,
+      real_trade_mfa_required: settingsForm.realTradeMfaRequired,
       loss_guard: {
         type: settingsForm.maxLossType === 'amount' ? 'amount' : 'percent',
         value: toPositiveNumber(settingsForm.maxLossValue, settingsForm.maxLossType === 'amount' ? 1000 : 30),
@@ -3675,7 +3814,7 @@ export default function RobinApp() {
       setLoginForm({ email: registerForm.email, password: registerForm.password, mfaCode: '', recoveryCode: '' });
       setAuthMode('login');
       setRegisterForm({ fullName: '', email: '', password: '' });
-      setError('Profil cree. Connectez-vous pour lancer votre tableau de bord et votre accompagnement investisseur.');
+      setError('Profil cree. Votre compte est en attente de validation administrateur avant la premiere connexion.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Inscription impossible');
     } finally {
@@ -4138,6 +4277,7 @@ export default function RobinApp() {
     assignedRoles: string[],
     isActive: boolean,
     appAccess?: Array<'finance' | 'betting' | 'racing' | 'loto'>,
+    extras: Record<string, unknown> = {},
   ) {
     if (!accessToken) {
       return;
@@ -4145,6 +4285,9 @@ export default function RobinApp() {
     setSubmitting(true);
     setAdminFeedback(null);
     try {
+      const nextAppAccess = appAccess
+        ? normalizeSelectedAppAccess(appAccess)
+        : normalizeFrontendAppAccess(target.app_access);
       const response = await fetch(apiUrl(`/api/v1/admin/users/${target.id}`), {
         method: 'PUT',
         headers: {
@@ -4155,7 +4298,8 @@ export default function RobinApp() {
         body: JSON.stringify({
           assigned_roles: assignedRoles,
           is_active: isActive,
-          app_access: normalizeFrontendAppAccess([...(appAccess ?? target.app_access ?? []), 'loto']),
+          app_access: nextAppAccess,
+          ...extras,
         }),
       });
       const payload = await readJsonResponse<UserProfile | { detail?: unknown }>(response);
@@ -4175,14 +4319,96 @@ export default function RobinApp() {
     }
   }
 
+  async function deleteAdminUser(target: UserProfile) {
+    if (!accessToken) {
+      return;
+    }
+    if (!window.confirm(`Supprimer définitivement le compte ${target.email} ? Cette action est irreversible.`)) {
+      return;
+    }
+    setSubmitting(true);
+    setAdminFeedback(null);
+    try {
+      const response = await fetch(apiUrl(`/api/v1/admin/users/${target.id}`), {
+        method: 'DELETE',
+        headers: {
+          ...authHeader(accessToken),
+        },
+        credentials: 'include',
+      });
+      if (!response.ok) {
+        const payload = await readJsonResponse<{ detail?: unknown }>(response);
+        throw new Error(extractErrorMessage(payload, 'Suppression utilisateur impossible'));
+      }
+      setAdminUsers((state) => state.filter((entry) => entry.id !== target.id));
+      setAdminFeedback(`Compte supprimé: ${target.email}`);
+      await loadAdminData(accessToken);
+    } catch (err) {
+      setAdminFeedback(err instanceof Error ? err.message : 'Suppression utilisateur impossible');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function approvePendingUsersBatch(
+    userIds: string[],
+    selectedAppsByUser: Record<string, Array<'finance' | 'betting' | 'racing' | 'loto'>> = {},
+  ) {
+    if (!accessToken || userIds.length === 0) {
+      return;
+    }
+    setSubmitting(true);
+    setAdminFeedback(null);
+    let approvedCount = 0;
+    try {
+      for (const userId of userIds) {
+        const target = adminUsers.find((entry) => entry.id === userId);
+        if (!target) {
+          continue;
+        }
+        const roles = new Set(target.assigned_roles);
+        const nextRoles = roles.has('banned') ? ['user'] : target.assigned_roles;
+        const response = await fetch(apiUrl(`/api/v1/admin/users/${target.id}`), {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            ...authHeader(accessToken),
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            assigned_roles: nextRoles,
+            is_active: true,
+            app_access: normalizeSelectedAppAccess(selectedAppsByUser[target.id] ?? target.app_access),
+            access_profile: 'write',
+          }),
+        });
+        const payload = await readJsonResponse<UserProfile | { detail?: unknown }>(response);
+        if (!response.ok || !payload || !('id' in payload)) {
+          throw new Error(extractErrorMessage(payload, `Validation impossible pour ${target.email}`));
+        }
+        setAdminUsers((state) => state.map((entry) => (entry.id === target.id ? payload : entry)));
+        approvedCount += 1;
+      }
+      setSelectedApprovalIds({});
+      setAdminFeedback(`${approvedCount} compte(s) validé(s).`);
+      await loadAdminData(accessToken);
+    } catch (err) {
+      setAdminFeedback(err instanceof Error ? err.message : 'Validation en lot impossible');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   const canAccessAdmin = hasAdminRole(user);
   const filteredAdminUsers = adminUsers.filter((entry) => {
     const matchesUser = !adminUserSearch || matchesSearch(`${entry.full_name} ${entry.email}`, adminUserSearch);
     const matchesRole = adminRoleFilter === 'all' || entry.assigned_roles.includes(adminRoleFilter);
+    const isPendingApproval = !entry.is_active && !entry.is_verified;
     const matchesStatus =
       adminStatusFilter === 'all' ||
       (adminStatusFilter === 'active' && entry.is_active) ||
-      (adminStatusFilter === 'inactive' && !entry.is_active);
+      (adminStatusFilter === 'inactive' && !entry.is_active) ||
+      (adminStatusFilter === 'pending' && isPendingApproval);
     return matchesUser && matchesRole && matchesStatus;
   });
   const filteredAuditTrail = auditTrail.filter((entry) => {
@@ -4192,6 +4418,76 @@ export default function RobinApp() {
     const matchesSeverity = auditSeverityFilter === 'all' || entry.severity === auditSeverityFilter;
     return matchesText && matchesSeverity;
   });
+  const pendingAdminUsers = useMemo(
+    () => adminUsers.filter((entry) => !entry.is_active && !entry.is_verified),
+    [adminUsers],
+  );
+  const pendingFilteredAdminUsers = useMemo(
+    () => filteredAdminUsers.filter((entry) => !entry.is_active && !entry.is_verified),
+    [filteredAdminUsers],
+  );
+  const approvalQueueRows = useMemo(() => {
+    const filteredRows = pendingFilteredAdminUsers.filter((entry) => {
+      if (!approvalsSearch.trim()) {
+        return true;
+      }
+      return matchesSearch(`${entry.full_name} ${entry.email} ${entry.id}`, approvalsSearch);
+    });
+    if (approvalsSort === 'name') {
+      return [...filteredRows].sort((a, b) => a.full_name.localeCompare(b.full_name, 'fr-FR'));
+    }
+    if (approvalsSort === 'oldest') {
+      return [...filteredRows].reverse();
+    }
+    return filteredRows;
+  }, [pendingFilteredAdminUsers, approvalsSearch, approvalsSort]);
+  const selectedApprovalCount = Object.keys(selectedApprovalIds)
+    .filter((id) => approvalQueueRows.some((entry) => entry.id === id)).length;
+  const selectableApprovalRows = selectedApprovalCount > 0
+    ? approvalQueueRows.filter((entry) => Boolean(selectedApprovalIds[entry.id]))
+    : approvalQueueRows;
+  const applyApprovalAppPreset = (preset: 'finance' | 'paris' | 'all') => {
+    const nextApps: Array<'finance' | 'betting' | 'racing' | 'loto'> = preset === 'finance'
+      ? ['finance']
+      : preset === 'paris'
+        ? ['betting', 'racing', 'loto']
+        : [...ALL_APP_KEYS];
+    setApprovalAppSelections((state) => {
+      const nextState = { ...state };
+      selectableApprovalRows.forEach((entry) => {
+        nextState[entry.id] = nextApps;
+      });
+      return nextState;
+    });
+    const scopeLabel = selectedApprovalCount > 0
+      ? `${selectedApprovalCount} compte(s) sélectionné(s)`
+      : `${approvalQueueRows.length} compte(s) en attente`;
+    const presetLabel = preset === 'finance'
+      ? 'Pack Finance seulement'
+      : preset === 'paris'
+        ? 'Pack Paris'
+        : 'Tout activer';
+    setAdminFeedback(`${presetLabel} appliqué sur ${scopeLabel}.`);
+  };
+  const lastLoginAuditRows = useMemo(
+    () => [...adminUsers]
+      .sort((a, b) => Date.parse(b.last_login_at ?? '') - Date.parse(a.last_login_at ?? ''))
+      .slice(0, 20),
+    [adminUsers],
+  );
+  const adminConnectedUsersCount = useMemo(() => {
+    const now = Date.now();
+    return adminUsers.filter((entry) => {
+      if (!entry.is_active) {
+        return false;
+      }
+      const lastLoginTs = Date.parse(entry.last_login_at ?? '');
+      if (!Number.isFinite(lastLoginTs)) {
+        return false;
+      }
+      return now - lastLoginTs <= ADMIN_CONNECTED_WINDOW_MS;
+    }).length;
+  }, [adminUsers]);
   const siteAuditSummary = useMemo(() => {
     const warnings = auditTrail.filter((entry) => entry.severity === 'warning').length;
     const authEvents = auditTrail.filter((entry) => entry.event_type.startsWith('auth.')).length;
@@ -4206,6 +4502,28 @@ export default function RobinApp() {
   const recentSiteAudit = useMemo(() => auditTrail.slice(0, 8), [auditTrail]);
   const findIntegration = (providerCode: string) => integrationConnections.find((item) => item.provider_code === providerCode);
   const coinbaseConnection = findIntegration('coinbase');
+
+  function focusBettingDetailPanel(target: 'active' | 'recent') {
+    setBettingDetailFocus(target);
+    const panelId = target === 'active' ? 'betting-active-detail' : 'betting-recent-detail';
+    const panel = document.getElementById(panelId);
+    if (!panel) {
+      return;
+    }
+    const key = panel.dataset.collapseKey;
+    if (key) {
+      setCollapsedCards((state) => ({ ...state, [key]: false }));
+    }
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function openFinancePortfolioDetail(portfolio: Portfolio) {
+    setActiveApp('finance');
+    setSelectedPortfolio(portfolio);
+    setPortfolioDetailOpen(true);
+    setAppView('portfolios');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
 
   const allPortfolios = buildAllPortfolios(
     dashboard,
@@ -4238,6 +4556,12 @@ export default function RobinApp() {
     ]),
     [lotoIntegrationPortfolios],
   );
+  useEffect(() => {
+    if (lotteryAssignablePortfolios.some((portfolio) => portfolio.id === selectedLotteryRecommendationPortfolioId)) {
+      return;
+    }
+    setSelectedLotteryRecommendationPortfolioId(lotteryAssignablePortfolios[0]?.id ?? 'loto-virtual');
+  }, [lotteryAssignablePortfolios, selectedLotteryRecommendationPortfolioId]);
   const selectedLotoIntegrationPortfolio = lotoIntegrationPortfolios.find((portfolio) => portfolio.id === lotoPortfolioMenuSelection) ?? null;
   const visiblePortfolios = allPortfolios.filter((portfolio) => portfolio.visible && portfolio.status === 'active');
   const realVisiblePortfolios = visiblePortfolios.filter((portfolio) => portfolio.type === 'integration');
@@ -4262,6 +4586,13 @@ export default function RobinApp() {
   const estimatedNetGainPeriod = grossGainPeriod > 0 ? grossGainPeriod * (1 - ESTIMATED_TAX_RATE) : grossGainPeriod;
   const goalProgress = goalTargetNet > 0 ? Math.max(0, Math.min(1, estimatedNetGainPeriod / goalTargetNet)) : 0;
   const goalReached = goalTargetNet > 0 && estimatedNetGainPeriod >= goalTargetNet;
+  const riskLossProfilePct = settingsForm.riskProfile === 'low' ? 8 : settingsForm.riskProfile === 'high' ? 45 : 25;
+  const configuredLossGuardValue = toPositiveNumber(settingsForm.maxLossValue, settingsForm.maxLossType === 'amount' ? 1000 : 30);
+  const objectiveLossGuardEstimate = settingsForm.maxLossType === 'amount'
+    ? configuredLossGuardValue
+    : (goalTargetNet * configuredLossGuardValue) / 100;
+  const objectiveRiskLossEstimate = (goalTargetNet * riskLossProfilePct) / 100;
+  const objectiveEstimatedLoss = Math.max(0, Math.max(objectiveLossGuardEstimate, objectiveRiskLossEstimate));
   const goalWindowMs = goalPeriodDays * 24 * 60 * 60 * 1000;
   const goalNowTs = goalNowPoint?.ts ?? Date.now();
   const goalBaseTs = goalBasePoint?.ts ?? (goalNowTs - goalWindowMs);
@@ -4291,7 +4622,28 @@ export default function RobinApp() {
   const visitedProgressCount = progressMenuKeys.filter((key) => visitedMenuKeys[key]).length;
   const uiNavigationProgress = progressMenuKeys.length > 0 ? Math.max(0, Math.min(1, visitedProgressCount / progressMenuKeys.length)) : 0;
   const uiNavigationProgressPct = Math.round(uiNavigationProgress * 100);
-  const batteryTone = uiNavigationProgress >= 0.92 ? 'up' : uiNavigationProgress <= 0.34 ? 'down' : 'neutral';
+  const objectiveProgressPct = Math.round(Math.max(0, Math.min(1, goalProgress)) * 100);
+  const topbarProgressPct = loading ? loadingProgressPct : objectiveProgressPct;
+  const topbarProgressRatio = Math.max(0, Math.min(1, topbarProgressPct / 100));
+  const batteryTone = topbarProgressRatio >= 0.92 ? 'up' : topbarProgressRatio <= 0.34 ? 'down' : 'neutral';
+  const topbarRealValue = realVisiblePortfolios.reduce((sum, portfolio) => sum + portfolio.current_value, 0);
+  const topbarBettingVirtualBankroll = virtualAppsEnabled.betting
+    ? (bettingStrategies.find((strategy) => strategy.isVirtual && strategy.enabled)?.bankroll ?? 0)
+    : 0;
+  const topbarRacingVirtualBankroll = virtualAppsEnabled.racing
+    ? (racingStrategies.find((strategy) => strategy.isVirtual && strategy.enabled)?.bankroll ?? 0)
+    : 0;
+  const topbarFinanceVirtualValue = virtualAppsEnabled.finance
+    ? (visiblePortfolios.find((portfolio) => portfolio.type === 'virtual')?.current_value ?? 0)
+    : 0;
+  const topbarVirtualValue =
+    topbarFinanceVirtualValue
+    + topbarBettingVirtualBankroll
+    + topbarRacingVirtualBankroll
+    + (virtualAppsEnabled.loto && lotteryVirtualPortfolio.enabled ? lotteryVirtualPortfolio.bankroll : 0);
+  const topbarProgressLabel = loading
+    ? `Chargement ${topbarProgressPct}%`
+    : `Objectif ${topbarProgressPct}%`; 
   const portfolioEvolutionRows = visiblePortfolios.map((portfolio) => ({
     id: portfolio.id,
     label: portfolio.label,
@@ -4728,9 +5080,30 @@ export default function RobinApp() {
     [bettingStrategies]
   );
   const lotteryPendingTickets = useMemo(
-    () => lotteryVirtualPortfolio.tickets
-      .filter((ticket) => ticket.status === 'pending')
-      .sort((a, b) => Date.parse(a.drawDate) - Date.parse(b.drawDate)),
+    () => {
+      const seen = new Set<string>();
+      const nowTs = Date.now();
+      return lotteryVirtualPortfolio.tickets
+        .filter((ticket) => ticket.status === 'pending')
+        .filter((ticket) => {
+          const signature = `${ticket.game}|${ticket.drawDate}|${ticket.numbers.join('-')}|${ticket.stars.join('-')}`;
+          if (seen.has(signature)) {
+            return false;
+          }
+          seen.add(signature);
+          return true;
+        })
+        .sort((a, b) => {
+          const aTs = Date.parse(a.drawDate);
+          const bTs = Date.parse(b.drawDate);
+          const aInProgress = aTs <= nowTs;
+          const bInProgress = bTs <= nowTs;
+          if (aInProgress !== bInProgress) {
+            return aInProgress ? -1 : 1;
+          }
+          return aTs - bTs;
+        });
+    },
     [lotteryVirtualPortfolio.tickets],
   );
   const lotterySettledTickets = useMemo(
@@ -5182,6 +5555,10 @@ export default function RobinApp() {
         return;
       }
 
+      if (settingsForm.realTradeMfaRequired && !user?.mfa_enabled) {
+        throw new Error('Transactions réelles tierces bloquées: activez d abord le MFA dans Mon compte.');
+      }
+
       const proposalResponse = await fetch(apiUrl('/api/v1/orders/propose'), {
         method: 'POST',
         headers: {
@@ -5294,6 +5671,117 @@ export default function RobinApp() {
       return;
     }
     void runDecisionAction(insight, approved, options);
+  }
+
+  async function recycleAllVirtualPortfolios() {
+    if (!accessToken || !user) {
+      return;
+    }
+    if (!window.confirm('Recycler tous les portefeuilles fictifs ? Cette action remet les simulations à zéro.')) {
+      return;
+    }
+    const nowIso = new Date().toISOString();
+    const financeSeedValue = Math.max(
+      20,
+      Number.parseFloat(String(dashboard?.virtual_portfolio?.budget_initial ?? '100')) || 100,
+    );
+    const nextFinanceVirtualSimulation: FinanceVirtualSimulation = {
+      currentValue: financeSeedValue,
+      history: [{ date: nowIso, value: financeSeedValue }],
+      operations: [],
+    };
+    const nextBettingStrategies = bettingStrategies.map((strategy) => {
+      if (!strategy.isVirtual) {
+        return strategy;
+      }
+      const template = MOCK_STRATEGIES.find((entry) => entry.id === strategy.id) ?? strategy;
+      return {
+        ...strategy,
+        bankroll: template.bankroll,
+        roi: 0,
+        winRate: 0,
+        variance: 0,
+        enabled: false,
+        betsTotal: 0,
+        betsWon: 0,
+        ai_enabled: template.ai_enabled,
+        mode: template.mode,
+        max_stake: template.max_stake,
+        max_bets_per_day: template.max_bets_per_day,
+        risk_profile: template.risk_profile,
+        history: [{ date: nowIso, value: template.bankroll }],
+        recentBets: [],
+      };
+    });
+    const nextRacingStrategies = racingStrategies.map((strategy) => {
+      if (!strategy.isVirtual) {
+        return strategy;
+      }
+      const template = MOCK_RACING_STRATEGIES.find((entry) => entry.id === strategy.id) ?? strategy;
+      return {
+        ...strategy,
+        bankroll: template.bankroll,
+        roi: 0,
+        winRate: 0,
+        variance: 0,
+        enabled: false,
+        betsTotal: 0,
+        betsWon: 0,
+        ai_enabled: template.ai_enabled,
+        mode: template.mode,
+        max_stake: template.max_stake,
+        max_bets_per_day: template.max_bets_per_day,
+        risk_profile: template.risk_profile,
+        history: [{ date: nowIso, value: template.bankroll }],
+        recentBets: [],
+      };
+    });
+    const nextLotteryVirtualPortfolio: LotteryVirtualPortfolio = {
+      ...lotteryVirtualPortfolio,
+      bankroll: Math.max(0, lotteryVirtualPortfolio.initial_balance),
+      tickets: [],
+    };
+    const nextLotteryExecutionRequests: LotteryExecutionRequest[] = [];
+
+    setFinanceVirtualSimulation(nextFinanceVirtualSimulation);
+    setBettingStrategies(nextBettingStrategies);
+    setRacingStrategies(nextRacingStrategies);
+    setLotteryVirtualPortfolio(nextLotteryVirtualPortfolio);
+    setLotteryExecutionRequests(nextLotteryExecutionRequests);
+
+    setSubmitting(true);
+    setError(null);
+    try {
+      const response = await fetch(apiUrl('/auth/me/settings'), {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeader(accessToken),
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          full_name: settingsForm.fullName,
+          phone_number: settingsForm.phoneNumber || null,
+          client_context: clientContext,
+          personal_settings: {
+            ...buildPersonalSettingsPayload({}, portfolioVisibility, resolvedDecisionKeys, virtualAppsEnabled, nextBettingStrategies, nextRacingStrategies),
+            finance_virtual_runtime: nextFinanceVirtualSimulation,
+            lottery_virtual_portfolio: nextLotteryVirtualPortfolio,
+            lottery_execution_requests: nextLotteryExecutionRequests,
+          },
+        }),
+      });
+      const payload = await readJsonResponse<UserProfile>(response);
+      if (!response.ok || !payload) {
+        throw new Error(extractErrorMessage(payload, 'Recyclage des portefeuilles fictifs impossible'));
+      }
+      setUser(payload);
+      setError('Portefeuilles fictifs recyclés: Finance, Paris sportifs, Hippiques et Loto remis à zéro.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Recyclage des portefeuilles fictifs impossible');
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   function openDecisionWizard(insight: InsightItem) {
@@ -5540,7 +6028,7 @@ export default function RobinApp() {
         settledAt: null,
       }));
       const nextRequests: LotteryExecutionRequest[] = [
-        ...scheduledDraws.map((draw, index) => ({
+        ...scheduledDraws.map<LotteryExecutionRequest>((draw, index) => ({
           id: `lottery-request-sim-${game}-${index}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           game,
           drawDate: draw.drawDate,
@@ -5567,7 +6055,7 @@ export default function RobinApp() {
 
     const createdAt = new Date().toISOString();
     const nextRequests: LotteryExecutionRequest[] = [
-      ...scheduledDraws.map((draw, index) => ({
+      ...scheduledDraws.map<LotteryExecutionRequest>((draw, index) => ({
         id: `lottery-request-real-${game}-${index}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         game,
         drawDate: draw.drawDate,
@@ -5756,12 +6244,15 @@ export default function RobinApp() {
     if (emergencyStopActive) {
       return;
     }
+    if (!virtualAppsEnabled.finance) {
+      return;
+    }
     const virtualPortfolioId = dashboard?.virtual_portfolio?.portfolio_id;
     if (!virtualPortfolioId || portfolioActivation[virtualPortfolioId] === false) {
       return;
     }
     const cfg = getAgentConfig(virtualPortfolioId);
-    if (!cfg.enabled) {
+    if (!cfg.enabled || cfg.mode !== 'autopilot') {
       return;
     }
 
@@ -5885,15 +6376,13 @@ export default function RobinApp() {
     const nextBetsWon = virtual.betsWon + (win ? 1 : 0);
     const nextRoi = Number((((nextBankroll - 100) / 100) * 100).toFixed(1));
     const nextWinRate = nextBetsTotal > 0 ? Number(((nextBetsWon / nextBetsTotal) * 100).toFixed(0)) : 0;
-    const iaAction = sourceSignal
-      ? (sourceSignal.risk === 'faible' ? 'Achat IA' : sourceSignal.risk === 'eleve' ? 'Vente IA' : (Math.random() > 0.5 ? 'Achat IA' : 'Vente IA'))
-      : 'Simulation IA';
+    const iaAction = 'Simulation IA';
     const bet: BetRecord = {
       id: `vb-${Date.now()}`,
       date: new Date().toISOString(),
-      sport: sourceSignal?.sport ?? 'other',
-      event: sourceSignal?.event ?? 'Simulation Tipster Virtuelle',
-      market: sourceSignal ? `${iaAction} · ${sourceSignal.market}` : profile.label,
+      sport: 'other',
+      event: 'Simulation Tipster Virtuelle',
+      market: `${iaAction} · ${profile.label}`,
       bookmaker: 'Simulateur Robin',
       odds: win ? Number((1.25 + Math.random() * 1.5).toFixed(2)) : 0,
       stake,
@@ -6237,8 +6726,8 @@ export default function RobinApp() {
     const timer = window.setTimeout(() => {
       simulateFinanceVirtualCycle();
     }, hasOps
-      ? randomDelayMs(18 * 60 * 1000, 75 * 60 * 1000)
-      : randomDelayMs(4 * 60 * 1000, 10 * 60 * 1000));
+      ? randomDelayMs(10 * 60 * 1000, 45 * 60 * 1000)
+      : randomDelayMs(35 * 1000, 110 * 1000));
     return () => window.clearTimeout(timer);
   }, [
     agentConfigs,
@@ -6362,7 +6851,7 @@ export default function RobinApp() {
     }
 
     let nextBankroll = lotteryVirtualPortfolio.bankroll;
-    const nextTickets = lotteryVirtualPortfolio.tickets.map((ticket) => {
+    const nextTickets: LotteryVirtualTicket[] = lotteryVirtualPortfolio.tickets.map<LotteryVirtualTicket>((ticket) => {
       if (ticket.status !== 'pending' || Date.parse(ticket.drawDate) > nowTs) {
         return ticket;
       }
@@ -6558,6 +7047,12 @@ export default function RobinApp() {
 
   return (
     <main className={`investShell appTheme-${activeApp}`}>
+      <div className="appWatermarkLayer" aria-hidden="true">
+        <span>💹 FINANCE</span>
+        <span>🐎 HIPPIQUES</span>
+        <span>⚽ PARIS EN LIGNE</span>
+        <span>🎟️ LOTO</span>
+      </div>
       <header className="heroTopbar">
         <div className="brandCluster">
           <div className="brandBadge" aria-hidden="true">
@@ -6584,43 +7079,67 @@ export default function RobinApp() {
               <span className="robinWord">ROBIN</span>
               {user ? ` • ${APP_LABELS[activeApp]}` : ''}
             </strong>
-            <div
-              className={`trendArrowTrack ${batteryTone} ${uiNavigationProgress >= 0.99 ? 'achieved' : ''}`}
-              aria-hidden="true"
-              style={{
-                ['--trend-speed' as string]: `${trendArrowSpeed}s`,
-                ['--trend-scale' as string]: `${trendArrowScale}`,
-                ['--goal-progress' as string]: `${uiNavigationProgress}`,
-                ['--goal-progress-pct' as string]: `${uiNavigationProgressPct}%`,
-              } as Record<string, string>}
-            >
-              <div className="batteryShell">
-                <div className="batteryChargingFlow" />
-                <div className="batteryLevel" />
-                <div className="batteryPercent">{uiNavigationProgressPct}%</div>
-                <div className="batteryBolt" aria-hidden="true">⚡</div>
-              </div>
-              <div className="batteryCap" />
-            </div>
-            <div className="topbarKpis">
-              <button
-                className={`smallPill selectedPortfolioPill ${evolution24h.tone}`}
-                onClick={() => {
-                  setSelectedInsight({
-                    id: 'topbar-real-24h',
-                    title: 'Réels 24h',
-                    value: evolution24h.value,
-                    trend: `${evolution24h.tone === 'up' ? '↑' : evolution24h.tone === 'down' ? '↓' : '→'} Variation portefeuille réel`,
-                    detail: 'Variation consolidée sur 24h des portefeuilles visibles sur le dashboard.',
-                    section: 'indicator',
-                  });
-                  window.scrollTo({ top: 120, behavior: 'smooth' });
-                }}
-                type="button"
-              >
-                Réels 24h: {evolution24h.value}
-              </button>
-            </div>
+            {user ? (
+              <>
+                <div
+                  className={`trendArrowTrack ${batteryTone} ${topbarProgressRatio >= 0.99 ? 'achieved' : ''}`}
+                  aria-hidden="true"
+                  style={{
+                    ['--trend-speed' as string]: `${trendArrowSpeed}s`,
+                    ['--trend-scale' as string]: `${trendArrowScale}`,
+                    ['--goal-progress' as string]: `${topbarProgressRatio}`,
+                    ['--goal-progress-pct' as string]: `${topbarProgressPct}%`,
+                  } as Record<string, string>}
+                >
+                  <div className="batteryShell">
+                    <div className="batteryChargingFlow" />
+                    <div className="batteryLevel" />
+                    <div className="batteryNeedle" />
+                    <div className="batteryPercent">{topbarProgressLabel}</div>
+                    <div className="batteryBolt" aria-hidden="true">⚡</div>
+                  </div>
+                  <div className="batteryCap" />
+                </div>
+                <div className="topbarKpis">
+                  <button
+                    className={`smallPill selectedPortfolioPill ${goalTrajectoryTone}`}
+                    onClick={() => {
+                      setSelectedInsight({
+                        id: 'topbar-real-24h',
+                        title: 'Valeur réelle active',
+                        value: `${topbarRealValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`,
+                        trend: `${evolution24h.tone === 'up' ? '↑' : evolution24h.tone === 'down' ? '↓' : '→'} Variation 24h ${evolution24h.value}`,
+                        detail: 'Somme des portefeuilles réels actifs avec indicateur de variation consolidée sur 24h.',
+                        section: 'indicator',
+                      });
+                      window.scrollTo({ top: 120, behavior: 'smooth' });
+                    }}
+                    type="button"
+                  >
+                    <span className="topbarObjectiveDot" aria-hidden="true" />
+                    Portefeuilles réels {topbarRealValue.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €
+                  </button>
+                  <button
+                    className={`smallPill selectedPortfolioPill ${goalTrajectoryTone}`}
+                    onClick={() => {
+                      setSelectedInsight({
+                        id: 'topbar-virtual-live',
+                        title: 'Valeur portefeuilles fictifs actifs',
+                        value: `${topbarVirtualValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`,
+                        trend: topbarVirtualValue >= 0 ? '↑ Portefeuilles simulés actifs' : '↓ Portefeuilles simulés en repli',
+                        detail: 'Somme des portefeuilles fictifs actifs: Finance, Paris en ligne, Hippiques et Loto.',
+                        section: 'indicator',
+                      });
+                      window.scrollTo({ top: 120, behavior: 'smooth' });
+                    }}
+                    type="button"
+                  >
+                    <span className="topbarObjectiveDot" aria-hidden="true" />
+                    Portefeuilles fictifs {topbarVirtualValue.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €
+                  </button>
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
         {user ? (
@@ -7105,6 +7624,23 @@ export default function RobinApp() {
                       <strong>{strategy.name}</strong>
                       <small>{strategy.ai_enabled ? 'IA active' : 'IA inactive'} · {strategy.enabled ? 'Suivi actif' : 'Suivi inactif'}</small>
                     </span>
+                    <span onClick={(event) => event.stopPropagation()}>
+                      <label className="checkRow quickAiToggle">
+                        <input
+                          type="checkbox"
+                          checked={strategy.ai_enabled}
+                          onChange={(event) => {
+                            event.stopPropagation();
+                            updateBettingStrategy(strategy.id, {
+                              ai_enabled: event.target.checked,
+                              enabled: event.target.checked ? true : strategy.enabled,
+                              mode: event.target.checked && strategy.mode === 'manual' ? 'supervised' : strategy.mode,
+                            });
+                          }}
+                        />
+                        <span>IA rapide</span>
+                      </label>
+                    </span>
                     <span className={strategy.mode === 'autonomous' ? 'metaPill up' : strategy.mode === 'supervised' ? 'metaPill' : 'metaPill neutral'}>
                       {strategy.mode === 'autonomous' ? 'Autopilot' : strategy.mode === 'supervised' ? 'Validation humaine' : 'Manuel'}
                     </span>
@@ -7172,9 +7708,12 @@ export default function RobinApp() {
                   </div>
                 </div>
                 {(() => {
-                  const financeTotalValue = visiblePortfolios.reduce((sum, portfolio) => sum + portfolio.current_value, 0);
-                  const financeRealCount = visiblePortfolios.filter((portfolio) => portfolio.type === 'integration').length;
-                  const financeVirtual = allPortfolios.find((portfolio) => portfolio.type === 'virtual') ?? null;
+                  const financeRealVisiblePortfolios = visiblePortfolios.filter((portfolio) => portfolio.type === 'integration');
+                  const financeRealCount = financeRealVisiblePortfolios.length;
+                  const financeRealValue = financeRealVisiblePortfolios.reduce((sum, portfolio) => sum + portfolio.current_value, 0);
+                  const financeVirtual = visiblePortfolios.find((portfolio) => portfolio.type === 'virtual') ?? null;
+                  const financeVirtualEnabled = virtualAppsEnabled.finance && Boolean(financeVirtual);
+                  const financeVirtualValue = financeVirtualEnabled && financeVirtual ? financeVirtual.current_value : 0;
                   const financeOps7dCount = financeOps7d.reduce((sum, row) => sum + row.count, 0);
 
                   const bettingSettledPnl = bettingStrategies
@@ -7205,14 +7744,19 @@ export default function RobinApp() {
                         {activeApp === 'finance' ? (
                           <>
                             <article className="overviewKpiCard">
-                              <span>Patrimoine visible</span>
-                              <strong>{financeTotalValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €</strong>
+                              <span>Portefeuilles réels actifs</span>
+                              <strong>{financeRealCount}</strong>
+                              <small>{financeRealCount > 0 ? 'Issus des intégrations tierces' : 'Aucun connecteur actif'}</small>
+                            </article>
+                            <article className="overviewKpiCard">
+                              <span>Montant réel cumulé</span>
+                              <strong>{financeRealValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €</strong>
                               <small className={evolution24h.tone}>24h: {evolution24h.value}</small>
                             </article>
                             <article className="overviewKpiCard">
-                              <span>Portefeuilles actifs</span>
-                              <strong>{visiblePortfolios.length}</strong>
-                              <small>Réels: {financeRealCount} · Virtuel: {financeVirtual ? 'Oui' : 'Non'}</small>
+                              <span>Portefeuille fictif Finance</span>
+                              <strong>{financeVirtualValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €</strong>
+                              <small>{financeVirtualEnabled ? 'Actif · simulation uniquement' : 'Inactif'}</small>
                             </article>
                             <article className="overviewKpiCard">
                               <span>Décisions IA</span>
@@ -7297,6 +7841,35 @@ export default function RobinApp() {
                         )}
                       </div>
 
+                      <article className="overviewCrossAppPanel">
+                        <div className="cardHeader" style={{ marginBottom: 8 }}>
+                          <h2>Vue synthétique transverse</h2>
+                          <span>Finance + Paris en ligne</span>
+                        </div>
+                        <div className="overviewCrossAppGrid">
+                          <div className="overviewKpiCard">
+                            <span>💹 Finance (réel)</span>
+                            <strong>{topbarRealValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €</strong>
+                            <small className={evolution7d.tone}>7j: {evolution7d.value}</small>
+                          </div>
+                          <div className="overviewKpiCard">
+                            <span>⚽ Paris sportifs</span>
+                            <strong>{activeBettingBets.length} en cours</strong>
+                            <small>PnL réglé: {bettingSettledPnl >= 0 ? '+' : ''}{bettingSettledPnl.toFixed(2)} €</small>
+                          </div>
+                          <div className="overviewKpiCard">
+                            <span>🐎 Paris hippiques</span>
+                            <strong>{racingPendingBets} en cours</strong>
+                            <small>PnL réglé: {racingSettledPnl >= 0 ? '+' : ''}{racingSettledPnl.toFixed(2)} €</small>
+                          </div>
+                          <div className="overviewKpiCard">
+                            <span>⚗️ Portefeuilles fictifs actifs</span>
+                            <strong>{topbarVirtualValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €</strong>
+                            <small>Finance + Betting + Racing + Loto</small>
+                          </div>
+                        </div>
+                      </article>
+
                       <article className="overviewPulsePanel">
                         <div className="cardHeader" style={{ marginBottom: 8 }}>
                           <h2>À lire maintenant</h2>
@@ -7316,7 +7889,7 @@ export default function RobinApp() {
                               <div className="overviewPulseItem">
                                 <strong>Portefeuille virtuel</strong>
                                 <p>
-                                  {financeVirtual
+                                  {financeVirtualEnabled && financeVirtual
                                     ? `${financeVirtual.label}: ${financeVirtual.current_value.toFixed(2)} € (${financeVirtual.roi >= 0 ? '+' : ''}${financeVirtual.roi.toFixed(1)}%).`
                                     : 'Aucun portefeuille virtuel actif.'}
                                 </p>
@@ -7775,8 +8348,53 @@ export default function RobinApp() {
 
               <article className="featureCard settingsCard">
                 <div className="cardHeader">
-                  <h2>Communication, risque et objectif IA</h2>
-                  <span>Préférences de suivi et garde-fous</span>
+                  <h2>Niveau de risque accepté par les agents IA</h2>
+                  <span>Préférence globale de risque</span>
+                </div>
+                <div style={{ display: 'grid', gap: 10 }}>
+                  <p className="helperText" style={{ margin: 0 }}>
+                    Ce niveau sert de garde-fou global pour l IA: il oriente le niveau d exposition acceptable des recommandations.
+                  </p>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button
+                      className={`smallPill ${settingsForm.riskProfile === 'low' ? 'selectedPortfolioPill selected' : ''}`}
+                      onClick={() => setSettingsForm((state) => ({ ...state, riskProfile: 'low' }))}
+                      type="button"
+                    >
+                      Prudent
+                    </button>
+                    <button
+                      className={`smallPill ${settingsForm.riskProfile === 'medium' ? 'selectedPortfolioPill selected' : ''}`}
+                      onClick={() => setSettingsForm((state) => ({ ...state, riskProfile: 'medium' }))}
+                      type="button"
+                    >
+                      Équilibré
+                    </button>
+                    <button
+                      className={`smallPill ${settingsForm.riskProfile === 'high' ? 'selectedPortfolioPill selected' : ''}`}
+                      onClick={() => setSettingsForm((state) => ({ ...state, riskProfile: 'high' }))}
+                      type="button"
+                    >
+                      Dynamique
+                    </button>
+                  </div>
+                  <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
+                    <strong>Profil actuel: {settingsForm.riskProfile === 'low' ? 'Prudent' : settingsForm.riskProfile === 'high' ? 'Dynamique' : 'Équilibré'}</strong>
+                    <p>
+                      Garde-fous indicatifs: montant max {RISK_PROFILE_DEFAULT_QUOTAS[settingsForm.riskProfile].max_amount} € ·
+                      {` `}transactions max/jour {RISK_PROFILE_DEFAULT_QUOTAS[settingsForm.riskProfile].max_transactions_per_day}.
+                    </p>
+                  </div>
+                  <button className="primaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
+                    {submitting ? 'Sauvegarde...' : 'Enregistrer ce niveau de risque'}
+                  </button>
+                </div>
+              </article>
+
+              <article className="featureCard settingsCard">
+                <div className="cardHeader">
+                  <h2>Communication</h2>
+                  <span>Préférences de suivi</span>
                 </div>
                 <div style={{ display: 'grid', gap: 12 }}>
                   <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
@@ -7805,14 +8423,18 @@ export default function RobinApp() {
                       <option value="weekly">Digest hebdo</option>
                     </select>
                   </label>
-                  <label>
-                    Profil de risque
-                    <select value={settingsForm.riskProfile} onChange={(event) => setSettingsForm((state) => ({ ...state, riskProfile: normalizeUserRiskProfile(event.target.value) }))}>
-                      <option value="low">Prudent</option>
-                      <option value="medium">Équilibré</option>
-                      <option value="high">Dynamique</option>
-                    </select>
-                  </label>
+                  <button className="primaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
+                    {submitting ? 'Sauvegarde...' : 'Enregistrer la communication'}
+                  </button>
+                </div>
+              </article>
+
+              <article className="featureCard settingsCard">
+                <div className="cardHeader">
+                  <h2>Bloc objectif</h2>
+                  <span>Montant visé, durée et perte possible estimée</span>
+                </div>
+                <div style={{ display: 'grid', gap: 12 }}>
                   <label>
                     Objectif IA net (après taxes) en €
                     <input value={settingsForm.objectiveNetGain} onChange={(event) => setSettingsForm((state) => ({ ...state, objectiveNetGain: event.target.value }))} type="number" min={0} step="10" />
@@ -7843,9 +8465,69 @@ export default function RobinApp() {
                     Horizon de contrôle de perte (jours)
                     <input value={settingsForm.maxLossDays} onChange={(event) => setSettingsForm((state) => ({ ...state, maxLossDays: event.target.value }))} type="number" min={1} max={365} step={1} />
                   </label>
+                  <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
+                    <strong>Évaluation de perte possible</strong>
+                    <p style={{ marginBottom: 4 }}>
+                      Profil {settingsForm.riskProfile === 'low' ? 'prudent' : settingsForm.riskProfile === 'high' ? 'dynamique' : 'équilibré'}:
+                      {` `}perte potentielle estimée jusqu à <strong>{objectiveEstimatedLoss.toFixed(2)} €</strong>
+                      {goalTargetNet > 0 ? ` sur l objectif de ${goalTargetNet.toFixed(2)} € (${goalPeriodLabel}).` : '.'}
+                    </p>
+                    <p style={{ margin: 0, fontSize: '.75rem', color: 'var(--muted)' }}>
+                      Estimation basée sur le profil de risque ({riskLossProfilePct}%) et votre garde-fou de perte configuré.
+                    </p>
+                  </div>
                   <p className="helperText">Flèche verte: vous êtes en avance sur la trajectoire attendue. Flèche rouge: vous êtes en retard sur la trajectoire attendue.</p>
                   <button className="primaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
-                    {submitting ? 'Sauvegarde...' : 'Enregistrer Mon compte'}
+                    {submitting ? 'Sauvegarde...' : 'Enregistrer le bloc objectif'}
+                  </button>
+                </div>
+              </article>
+
+              <article className="featureCard settingsCard">
+                <div className="cardHeader">
+                  <h2>Préférences plateforme complètes</h2>
+                  <span>Tous les champs de configuration de compte</span>
+                </div>
+                <div style={{ display: 'grid', gap: 12 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: 10 }}>
+                    <label>
+                      Devise
+                      <input value={settingsForm.currency} onChange={(event) => setSettingsForm((state) => ({ ...state, currency: event.target.value.toUpperCase() }))} type="text" maxLength={5} />
+                    </label>
+                    <label>
+                      Thème
+                      <select value={settingsForm.theme} onChange={(event) => setSettingsForm((state) => ({ ...state, theme: event.target.value }))}>
+                        <option value="family">Family office</option>
+                        <option value="classic">Classique</option>
+                        <option value="modern">Moderne</option>
+                      </select>
+                    </label>
+                    <label>
+                      Densité dashboard
+                      <select value={settingsForm.dashboardDensity} onChange={(event) => setSettingsForm((state) => ({ ...state, dashboardDensity: event.target.value }))}>
+                        <option value="comfortable">Confort</option>
+                        <option value="compact">Compact</option>
+                      </select>
+                    </label>
+                    <label>
+                      Auto-refresh (secondes)
+                      <select value={settingsForm.autoRefreshSeconds} onChange={(event) => setSettingsForm((state) => ({ ...state, autoRefreshSeconds: event.target.value }))}>
+                        <option value="15">15s</option>
+                        <option value="30">30s</option>
+                        <option value="60">60s</option>
+                        <option value="120">120s</option>
+                      </select>
+                    </label>
+                  </div>
+                  <label>
+                    Style d accompagnement
+                    <select value={settingsForm.onboardingStyle} onChange={(event) => setSettingsForm((state) => ({ ...state, onboardingStyle: event.target.value }))}>
+                      <option value="coach">Coach IA</option>
+                      <option value="direct">Direct</option>
+                    </select>
+                  </label>
+                  <button className="primaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
+                    {submitting ? 'Sauvegarde...' : 'Enregistrer les préférences plateforme'}
                   </button>
                 </div>
               </article>
@@ -7874,6 +8556,75 @@ export default function RobinApp() {
                       <p style={{ color: 'var(--text-2)' }}>{communicationTestResult}</p>
                     </div>
                   ) : null}
+                </div>
+              </article>
+
+              <article className="featureCard settingsCard">
+                <div className="cardHeader">
+                  <h2>Moyens de communication avancés</h2>
+                  <span>Google Chat et Telegram</span>
+                </div>
+                <div style={{ display: 'grid', gap: 12 }}>
+                  <div className="inlineServicePanel">
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                      <div><strong style={{ fontSize: '.9rem' }}>💼 Google Chat</strong><p style={{ fontSize: '.78rem', color: 'var(--muted)', marginTop: 2 }}>Webhook vers un espace Google Chat</p></div>
+                      <label className="checkRow" style={{ margin: 0, padding: '6px 10px', width: 'max-content' }}>
+                        <input type="checkbox" checked={commGoogleChat.enabled} onChange={(e) => setCommGoogleChat((s) => ({ ...s, enabled: e.target.checked }))} />
+                        <span style={{ fontSize: '.78rem' }}>Activé</span>
+                      </label>
+                    </div>
+                    {commGoogleChat.enabled ? (
+                      <>
+                        <label>URL Webhook<input type="url" value={commGoogleChat.webhook} onChange={(e) => setCommGoogleChat((s) => ({ ...s, webhook: e.target.value }))} placeholder="https://chat.googleapis.com/v1/spaces/..." /></label>
+                        <button className="ghostButton" onClick={() => runCommunicationTest('google_chat')} style={{ width: 'fit-content' }} type="button">Tester Google Chat</button>
+                      </>
+                    ) : null}
+                  </div>
+                  <div className="inlineServicePanel">
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                      <div><strong style={{ fontSize: '.9rem' }}>✈️ Telegram</strong><p style={{ fontSize: '.78rem', color: 'var(--muted)', marginTop: 2 }}>Bot Telegram personnalisé</p></div>
+                      <label className="checkRow" style={{ margin: 0, padding: '6px 10px', width: 'max-content' }}>
+                        <input type="checkbox" checked={commTelegram.enabled} onChange={(e) => setCommTelegram((s) => ({ ...s, enabled: e.target.checked }))} />
+                        <span style={{ fontSize: '.78rem' }}>Activé</span>
+                      </label>
+                    </div>
+                    {commTelegram.enabled ? (
+                      <>
+                        <label>Bot Token<input type="text" value={commTelegram.botToken} onChange={(e) => setCommTelegram((s) => ({ ...s, botToken: e.target.value }))} placeholder="123456:ABC-DEF..." /></label>
+                        <label>Chat ID<input type="text" value={commTelegram.chatId} onChange={(e) => setCommTelegram((s) => ({ ...s, chatId: e.target.value }))} placeholder="-1001234567890" /></label>
+                        <button className="ghostButton" onClick={() => runCommunicationTest('telegram')} style={{ width: 'fit-content' }} type="button">Tester Telegram</button>
+                      </>
+                    ) : null}
+                  </div>
+                  <button className="primaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
+                    {submitting ? 'Sauvegarde...' : 'Enregistrer les canaux avancés'}
+                  </button>
+                </div>
+              </article>
+
+              <article className="featureCard settingsCard">
+                <div className="cardHeader">
+                  <h2>Transactions réelles tierces</h2>
+                  <span>MFA obligatoire avant exécution</span>
+                </div>
+                <div style={{ display: 'grid', gap: 12 }}>
+                  <label className="checkRow" style={{ margin: 0 }}>
+                    <input
+                      type="checkbox"
+                      checked={settingsForm.realTradeMfaRequired}
+                      onChange={(event) => setSettingsForm((state) => ({ ...state, realTradeMfaRequired: event.target.checked }))}
+                    />
+                    <span>Exiger MFA pour toute transaction réelle sur un portefeuille tiers (intégration)</span>
+                  </label>
+                  <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
+                    <strong>Etat actuel</strong>
+                    <p>
+                      Protection MFA transaction réelle: {settingsForm.realTradeMfaRequired ? 'activée' : 'désactivée'} · MFA compte: {user.mfa_enabled ? 'activé' : 'inactif'}.
+                    </p>
+                  </div>
+                  <button className="primaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
+                    {submitting ? 'Sauvegarde...' : 'Enregistrer la politique MFA transaction réelle'}
+                  </button>
                 </div>
               </article>
 
@@ -7955,27 +8706,68 @@ export default function RobinApp() {
                 ) : (
                   <div style={{ display: 'grid', gap: 8 }}>
                     {allPortfolios.map((portfolio) => (
-                      <div
-                        className={`compactRow ${portfolio.type === 'virtual' ? 'portfolioRowVirtual' : 'portfolioRowReal'}`}
-                        key={`account-portfolio-${portfolio.id}`}
-                        style={{ alignItems: 'center' }}
-                      >
-                        <div>
-                          <strong style={{ fontSize: '.9rem' }}>{portfolio.label}</strong>
-                          <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>
-                            {portfolio.agent_name} · {portfolio.status === 'active' ? 'Actif' : 'Inactif'}
-                          </p>
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <span className={portfolio.type === 'virtual' ? 'portfolioTypeBadge virtual' : 'portfolioTypeBadge real'}>
-                            {portfolio.type === 'virtual' ? 'Virtuel' : 'Réel'}
-                          </span>
-                          <span className="metaPill">{portfolio.current_value.toFixed(2)} €</span>
-                        </div>
-                      </div>
+                      (() => {
+                        const isVirtualFinance = portfolio.type === 'virtual';
+                        const cfg = isVirtualFinance ? getAgentConfig(portfolio.id) : null;
+                        const iaModeLabel = !cfg || !cfg.enabled
+                          ? 'IA inactive'
+                          : cfg.mode === 'autopilot'
+                            ? 'IA autopilot active'
+                            : cfg.mode === 'supervised'
+                              ? 'IA supervisee'
+                              : 'IA manuelle';
+                        const portfolioStatus = isVirtualFinance
+                          ? (virtualAppsEnabled.finance
+                            ? `${portfolio.status === 'active' ? 'Actif' : 'Inactif'} · ${iaModeLabel}`
+                            : 'Inactif (application Finance desactivee)')
+                          : `${portfolio.status === 'active' ? 'Actif' : 'Inactif'}`;
+                        return (
+                          <button
+                            className={`compactRow compactRowButton portfolioDetailRow ${portfolio.type === 'virtual' ? 'portfolioRowVirtual' : 'portfolioRowReal'}`}
+                            key={`account-portfolio-${portfolio.id}`}
+                            onClick={() => openFinancePortfolioDetail(portfolio)}
+                            style={{ alignItems: 'center' }}
+                            type="button"
+                          >
+                            <div>
+                              <strong style={{ fontSize: '.9rem' }}>{portfolio.label}</strong>
+                              <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>
+                                {portfolio.agent_name} · {portfolioStatus}
+                              </p>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <span className={portfolio.type === 'virtual' ? 'portfolioTypeBadge virtual' : 'portfolioTypeBadge real'}>
+                                {portfolio.type === 'virtual' ? 'Virtuel' : 'Réel'}
+                              </span>
+                              <span className="metaPill">{portfolio.current_value.toFixed(2)} €</span>
+                              <span className="metaPill">Voir détail</span>
+                              <span className="rowChevron" aria-hidden="true">›</span>
+                            </div>
+                          </button>
+                        );
+                      })()
                     ))}
                   </div>
                 )}
+              </article>
+
+              <article className="featureCard settingsCard">
+                <div className="cardHeader">
+                  <h2>Recycler les portefeuilles fictifs</h2>
+                  <span>Remise à zéro des simulations</span>
+                </div>
+                <div style={{ display: 'grid', gap: 10 }}>
+                  <p className="helperText" style={{ margin: 0 }}>
+                    Cette action recycle les simulations Finance, Paris sportifs, Hippiques et Loto: opérations, tickets et performances remis à zéro.
+                  </p>
+                  <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
+                    <strong>Conservation</strong>
+                    <p>Vos intégrations réelles et vos identifiants de communication ne sont pas supprimés.</p>
+                  </div>
+                  <button className="tagButton danger" disabled={submitting} onClick={() => void recycleAllVirtualPortfolios()} type="button">
+                    {submitting ? 'Recyclage...' : 'Recycler tous les portefeuilles fictifs'}
+                  </button>
+                </div>
               </article>
 
               <article className="featureCard settingsCard">
@@ -8085,7 +8877,7 @@ export default function RobinApp() {
             </section>
           ) : null}
 
-          {isFinanceCryptoActive && portfolioDetailOpen && selectedPortfolio ? (
+          {activeApp === 'finance' && portfolioDetailOpen && selectedPortfolio ? (
             <div style={{ display: 'grid', gap: 22 }}>
               <nav className="breadcrumbNav">
                 <button className="breadcrumbBack" onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
@@ -8389,7 +9181,7 @@ export default function RobinApp() {
                   Évaluation IA Crypto (marché observé): {financeCryptoEvaluation.estimatedNet >= 0 ? '+' : ''}{financeCryptoEvaluation.estimatedNet.toFixed(2)} € sur {financeCryptoEvaluation.operationsCount} transaction(s).
                 </p>
               ) : null}
-              {(() => {
+              {!virtualAppsEnabled.finance ? (() => {
                 const virtualPortfolio = allPortfolios.find((portfolio) => portfolio.type === 'virtual');
                 if (!virtualPortfolio) {
                   return null;
@@ -8421,44 +9213,67 @@ export default function RobinApp() {
                       </label>
                       <label>
                         Mode IA
-                        <select
-                          value={cfg.mode}
-                          disabled={!virtualAppsEnabled.finance || !cfg.enabled}
-                          onChange={(event) => void updateAgentConfig(virtualPortfolio.id, { mode: event.target.value as AgentMode })}
-                        >
-                          <option value="manual">Manuel</option>
-                          <option value="supervised">Validation humaine</option>
-                          <option value="autopilot">Autopilot</option>
-                        </select>
+                        <div className="aiModeSelector">
+                          <button
+                            className={`aiModeOption ${cfg.mode === 'manual' ? 'active manual' : ''}`}
+                            disabled={!virtualAppsEnabled.finance || !cfg.enabled}
+                            onClick={() => void updateAgentConfig(virtualPortfolio.id, { mode: 'manual' })}
+                            type="button"
+                          >
+                            <span>🖐</span>
+                            <strong>Manuel</strong>
+                            <small>Décisions humaines</small>
+                          </button>
+                          <button
+                            className={`aiModeOption ${cfg.mode === 'supervised' ? 'active supervised' : ''}`}
+                            disabled={!virtualAppsEnabled.finance || !cfg.enabled}
+                            onClick={() => void updateAgentConfig(virtualPortfolio.id, { mode: 'supervised' })}
+                            type="button"
+                          >
+                            <span>👁</span>
+                            <strong>Validation humaine</strong>
+                            <small>L IA propose</small>
+                          </button>
+                          <button
+                            className={`aiModeOption ${cfg.mode === 'autopilot' ? 'active autopilot' : ''}`}
+                            disabled={!virtualAppsEnabled.finance || !cfg.enabled}
+                            onClick={() => void updateAgentConfig(virtualPortfolio.id, { mode: 'autopilot' })}
+                            type="button"
+                          >
+                            <span>🤖</span>
+                            <strong>Autopilot</strong>
+                            <small>Exécution automatique</small>
+                          </button>
+                        </div>
                       </label>
                       <label>
-                        Seuil montant max ({cfg.max_amount.toFixed(1)} €)
+                        Montant maximum transaction ({cfg.max_amount.toFixed(1)} €)
                         <input
                           type="range"
                           min={MIN_MONETARY_LIMIT}
-                          max={600}
+                          max={MAX_AGENT_TRANSACTION_AMOUNT}
                           step={0.1}
                           disabled={!virtualAppsEnabled.finance || !cfg.enabled}
-                          value={Math.min(600, Math.max(MIN_MONETARY_LIMIT, cfg.max_amount))}
+                          value={Math.min(MAX_AGENT_TRANSACTION_AMOUNT, Math.max(MIN_MONETARY_LIMIT, cfg.max_amount))}
                           onChange={(event) => void updateAgentConfig(virtualPortfolio.id, { max_amount: Math.max(MIN_MONETARY_LIMIT, Number(event.target.value) || MIN_MONETARY_LIMIT) })}
                         />
                       </label>
                       <label>
-                        Seuil max transactions / jour ({cfg.max_transactions_per_day})
+                        Nombre de transactions / jour ({cfg.max_transactions_per_day})
                         <input
                           type="range"
                           min={1}
-                          max={30}
+                          max={MAX_AGENT_TRANSACTIONS_PER_DAY}
                           step={1}
                           disabled={!virtualAppsEnabled.finance || !cfg.enabled}
-                          value={Math.min(30, Math.max(1, cfg.max_transactions_per_day))}
+                          value={Math.min(MAX_AGENT_TRANSACTIONS_PER_DAY, Math.max(1, cfg.max_transactions_per_day))}
                           onChange={(event) => void updateAgentConfig(virtualPortfolio.id, { max_transactions_per_day: Math.max(1, Number(event.target.value) || 1) })}
                         />
                       </label>
                     </div>
                   </article>
                 );
-              })()}
+              })() : null}
 
               <section className="portfolioHero">
                 <div className="portfolioIntro">
@@ -9452,37 +10267,60 @@ export default function RobinApp() {
                         </label>
                         <label>
                           Mode IA
-                          <select
-                            value={cfg.mode}
-                            disabled={!virtualAppsEnabled.finance || !cfg.enabled}
-                            onChange={(event) => void updateAgentConfig(vp.id, { mode: event.target.value as AgentMode })}
-                          >
-                            <option value="manual">Manuel</option>
-                            <option value="supervised">Validation humaine</option>
-                            <option value="autopilot">Autopilot</option>
-                          </select>
+                          <div className="aiModeSelector">
+                            <button
+                              className={`aiModeOption ${cfg.mode === 'manual' ? 'active manual' : ''}`}
+                              disabled={!virtualAppsEnabled.finance || !cfg.enabled}
+                              onClick={() => void updateAgentConfig(vp.id, { mode: 'manual' })}
+                              type="button"
+                            >
+                              <span>🖐</span>
+                              <strong>Manuel</strong>
+                              <small>Décisions humaines</small>
+                            </button>
+                            <button
+                              className={`aiModeOption ${cfg.mode === 'supervised' ? 'active supervised' : ''}`}
+                              disabled={!virtualAppsEnabled.finance || !cfg.enabled}
+                              onClick={() => void updateAgentConfig(vp.id, { mode: 'supervised' })}
+                              type="button"
+                            >
+                              <span>👁</span>
+                              <strong>Validation humaine</strong>
+                              <small>L IA propose</small>
+                            </button>
+                            <button
+                              className={`aiModeOption ${cfg.mode === 'autopilot' ? 'active autopilot' : ''}`}
+                              disabled={!virtualAppsEnabled.finance || !cfg.enabled}
+                              onClick={() => void updateAgentConfig(vp.id, { mode: 'autopilot' })}
+                              type="button"
+                            >
+                              <span>🤖</span>
+                              <strong>Autopilot</strong>
+                              <small>Exécution automatique</small>
+                            </button>
+                          </div>
                         </label>
                         <label>
-                          Seuil montant max par transaction ({cfg.max_amount.toFixed(1)} €)
+                          Montant maximum transaction ({cfg.max_amount.toFixed(1)} €)
                           <input
                             type="range"
                             min={MIN_MONETARY_LIMIT}
-                            max={600}
+                            max={MAX_AGENT_TRANSACTION_AMOUNT}
                             step={0.1}
                             disabled={!virtualAppsEnabled.finance || !cfg.enabled}
-                            value={Math.min(600, Math.max(MIN_MONETARY_LIMIT, cfg.max_amount))}
+                            value={Math.min(MAX_AGENT_TRANSACTION_AMOUNT, Math.max(MIN_MONETARY_LIMIT, cfg.max_amount))}
                             onChange={(event) => void updateAgentConfig(vp.id, { max_amount: Math.max(MIN_MONETARY_LIMIT, Number(event.target.value) || MIN_MONETARY_LIMIT) })}
                           />
                         </label>
                         <label>
-                          Seuil max transactions / jour ({cfg.max_transactions_per_day})
+                          Nombre de transactions / jour ({cfg.max_transactions_per_day})
                           <input
                             type="range"
                             min={1}
-                            max={30}
+                            max={MAX_AGENT_TRANSACTIONS_PER_DAY}
                             step={1}
                             disabled={!virtualAppsEnabled.finance || !cfg.enabled}
-                            value={Math.min(30, Math.max(1, cfg.max_transactions_per_day))}
+                            value={Math.min(MAX_AGENT_TRANSACTIONS_PER_DAY, Math.max(1, cfg.max_transactions_per_day))}
                             onChange={(event) => void updateAgentConfig(vp.id, { max_transactions_per_day: Math.max(1, Number(event.target.value) || 1) })}
                           />
                         </label>
@@ -9982,7 +10820,7 @@ export default function RobinApp() {
                 </p>
               </article>
 
-              {(() => {
+              {!virtualAppsEnabled.finance ? (() => {
                 const virtualPortfolio = allPortfolios.find((portfolio) => portfolio.type === 'virtual');
                 if (!virtualPortfolio) {
                   return null;
@@ -10014,44 +10852,67 @@ export default function RobinApp() {
                       </label>
                       <label>
                         Mode IA
-                        <select
-                          value={cfg.mode}
-                          disabled={!virtualAppsEnabled.finance || !cfg.enabled}
-                          onChange={(event) => void updateAgentConfig(virtualPortfolio.id, { mode: event.target.value as AgentMode })}
-                        >
-                          <option value="manual">Manuel</option>
-                          <option value="supervised">Validation humaine</option>
-                          <option value="autopilot">Autopilot</option>
-                        </select>
+                        <div className="aiModeSelector">
+                          <button
+                            className={`aiModeOption ${cfg.mode === 'manual' ? 'active manual' : ''}`}
+                            disabled={!virtualAppsEnabled.finance || !cfg.enabled}
+                            onClick={() => void updateAgentConfig(virtualPortfolio.id, { mode: 'manual' })}
+                            type="button"
+                          >
+                            <span>🖐</span>
+                            <strong>Manuel</strong>
+                            <small>Décisions humaines</small>
+                          </button>
+                          <button
+                            className={`aiModeOption ${cfg.mode === 'supervised' ? 'active supervised' : ''}`}
+                            disabled={!virtualAppsEnabled.finance || !cfg.enabled}
+                            onClick={() => void updateAgentConfig(virtualPortfolio.id, { mode: 'supervised' })}
+                            type="button"
+                          >
+                            <span>👁</span>
+                            <strong>Validation humaine</strong>
+                            <small>L IA propose</small>
+                          </button>
+                          <button
+                            className={`aiModeOption ${cfg.mode === 'autopilot' ? 'active autopilot' : ''}`}
+                            disabled={!virtualAppsEnabled.finance || !cfg.enabled}
+                            onClick={() => void updateAgentConfig(virtualPortfolio.id, { mode: 'autopilot' })}
+                            type="button"
+                          >
+                            <span>🤖</span>
+                            <strong>Autopilot</strong>
+                            <small>Exécution automatique</small>
+                          </button>
+                        </div>
                       </label>
                       <label>
-                        Seuil montant max ({cfg.max_amount.toFixed(1)} €)
+                        Montant maximum transaction ({cfg.max_amount.toFixed(1)} €)
                         <input
                           type="range"
                           min={MIN_MONETARY_LIMIT}
-                          max={600}
+                          max={MAX_AGENT_TRANSACTION_AMOUNT}
                           step={0.1}
                           disabled={!virtualAppsEnabled.finance || !cfg.enabled}
-                          value={Math.min(600, Math.max(MIN_MONETARY_LIMIT, cfg.max_amount))}
+                          value={Math.min(MAX_AGENT_TRANSACTION_AMOUNT, Math.max(MIN_MONETARY_LIMIT, cfg.max_amount))}
                           onChange={(event) => void updateAgentConfig(virtualPortfolio.id, { max_amount: Math.max(MIN_MONETARY_LIMIT, Number(event.target.value) || MIN_MONETARY_LIMIT) })}
                         />
                       </label>
                       <label>
-                        Seuil max transactions / jour ({cfg.max_transactions_per_day})
+                        Nombre de transactions / jour ({cfg.max_transactions_per_day})
                         <input
                           type="range"
                           min={1}
-                          max={30}
+                          max={MAX_AGENT_TRANSACTIONS_PER_DAY}
                           step={1}
                           disabled={!virtualAppsEnabled.finance || !cfg.enabled}
-                          value={Math.min(30, Math.max(1, cfg.max_transactions_per_day))}
+                          value={Math.min(MAX_AGENT_TRANSACTIONS_PER_DAY, Math.max(1, cfg.max_transactions_per_day))}
                           onChange={(event) => void updateAgentConfig(virtualPortfolio.id, { max_transactions_per_day: Math.max(1, Number(event.target.value) || 1) })}
                         />
                       </label>
                     </div>
                   </article>
                 );
-              })()}
+              })() : null}
 
               {subscribeSignalId && peaMarketSignals.some((signal) => signal.id === subscribeSignalId) ? (
                 <article className="featureCard" style={{ borderColor: 'var(--brand-border)', background: 'var(--brand-soft)' }}>
@@ -10141,17 +11002,41 @@ export default function RobinApp() {
                   <span>Support PEA et portefeuille virtuel</span>
                 </div>
                 <div style={{ display: 'grid', gap: 10 }}>
-                  {allPortfolios.map((portfolio) => (
-                    <div key={`pea-portfolio-${portfolio.id}`} className={`compactRow ${portfolio.type === 'virtual' ? 'portfolioRowVirtual' : 'portfolioRowReal'}`} style={{ alignItems: 'center' }}>
-                      <div>
-                        <strong style={{ fontSize: '.9rem' }}>{portfolio.label}</strong>
-                        <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>
-                          {portfolio.type === 'virtual' ? 'Simulation PEA' : 'Compte titre/PEA connecté'} · {portfolio.agent_name}
-                        </p>
-                      </div>
-                      <span className="metaPill">{portfolio.current_value.toFixed(2)} €</span>
-                    </div>
-                  ))}
+                  {allPortfolios.map((portfolio) => {
+                    const cfg = getAgentConfig(portfolio.id);
+                    const canToggleAi = portfolio.type !== 'virtual' || virtualAppsEnabled.finance;
+                    return (
+                      <button key={`pea-portfolio-${portfolio.id}`} className={`compactRow compactRowButton portfolioDetailRow ${portfolio.type === 'virtual' ? 'portfolioRowVirtual' : 'portfolioRowReal'}`} onClick={() => openFinancePortfolioDetail(portfolio)} style={{ alignItems: 'center' }} type="button">
+                        <div>
+                          <strong style={{ fontSize: '.9rem' }}>{portfolio.label}</strong>
+                          <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>
+                            {portfolio.type === 'virtual' ? 'Simulation PEA' : 'Compte titre/PEA connecté'} · {portfolio.agent_name}
+                          </p>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                          <label className="checkRow quickAiToggle" onClick={(event) => event.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              checked={cfg.enabled}
+                              disabled={!canToggleAi}
+                              onChange={(event) => {
+                                event.stopPropagation();
+                                void updateAgentConfig(portfolio.id, {
+                                  enabled: event.target.checked,
+                                  mode: event.target.checked ? (cfg.mode === 'manual' ? 'supervised' : cfg.mode) : 'manual',
+                                });
+                              }}
+                            />
+                            <span>IA rapide</span>
+                          </label>
+                          <span className="metaPill">{cfg.enabled ? (cfg.mode === 'autopilot' ? 'Autopilot' : cfg.mode === 'supervised' ? 'Supervisé' : 'Manuel') : 'IA off'}</span>
+                          <span className="metaPill">{portfolio.current_value.toFixed(2)} €</span>
+                          <span className="metaPill">Voir détail</span>
+                          <span className="rowChevron" aria-hidden="true">›</span>
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
               </article>
             </section>
@@ -10281,6 +11166,86 @@ export default function RobinApp() {
                 })()}
               </div>
 
+              <section className="bettingDetailHighlights">
+                <button className={`bettingDetailTile ${bettingDetailFocus === 'active' ? 'active' : ''}`} onClick={() => focusBettingDetailPanel('active')} type="button">
+                  <span>Paris actifs</span>
+                  <strong>{activeBettingBets.length}</strong>
+                  <small>Exposition en cours: {activeBettingExposure.toFixed(2)} €</small>
+                </button>
+                <button className={`bettingDetailTile ${bettingDetailFocus === 'recent' ? 'active' : ''}`} onClick={() => focusBettingDetailPanel('recent')} type="button">
+                  <span>Paris récents</span>
+                  <strong>{recentBettingBets.length}</strong>
+                  <small>Cliquez pour ouvrir le détail complet</small>
+                </button>
+              </section>
+
+              <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 12 }}>
+                <article className="featureCard" id="betting-cockpit-transactions-active">
+                  <div className="cardHeader">
+                    <h2>Transactions en cours</h2>
+                    <span>{activeBettingBets.length} active(s)</span>
+                  </div>
+                  {activeBettingBets.length === 0 ? (
+                    <p className="helperText" style={{ margin: 0 }}>Aucune transaction en cours.</p>
+                  ) : (
+                    <table className="txLogTable">
+                      <thead>
+                        <tr><th>Heure</th><th>Événement</th><th>Mise</th><th>Statut</th></tr>
+                      </thead>
+                      <tbody>
+                        {activeBettingBets.slice(0, 6).map((bet) => (
+                          <tr key={`cockpit-active-${bet.id}`}>
+                            <td>{formatDateTimeFr(bet.date)}</td>
+                            <td style={{ maxWidth: '170px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bet.event}</td>
+                            <td>{bet.stake.toFixed(0)} €</td>
+                            <td><span className="statusBadge idle">En cours</span></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                  <div className="providerActions fullWidth" style={{ marginTop: 8 }}>
+                    <button className="ghostButton" onClick={() => focusBettingDetailPanel('active')} type="button">Voir toutes les transactions en cours</button>
+                  </div>
+                </article>
+
+                <article className="featureCard" id="betting-cockpit-transactions-settled">
+                  <div className="cardHeader">
+                    <h2>Transactions effectuées</h2>
+                    <span>{recentBettingBets.filter((bet) => bet.result !== 'pending').length} clôturée(s)</span>
+                  </div>
+                  {recentBettingBets.filter((bet) => bet.result !== 'pending').length === 0 ? (
+                    <p className="helperText" style={{ margin: 0 }}>Aucune transaction effectuée pour le moment.</p>
+                  ) : (
+                    <table className="txLogTable">
+                      <thead>
+                        <tr><th>Heure</th><th>Événement</th><th>Résultat</th><th>Profit</th></tr>
+                      </thead>
+                      <tbody>
+                        {recentBettingBets.filter((bet) => bet.result !== 'pending').slice(0, 6).map((bet) => (
+                          <tr key={`cockpit-done-${bet.id}`}>
+                            <td>{formatDateTimeFr(bet.date)}</td>
+                            <td style={{ maxWidth: '170px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bet.event}</td>
+                            <td>
+                              <span className={bet.result === 'won' ? 'statusBadge ok' : bet.result === 'lost' ? 'statusBadge warn' : 'statusBadge idle'}>
+                                {bet.result === 'won' ? 'Gagné' : bet.result === 'lost' ? 'Perdu' : 'Annulé'}
+                              </span>
+                            </td>
+                            <td style={{ color: bet.profit > 0 ? 'var(--ok)' : bet.profit < 0 ? 'var(--danger)' : 'var(--muted)', fontWeight: 700 }}>
+                              {bet.profit >= 0 ? '+' : ''}{bet.profit.toFixed(2)} €
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                  <div className="providerActions fullWidth" style={{ marginTop: 8 }}>
+                    <button className="ghostButton" onClick={() => focusBettingDetailPanel('recent')} type="button">Voir toutes les transactions effectuées</button>
+                  </div>
+                </article>
+              </section>
+
+              {!virtualAppsEnabled.betting && !(activeBettingVirtualStrategy?.enabled) ? (
               <article className="featureCard">
                 <div className="cardHeader"><h2>Pilotage Cockpit · Paris sportifs fictif</h2><span>Activation portefeuille, agent IA et configuration</span></div>
                 {activeBettingVirtualStrategy ? (
@@ -10343,6 +11308,7 @@ export default function RobinApp() {
                   <p className="helperText">Portefeuille fictif Paris sportifs indisponible.</p>
                 )}
               </article>
+              ) : null}
 
               {/* === Betting alerts === */}
               {emergencyStopActive ? (
@@ -10499,7 +11465,7 @@ export default function RobinApp() {
               </article>
 
               {/* === Active bets list === */}
-              <article className="featureCard" style={{ gridColumn: '1 / -1' }}>
+              <article id="betting-active-detail" className={`featureCard ${bettingDetailFocus === 'active' ? 'bettingDetailCardFocused' : ''}`} style={{ gridColumn: '1 / -1' }}>
                 <div className="cardHeader">
                   <h2>Paris actifs</h2>
                   <span>{activeBettingBets.length} en cours · Exposition {activeBettingExposure.toFixed(0)} €</span>
@@ -10531,7 +11497,7 @@ export default function RobinApp() {
               </article>
 
               {/* === Recent bets table === */}
-              <article className="featureCard" style={{ gridColumn: '1 / -1' }}>
+              <article id="betting-recent-detail" className={`featureCard ${bettingDetailFocus === 'recent' ? 'bettingDetailCardFocused' : ''}`} style={{ gridColumn: '1 / -1' }}>
                 <div className="cardHeader"><h2>Paris récents</h2><span>Historique consolidé de toutes les stratégies</span></div>
                 <table className="txLogTable">
                   <thead><tr><th>Date & heure</th><th>Sport</th><th>Événement</th><th>Marché</th><th>Cote</th><th>Mise</th><th>Résultat</th><th>Profit</th></tr></thead>
@@ -10784,6 +11750,18 @@ export default function RobinApp() {
                     </div>
                     <Sparkline data={strategy.history} color={strategy.type === 'arbitrage' ? 'var(--ok)' : strategy.type === 'value_betting' ? 'var(--brand)' : 'var(--teal)'} />
                     <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                      <label className="checkRow quickAiToggle">
+                        <input
+                          type="checkbox"
+                          checked={strategy.ai_enabled}
+                          onChange={(event) => updateBettingStrategy(strategy.id, {
+                            ai_enabled: event.target.checked,
+                            enabled: event.target.checked ? true : strategy.enabled,
+                            mode: event.target.checked && strategy.mode === 'manual' ? 'supervised' : strategy.mode,
+                          })}
+                        />
+                        <span>IA rapide</span>
+                      </label>
                       <button className="primaryButton" onClick={() => { setSelectedStrategy(strategy); if (strategy.isVirtual) setVirtualRiskProfile((strategy.risk_profile ?? 'medium') as VirtualRiskProfile); setStrategyDetailOpen(true); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Voir le détail</button>
                     </div>
                   </article>
@@ -10957,6 +11935,7 @@ export default function RobinApp() {
                 })()}
               </div>
 
+              {!virtualAppsEnabled.racing ? (
               <article className="featureCard">
                 <div className="cardHeader"><h2>Pilotage Cockpit · Hippiques fictif</h2><span>Activation portefeuille, agent IA et configuration</span></div>
                 {activeRacingVirtualStrategy ? (
@@ -11041,6 +12020,7 @@ export default function RobinApp() {
                   <p className="helperText">Portefeuille fictif hippique indisponible.</p>
                 )}
               </article>
+              ) : null}
 
               <article className="featureCard">
                 <div className="cardHeader"><h2>🏇 Recommandations hippiques IA</h2><span>{racingSignals.filter((signal) => signal.status === 'pending').length} course(s) analysée(s)</span></div>
@@ -11366,6 +12346,27 @@ export default function RobinApp() {
                     </div>
                     <Sparkline data={strategy.history} color="var(--teal)" />
                     <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                      <label className="checkRow quickAiToggle">
+                        <input
+                          type="checkbox"
+                          checked={strategy.ai_enabled}
+                          onChange={(event) => {
+                            if (!event.target.checked && virtualAppsEnabled.racing && strategy.isVirtual) {
+                              setBettingAlert('Impossible de désactiver l agent IA tant que le portefeuille fictif hippique est actif.');
+                              return;
+                            }
+                            setRacingStrategies((prev) => prev.map((s) => s.id === strategy.id
+                              ? {
+                                ...s,
+                                ai_enabled: event.target.checked,
+                                enabled: event.target.checked ? true : s.enabled,
+                                mode: event.target.checked && s.mode === 'manual' ? 'supervised' : s.mode,
+                              }
+                              : s));
+                          }}
+                        />
+                        <span>IA rapide</span>
+                      </label>
                       <button className="primaryButton" onClick={() => { setSelectedRacingStrategy(strategy); setRacingStrategyDetailOpen(true); setAppView('strategies'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Voir le détail</button>
                     </div>
                   </article>
@@ -11504,6 +12505,7 @@ export default function RobinApp() {
 
           {activeApp === 'loto' && appView === 'dashboard' ? (
             <section style={{ display: 'grid', gap: 18 }}>
+              {!virtualAppsEnabled.loto ? (
               <article className="featureCard">
                 <div className="cardHeader">
                   <h2>Pilotage Cockpit · Loto fictif</h2>
@@ -11618,6 +12620,41 @@ export default function RobinApp() {
                   </div>
                 </div>
               </article>
+              ) : null}
+
+              {lotteryPendingTickets.length > 0 ? (
+                <article className="featureCard lotoSecondaryCard">
+                  <div className="cardHeader">
+                    <h2>🎟️ Grilles en cours de tirage (priorité)</h2>
+                    <span>{lotteryPendingTickets.length} ticket(s) simulé(s), sans doublon</span>
+                  </div>
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    {lotteryPendingTickets.slice(0, 10).map((ticket) => (
+                      <div key={ticket.id} className="compactRow" style={{ alignItems: 'center', gap: 10 }}>
+                        <div style={{ display: 'grid', gap: 3, flex: '1 1 auto' }}>
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                            <span className="sectionTag" style={{ margin: 0 }}>{ticket.game === 'loto' ? '🎯' : '🌟'} {LOTTERY_CONFIG[ticket.game].label}</span>
+                            <span style={{ fontSize: '.78rem', color: 'var(--muted)' }}>{formatDateTimeFr(ticket.drawDate)}</span>
+                            {ticket.subscriptionLabel ? <span className="metaPill">{ticket.subscriptionLabel}</span> : null}
+                          </div>
+                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                            {ticket.numbers.map((n) => <span key={`pt-n-${ticket.id}-${n}`} className="lotteryBall" style={{ fontSize: '.7rem', width: 22, height: 22 }}>{n}</span>)}
+                            {ticket.stars.map((s) => <span key={`pt-s-${ticket.id}-${s}`} className="lotteryBall star" style={{ fontSize: '.7rem', width: 22, height: 22 }}>{s}</span>)}
+                          </div>
+                        </div>
+                        <span className={Date.parse(ticket.drawDate) <= Date.now() ? 'statusBadge warn' : 'statusBadge idle'}>
+                          {Date.parse(ticket.drawDate) <= Date.now() ? 'Tirage en cours' : 'En attente'}
+                        </span>
+                      </div>
+                    ))}
+                    {lotteryPendingTickets.length > 10 ? (
+                      <p style={{ margin: 0, fontSize: '.78rem', color: 'var(--muted)', textAlign: 'center' }}>
+                        + {lotteryPendingTickets.length - 10} ticket(s) supplémentaire(s) — <button className="ghostButton" style={{ display: 'inline', padding: '2px 6px' }} onClick={() => { setLotoPortfolioMenuSelection('loto-virtual'); setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Voir tout</button>
+                      </p>
+                    ) : null}
+                  </div>
+                </article>
+              ) : null}
 
               <article className="featureCard lotoSecondaryCard">
                 <div className="cardHeader">
@@ -11637,38 +12674,6 @@ export default function RobinApp() {
                   ))}
                 </div>
               </article>
-
-              {lotteryPendingTickets.length > 0 ? (
-                <article className="featureCard lotoSecondaryCard">
-                  <div className="cardHeader">
-                    <h2>🎟️ Grilles en attente de tirage</h2>
-                    <span>{lotteryPendingTickets.length} ticket(s) simulé(s) en cours</span>
-                  </div>
-                  <div style={{ display: 'grid', gap: 8 }}>
-                    {lotteryPendingTickets.slice(0, 10).map((ticket) => (
-                      <div key={ticket.id} className="compactRow" style={{ alignItems: 'center', gap: 10 }}>
-                        <div style={{ display: 'grid', gap: 3, flex: '1 1 auto' }}>
-                          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                            <span className="sectionTag" style={{ margin: 0 }}>{ticket.game === 'loto' ? '🎯' : '🌟'} {LOTTERY_CONFIG[ticket.game].label}</span>
-                            <span style={{ fontSize: '.78rem', color: 'var(--muted)' }}>{formatDateTimeFr(ticket.drawDate)}</span>
-                            {ticket.subscriptionLabel ? <span className="metaPill">{ticket.subscriptionLabel}</span> : null}
-                          </div>
-                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                            {ticket.numbers.map((n) => <span key={`pt-n-${ticket.id}-${n}`} className="lotteryBall" style={{ fontSize: '.7rem', width: 22, height: 22 }}>{n}</span>)}
-                            {ticket.stars.map((s) => <span key={`pt-s-${ticket.id}-${s}`} className="lotteryBall star" style={{ fontSize: '.7rem', width: 22, height: 22 }}>{s}</span>)}
-                          </div>
-                        </div>
-                        <span className="statusBadge idle">En cours</span>
-                      </div>
-                    ))}
-                    {lotteryPendingTickets.length > 10 ? (
-                      <p style={{ margin: 0, fontSize: '.78rem', color: 'var(--muted)', textAlign: 'center' }}>
-                        + {lotteryPendingTickets.length - 10} ticket(s) supplémentaire(s) — <button className="ghostButton" style={{ display: 'inline', padding: '2px 6px' }} onClick={() => { setLotoPortfolioMenuSelection('loto-virtual'); setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Voir tout</button>
-                      </p>
-                    ) : null}
-                  </div>
-                </article>
-              ) : null}
 
               <article className="featureCard lotoPrimaryCard">
                 <div className="cardHeader">
@@ -11916,37 +12921,60 @@ export default function RobinApp() {
                         </label>
                         <label>
                           Mode IA
-                          <select
-                            value={cfg.mode}
-                            disabled={!cfg.enabled}
-                            onChange={(event) => void updateAgentConfig(selectedLotoIntegrationPortfolio.id, { mode: event.target.value as AgentMode })}
-                          >
-                            <option value="manual">Manuel</option>
-                            <option value="supervised">Validation humaine</option>
-                            <option value="autopilot">Autopilot</option>
-                          </select>
+                          <div className="aiModeSelector">
+                            <button
+                              className={`aiModeOption ${cfg.mode === 'manual' ? 'active manual' : ''}`}
+                              disabled={!cfg.enabled}
+                              onClick={() => void updateAgentConfig(selectedLotoIntegrationPortfolio.id, { mode: 'manual' })}
+                              type="button"
+                            >
+                              <span>🖐</span>
+                              <strong>Manuel</strong>
+                              <small>Décisions humaines</small>
+                            </button>
+                            <button
+                              className={`aiModeOption ${cfg.mode === 'supervised' ? 'active supervised' : ''}`}
+                              disabled={!cfg.enabled}
+                              onClick={() => void updateAgentConfig(selectedLotoIntegrationPortfolio.id, { mode: 'supervised' })}
+                              type="button"
+                            >
+                              <span>👁</span>
+                              <strong>Validation humaine</strong>
+                              <small>L IA propose</small>
+                            </button>
+                            <button
+                              className={`aiModeOption ${cfg.mode === 'autopilot' ? 'active autopilot' : ''}`}
+                              disabled={!cfg.enabled}
+                              onClick={() => void updateAgentConfig(selectedLotoIntegrationPortfolio.id, { mode: 'autopilot' })}
+                              type="button"
+                            >
+                              <span>🤖</span>
+                              <strong>Autopilot</strong>
+                              <small>Exécution automatique</small>
+                            </button>
+                          </div>
                         </label>
                         <label>
-                          Seuil montant max / action ({cfg.max_amount.toFixed(1)} €)
+                          Montant maximum transaction ({cfg.max_amount.toFixed(1)} €)
                           <input
                             type="range"
                             min={MIN_MONETARY_LIMIT}
-                            max={500}
+                            max={MAX_AGENT_TRANSACTION_AMOUNT}
                             step={0.1}
                             disabled={!cfg.enabled}
-                            value={Math.min(500, Math.max(MIN_MONETARY_LIMIT, cfg.max_amount))}
+                            value={Math.min(MAX_AGENT_TRANSACTION_AMOUNT, Math.max(MIN_MONETARY_LIMIT, cfg.max_amount))}
                             onChange={(event) => void updateAgentConfig(selectedLotoIntegrationPortfolio.id, { max_amount: Math.max(MIN_MONETARY_LIMIT, Number(event.target.value) || MIN_MONETARY_LIMIT) })}
                           />
                         </label>
                         <label>
-                          Seuil max actions / jour ({cfg.max_transactions_per_day})
+                          Nombre de transactions / jour ({cfg.max_transactions_per_day})
                           <input
                             type="range"
                             min={1}
-                            max={30}
+                            max={MAX_AGENT_TRANSACTIONS_PER_DAY}
                             step={1}
                             disabled={!cfg.enabled}
-                            value={Math.min(30, Math.max(1, cfg.max_transactions_per_day))}
+                            value={Math.min(MAX_AGENT_TRANSACTIONS_PER_DAY, Math.max(1, cfg.max_transactions_per_day))}
                             onChange={(event) => void updateAgentConfig(selectedLotoIntegrationPortfolio.id, { max_transactions_per_day: Math.max(1, Number(event.target.value) || 1) })}
                           />
                         </label>
@@ -12092,15 +13120,62 @@ export default function RobinApp() {
                           </label>
                           <label>
                             Mode IA
-                            <select
-                              value={cfg.mode}
+                            <div className="aiModeSelector">
+                              <button
+                                className={`aiModeOption ${cfg.mode === 'manual' ? 'active manual' : ''}`}
+                                disabled={!cfg.enabled}
+                                onClick={() => void updateAgentConfig(portfolio.id, { mode: 'manual' })}
+                                type="button"
+                              >
+                                <span>🖐</span>
+                                <strong>Manuel</strong>
+                                <small>Décisions humaines</small>
+                              </button>
+                              <button
+                                className={`aiModeOption ${cfg.mode === 'supervised' ? 'active supervised' : ''}`}
+                                disabled={!cfg.enabled}
+                                onClick={() => void updateAgentConfig(portfolio.id, { mode: 'supervised' })}
+                                type="button"
+                              >
+                                <span>👁</span>
+                                <strong>Validation humaine</strong>
+                                <small>L IA propose</small>
+                              </button>
+                              <button
+                                className={`aiModeOption ${cfg.mode === 'autopilot' ? 'active autopilot' : ''}`}
+                                disabled={!cfg.enabled}
+                                onClick={() => void updateAgentConfig(portfolio.id, { mode: 'autopilot' })}
+                                type="button"
+                              >
+                                <span>🤖</span>
+                                <strong>Autopilot</strong>
+                                <small>Exécution automatique</small>
+                              </button>
+                            </div>
+                          </label>
+                          <label>
+                            Montant maximum transaction ({cfg.max_amount.toFixed(1)} €)
+                            <input
+                              type="range"
+                              min={MIN_MONETARY_LIMIT}
+                              max={MAX_AGENT_TRANSACTION_AMOUNT}
+                              step={0.1}
                               disabled={!cfg.enabled}
-                              onChange={(event) => void updateAgentConfig(portfolio.id, { mode: event.target.value as AgentMode })}
-                            >
-                              <option value="manual">Manuel</option>
-                              <option value="supervised">Validation humaine</option>
-                              <option value="autopilot">Autopilot</option>
-                            </select>
+                              value={Math.min(MAX_AGENT_TRANSACTION_AMOUNT, Math.max(MIN_MONETARY_LIMIT, cfg.max_amount))}
+                              onChange={(event) => void updateAgentConfig(portfolio.id, { max_amount: Math.max(MIN_MONETARY_LIMIT, Number(event.target.value) || MIN_MONETARY_LIMIT) })}
+                            />
+                          </label>
+                          <label>
+                            Nombre de transactions / jour ({cfg.max_transactions_per_day})
+                            <input
+                              type="range"
+                              min={1}
+                              max={MAX_AGENT_TRANSACTIONS_PER_DAY}
+                              step={1}
+                              disabled={!cfg.enabled}
+                              value={Math.min(MAX_AGENT_TRANSACTIONS_PER_DAY, Math.max(1, cfg.max_transactions_per_day))}
+                              onChange={(event) => void updateAgentConfig(portfolio.id, { max_transactions_per_day: Math.max(1, Number(event.target.value) || 1) })}
+                            />
                           </label>
                         </article>
                       );
@@ -12113,8 +13188,33 @@ export default function RobinApp() {
 
           {appView === 'admin' ? (
             <section className="workspaceGrid adminGrid">
+              <article className="featureCard" style={{ gridColumn: '1 / -1' }}>
+                <div className="cardHeader">
+                  <h2>Administration</h2>
+                  <span>Menus enfants</span>
+                </div>
+                <div className="adminChildMenu">
+                  <button className={adminSection === 'approvals' ? 'tagButton active' : 'tagButton'} onClick={() => setAdminSection('approvals')} type="button">
+                    Approbations ({pendingAdminUsers.length})
+                  </button>
+                  <button className={adminSection === 'users' ? 'tagButton active' : 'tagButton'} onClick={() => setAdminSection('users')} type="button">
+                    Utilisateurs
+                  </button>
+                  <button className={adminSection === 'audit' ? 'tagButton active' : 'tagButton'} onClick={() => setAdminSection('audit')} type="button">
+                    Audit trail
+                  </button>
+                  <button className={adminSection === 'transactions' ? 'tagButton active' : 'tagButton'} onClick={() => setAdminSection('transactions')} type="button">
+                    Transactions
+                  </button>
+                  <button className={adminSection === 'security' ? 'tagButton active' : 'tagButton'} onClick={() => setAdminSection('security')} type="button">
+                    Sécurité
+                  </button>
+                </div>
+              </article>
+
               {/* === KILL SWITCH — redesigned prominent ===  */}
-              <div className={`killSwitchPanel ${emergencyStopActive ? 'active' : 'inactive'}`} style={{ gridColumn: '1 / -1' }}>
+              {(adminSection === 'security') ? (
+              <div className={`featureCard killSwitchPanel ${emergencyStopActive ? 'active' : 'inactive'}`} style={{ gridColumn: '1 / -1' }}>
                 <div className="killSwitchHeader">
                   <div className="killSwitchTitle">
                     <span style={{ fontSize: '1.8rem', lineHeight: 1 }}>🛑</span>
@@ -12180,11 +13280,13 @@ export default function RobinApp() {
                   ) : null}
                 </div>
               </div>
+              ) : null}
 
+              {(adminSection === 'users' || adminSection === 'approvals') ? (
               <article className="featureCard">
                 <div className="cardHeader">
-                  <h2>5.1 Gestion des comptes</h2>
-                  <span>Roles, applications autorisées et activation des comptes</span>
+                  <h2>{adminSection === 'approvals' ? '5.1 Utilisateurs en attente d approbation' : '5.1 Gestion des comptes'}</h2>
+                  <span>{adminSection === 'approvals' ? 'Validation admin avant première connexion' : 'Roles, applications autorisées et activation des comptes'}</span>
                 </div>
                 {adminFeedback ? <p className="helperText">{adminFeedback}</p> : null}
                 {!user.mfa_enabled ? (
@@ -12194,6 +13296,7 @@ export default function RobinApp() {
                   </div>
                 ) : null}
                 <>
+                    {adminSection === 'users' ? (
                     <div className="adminToolbar">
                       <input
                         aria-label="Rechercher un utilisateur"
@@ -12209,23 +13312,206 @@ export default function RobinApp() {
                         <option value="user">Utilisateurs</option>
                         <option value="banned">Bannis</option>
                       </select>
-                      <select className="toolbarSelect" onChange={(event) => setAdminStatusFilter(event.target.value as 'all' | 'active' | 'inactive')} value={adminStatusFilter}>
+                      <select className="toolbarSelect" onChange={(event) => setAdminStatusFilter(event.target.value as 'all' | 'active' | 'inactive' | 'pending')} value={adminStatusFilter}>
                         <option value="all">Tous les statuts</option>
                         <option value="active">Actifs</option>
                         <option value="inactive">Inactifs</option>
+                        <option value="pending">En attente validation</option>
                       </select>
                     </div>
+                    ) : null}
+                    {adminSection === 'approvals' ? (
+                    <div className="adminToolbar">
+                      <input
+                        aria-label="Rechercher un compte en attente"
+                        className="toolbarInput"
+                        onChange={(event) => setApprovalsSearch(event.target.value)}
+                        placeholder="Rechercher par nom ou email"
+                        type="search"
+                        value={approvalsSearch}
+                      />
+                      <select className="toolbarSelect" onChange={(event) => setApprovalsSort(event.target.value as 'newest' | 'oldest' | 'name')} value={approvalsSort}>
+                        <option value="newest">Plus récents</option>
+                        <option value="oldest">Plus anciens</option>
+                        <option value="name">Nom A-Z</option>
+                      </select>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <button
+                          className="ghostButton"
+                          disabled={submitting || approvalQueueRows.length === 0}
+                          onClick={() => applyApprovalAppPreset('finance')}
+                          type="button"
+                        >
+                          Pack Finance seulement
+                        </button>
+                        <button
+                          className="ghostButton"
+                          disabled={submitting || approvalQueueRows.length === 0}
+                          onClick={() => applyApprovalAppPreset('paris')}
+                          type="button"
+                        >
+                          Pack Paris
+                        </button>
+                        <button
+                          className="ghostButton"
+                          disabled={submitting || approvalQueueRows.length === 0}
+                          onClick={() => applyApprovalAppPreset('all')}
+                          type="button"
+                        >
+                          Tout activer
+                        </button>
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <button
+                          className="ghostButton"
+                          disabled={approvalQueueRows.length === 0}
+                          onClick={() => {
+                            const next: Record<string, true> = {};
+                            approvalQueueRows.forEach((entry) => { next[entry.id] = true; });
+                            setSelectedApprovalIds(next);
+                          }}
+                          type="button"
+                        >
+                          Tout sélectionner
+                        </button>
+                        <button
+                          className="ghostButton"
+                          disabled={selectedApprovalCount === 0}
+                          onClick={() => setSelectedApprovalIds({})}
+                          type="button"
+                        >
+                          Effacer sélection
+                        </button>
+                        <button
+                          className="primaryButton"
+                          disabled={!user.mfa_enabled || submitting || selectedApprovalCount === 0}
+                          onClick={() => void approvePendingUsersBatch(Object.keys(selectedApprovalIds), approvalAppSelections)}
+                          title={!user.mfa_enabled ? 'Activez MFA pour modifier les comptes.' : ''}
+                          type="button"
+                        >
+                          {submitting ? 'Validation...' : `Valider la sélection (${selectedApprovalCount})`}
+                        </button>
+                      </div>
+                    </div>
+                    ) : null}
                     <div className="adminSummaryRow">
-                      <span>{filteredAdminUsers.length} utilisateur(s) affiches</span>
+                      <span>{adminSection === 'approvals' ? approvalQueueRows.length : filteredAdminUsers.length} utilisateur(s) affiches</span>
                       <span>{adminUsers.filter((entry) => entry.assigned_roles.includes('admin')).length} admin(s)</span>
+                      <span>{adminConnectedUsersCount} connecte(s) recemment</span>
+                      <span>{pendingAdminUsers.length} en attente</span>
                     </div>
                     <div className="adminList">
-                    {filteredAdminUsers.map((entry) => {
+                    {adminSection === 'approvals' ? (
+                      approvalQueueRows.length === 0 ? (
+                        <div className="infoPanel mutedPanel">
+                          <strong>Aucun compte en attente</strong>
+                          <p>Tous les nouveaux utilisateurs ont été traités. Vous pouvez passer à la section Utilisateurs pour les mises à jour détaillées.</p>
+                        </div>
+                      ) : (
+                        <div className="operationLedgerWrap">
+                          <table className="operationLedger adminApprovalTable">
+                            <thead>
+                              <tr>
+                                <th></th>
+                                <th>Utilisateur</th>
+                                <th>Email</th>
+                                <th>Applications autorisées</th>
+                                <th>Dernière connexion</th>
+                                <th>MFA</th>
+                                <th>Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {approvalQueueRows.map((entry) => {
+                                const appAccess = normalizeSelectedAppAccess(approvalAppSelections[entry.id] ?? entry.app_access);
+                                const roles = new Set(entry.assigned_roles);
+                                const selected = Boolean(selectedApprovalIds[entry.id]);
+                                const adminActionsDisabled = !user.mfa_enabled || submitting;
+                                return (
+                                  <tr key={`approval-row-${entry.id}`}>
+                                    <td>
+                                      <input
+                                        aria-label={`Sélectionner ${entry.full_name}`}
+                                        checked={selected}
+                                        onChange={(event) => setSelectedApprovalIds((state) => {
+                                          if (event.target.checked) {
+                                            return { ...state, [entry.id]: true };
+                                          }
+                                          const next = { ...state };
+                                          delete next[entry.id];
+                                          return next;
+                                        })}
+                                        type="checkbox"
+                                      />
+                                    </td>
+                                    <td>
+                                      <strong>{entry.full_name}</strong>
+                                    </td>
+                                    <td>{entry.email}</td>
+                                    <td>
+                                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                        {ALL_APP_KEYS.map((appKey) => {
+                                          const active = appAccess.includes(appKey);
+                                          return (
+                                            <button
+                                              className={active ? 'tagButton active' : 'tagButton'}
+                                              disabled={adminActionsDisabled}
+                                              key={`approval-app-${entry.id}-${appKey}`}
+                                              onClick={() => {
+                                                setApprovalAppSelections((state) => {
+                                                  const current = normalizeSelectedAppAccess(state[entry.id] ?? entry.app_access);
+                                                  const next = current.includes(appKey)
+                                                    ? current.filter((item) => item !== appKey)
+                                                    : [...current, appKey];
+                                                  return {
+                                                    ...state,
+                                                    [entry.id]: normalizeSelectedAppAccess(next),
+                                                  };
+                                                });
+                                              }}
+                                              title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}
+                                              type="button"
+                                            >
+                                              {APP_LABELS[appKey]}
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    </td>
+                                    <td>{entry.last_login_at ? new Date(entry.last_login_at).toLocaleString('fr-FR') : 'Jamais connecté'}</td>
+                                    <td>
+                                      <span className={entry.mfa_enabled ? 'statusBadge ok' : 'statusBadge warn'}>
+                                        {entry.mfa_enabled ? 'Activée' : 'Inactive'}
+                                      </span>
+                                    </td>
+                                    <td>
+                                      <button
+                                        className="primaryButton"
+                                        disabled={adminActionsDisabled}
+                                        onClick={() => updateAdminUser(entry, roles.has('banned') ? ['user'] : entry.assigned_roles, true, appAccess, { access_profile: 'write' })}
+                                        title={!user.mfa_enabled ? 'Activez MFA pour modifier les comptes.' : ''}
+                                        type="button"
+                                      >
+                                        Valider
+                                      </button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )
+                    ) : (
+                    filteredAdminUsers.map((entry) => {
                       const roles = new Set(entry.assigned_roles);
                       const appAccess = normalizeFrontendAppAccess(entry.app_access);
                       const userConns = adminConnections[entry.id] ?? [];
                       const adminActionsDisabled = !user.mfa_enabled;
                       const lastConnection = entry.last_login_at ? new Date(entry.last_login_at).toLocaleString('fr-FR') : 'Aucune connexion';
+                      const pendingApproval = !entry.is_active && !entry.is_verified;
+                      const avatarUrl = String(entry.personal_settings.avatar_url ?? '').trim();
+                      const riskProfile = normalizeUserRiskProfile(entry.personal_settings.risk_profile);
                       return (
                         <div className="adminUserCard" key={entry.id}>
                           <div className="adminUserCardHeader">
@@ -12233,10 +13519,30 @@ export default function RobinApp() {
                               <strong>{entry.full_name}</strong>
                               <p>{entry.email}</p>
                               <p style={{ marginTop: 4, fontSize: '.76rem', color: 'var(--muted)' }}>Derniere connexion: {lastConnection}</p>
+                              <p style={{ marginTop: 4, fontSize: '.76rem', color: 'var(--muted)' }}>
+                                MFA: {entry.mfa_enabled ? 'activee' : 'inactive'} · Risque: {riskProfile === 'low' ? 'faible' : riskProfile === 'high' ? 'eleve' : 'moyen'}
+                              </p>
+                              <p style={{ marginTop: 4, fontSize: '.76rem', color: 'var(--muted)' }}>
+                                Avatar: {avatarUrl ? avatarUrl : 'non defini'}
+                              </p>
+                              {pendingApproval ? (
+                                <p style={{ marginTop: 4, fontSize: '.76rem', color: '#9a3412', fontWeight: 700 }}>Validation admin requise avant connexion</p>
+                              ) : null}
                             </div>
                             <div className="adminActions">
+                              {pendingApproval ? (
+                                <button
+                                  className="primaryButton"
+                                  disabled={adminActionsDisabled}
+                                  onClick={() => updateAdminUser(entry, roles.has('banned') ? ['user'] : entry.assigned_roles, true, appAccess, { access_profile: 'write' })}
+                                  title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}
+                                  type="button"
+                                >
+                                  Valider compte
+                                </button>
+                              ) : null}
                               <button className={roles.has('user') ? 'tagButton active' : 'tagButton'} disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, roles.has('admin') ? ['admin', 'user'] : ['user'], entry.is_active, appAccess)} type="button" title={adminActionsDisabled ? 'Activez MFA pour modifier les rôles.' : ''}>
-                                Utilisateur
+                                  onClick={() => void approvePendingUsersBatch(Object.keys(selectedApprovalIds), approvalAppSelections)}
                               </button>
                               <button className={roles.has('admin') ? 'tagButton active' : 'tagButton'} disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, ['admin', 'user'], entry.is_active, appAccess)} type="button" title={adminActionsDisabled ? 'Activez MFA pour modifier les rôles.' : ''}>
                                 Admin
@@ -12246,6 +13552,68 @@ export default function RobinApp() {
                               </button>
                               <button className="ghostButton" disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, entry.assigned_roles, !entry.is_active, appAccess)} type="button" title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}>
                                 {entry.is_active ? 'Desactiver' : 'Reactiver'}
+                              </button>
+                              <button
+                                className="ghostButton"
+                                disabled={adminActionsDisabled}
+                                onClick={() => {
+                                  const nextName = window.prompt('Nom complet', entry.full_name);
+                                  if (nextName === null) {
+                                    return;
+                                  }
+                                  const nextAvatar = window.prompt('Avatar URL (laisser vide pour supprimer)', String(entry.personal_settings.avatar_url ?? ''));
+                                  if (nextAvatar === null) {
+                                    return;
+                                  }
+                                  const nextRiskRaw = window.prompt('Profil de risque (low|medium|high)', normalizeUserRiskProfile(entry.personal_settings.risk_profile));
+                                  if (nextRiskRaw === null) {
+                                    return;
+                                  }
+                                  const normalizedRisk = nextRiskRaw.trim().toLowerCase();
+                                  const nextRisk = normalizedRisk === 'low' || normalizedRisk === 'high' ? normalizedRisk : 'medium';
+                                  updateAdminUser(entry, entry.assigned_roles, entry.is_active, appAccess, {
+                                    full_name: nextName.trim() || entry.full_name,
+                                    avatar_url: nextAvatar.trim(),
+                                    risk_profile: nextRisk,
+                                  });
+                                }}
+                                title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}
+                                type="button"
+                              >
+                                Modifier profil
+                              </button>
+                              <button
+                                className="ghostButton"
+                                disabled={adminActionsDisabled}
+                                onClick={() => {
+                                  const newPassword = window.prompt('Nouveau mot de passe (14+ chars, maj/min/chiffre/symbole)');
+                                  if (!newPassword) {
+                                    return;
+                                  }
+                                  updateAdminUser(entry, entry.assigned_roles, entry.is_active, appAccess, { new_password: newPassword });
+                                }}
+                                title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}
+                                type="button"
+                              >
+                                Reinitialiser MDP
+                              </button>
+                              <button
+                                className="ghostButton"
+                                disabled={adminActionsDisabled}
+                                onClick={() => updateAdminUser(entry, entry.assigned_roles, entry.is_active, appAccess, { mfa_enabled: !entry.mfa_enabled })}
+                                title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}
+                                type="button"
+                              >
+                                {entry.mfa_enabled ? 'Desactiver MFA' : 'Activer MFA'}
+                              </button>
+                              <button
+                                className="tagButton danger"
+                                disabled={adminActionsDisabled}
+                                onClick={() => deleteAdminUser(entry)}
+                                title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}
+                                type="button"
+                              >
+                                Supprimer
                               </button>
                             </div>
                           </div>
@@ -12298,11 +13666,45 @@ export default function RobinApp() {
                           )}
                         </div>
                       );
-                    })}
+                    })
+                    )}
                     </div>
                 </>
               </article>
+              ) : null}
 
+              {adminSection === 'approvals' ? (
+              <article className="featureCard">
+                <div className="cardHeader">
+                  <h2>Dernières connexions (audit trail)</h2>
+                  <span>Journal des dernières authentifications</span>
+                </div>
+                {lastLoginAuditRows.length === 0 ? (
+                  <div className="infoPanel mutedPanel">
+                    <strong>Aucune connexion recensée</strong>
+                    <p>Les dates de dernière connexion apparaîtront ici après la première authentification des comptes.</p>
+                  </div>
+                ) : (
+                  <div className="auditTimeline">
+                    {lastLoginAuditRows.map((entry) => (
+                      <div className="auditEntry" key={`last-login-${entry.id}`}>
+                        <div className="auditDot" />
+                        <div>
+                          <div className="compactRow noBorder">
+                            <strong>{entry.full_name}</strong>
+                            <span>{entry.last_login_at ? new Date(entry.last_login_at).toLocaleString('fr-FR') : 'Jamais connecté'}</span>
+                          </div>
+                          <p>{entry.email}</p>
+                          <p>Statut: {(!entry.is_active && !entry.is_verified) ? 'En attente validation' : entry.is_active ? 'Actif' : 'Inactif'}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </article>
+              ) : null}
+
+              {adminSection === 'transactions' ? (
               <article className="featureCard">
                 <div className="cardHeader">
                   <h2>Historique des transactions</h2>
@@ -12345,7 +13747,9 @@ export default function RobinApp() {
                   </div>
                 )}
               </article>
+              ) : null}
 
+              {adminSection === 'audit' ? (
               <article className="featureCard">
                 <div className="cardHeader">
                   <h2>5.2 Audit Trail</h2>
@@ -12383,7 +13787,9 @@ export default function RobinApp() {
                   ))}
                 </div>
               </article>
+              ) : null}
 
+              {adminSection === 'security' ? (
               <article className="featureCard">
                 <div className="cardHeader">
                   <h2>5.3 Configuration des intégrations</h2>
@@ -12394,6 +13800,7 @@ export default function RobinApp() {
                   <p>Les administrateurs définissent ici les intégrations disponibles (Coinbase, bookmakers, banques). Chaque utilisateur renseigne ensuite ses identifiants personnels dans Mon compte / Options.</p>
                 </div>
               </article>
+              ) : null}
             </section>
           ) : null}
         </section>

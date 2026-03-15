@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import ORJSONResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from redis import Redis
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
 from .agents import build_agent_bundle
@@ -214,9 +214,9 @@ def normalize_access_profile(profile: str | None) -> str:
 
 def normalize_app_access(apps: list[str] | None) -> list[str]:
     cleaned: list[str] = []
-    for app in apps or ["finance", "betting", "loto"]:
+    for app in apps or ["finance", "betting", "racing", "loto"]:
         normalized = app.strip().lower()
-        if normalized in {"finance", "betting", "loto"} and normalized not in cleaned:
+        if normalized in {"finance", "betting", "racing", "loto"} and normalized not in cleaned:
             cleaned.append(normalized)
     if not cleaned:
         cleaned = ["finance"]
@@ -226,7 +226,7 @@ def normalize_app_access(apps: list[str] | None) -> list[str]:
 
 
 def require_app_access(user: User, app_name: str) -> None:
-    app_access = normalize_app_access(user.app_access if isinstance(user.app_access, list) else ["finance", "betting", "loto"])
+    app_access = normalize_app_access(user.app_access if isinstance(user.app_access, list) else ["finance", "betting", "racing", "loto"])
     if app_name not in app_access:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Access denied for application '{app_name}'")
 
@@ -283,7 +283,7 @@ def primary_role_from_roles(roles: list[str]) -> str:
 def to_user_profile(user: User) -> UserProfileResponse:
     assigned_roles = normalize_roles(user.assigned_roles or [user.role], user.role)
     access_profile = normalize_access_profile(getattr(user, "access_profile", "write"))
-    app_access = normalize_app_access(getattr(user, "app_access", ["finance", "betting", "loto"]))
+    app_access = normalize_app_access(getattr(user, "app_access", ["finance", "betting", "racing", "loto"]))
     return UserProfileResponse(
         id=user.id,
         email=user.email,
@@ -497,7 +497,7 @@ def ensure_runtime_schema(db: Session) -> None:
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number VARCHAR(32)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_roles JSON DEFAULT '[]'::json",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS access_profile VARCHAR(16) DEFAULT 'write'",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS app_access JSON DEFAULT '[\"finance\",\"betting\",\"loto\"]'::json",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS app_access JSON DEFAULT '[\"finance\",\"betting\",\"racing\",\"loto\"]'::json",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS birth_date DATE",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT false",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_channel VARCHAR(16)",
@@ -523,7 +523,7 @@ def ensure_runtime_schema(db: Session) -> None:
     db.commit()
     db.execute(text("UPDATE users SET assigned_roles = to_json(ARRAY[role]) WHERE assigned_roles IS NULL OR assigned_roles::text = 'null' OR assigned_roles::text = '[]'"))
     db.execute(text("UPDATE users SET access_profile = 'write' WHERE access_profile IS NULL OR access_profile = ''"))
-    db.execute(text("UPDATE users SET app_access = '[\"finance\",\"betting\",\"loto\"]'::json WHERE app_access IS NULL OR app_access::text = 'null' OR app_access::text = '[]'"))
+    db.execute(text("UPDATE users SET app_access = '[\"finance\",\"betting\",\"racing\",\"loto\"]'::json WHERE app_access IS NULL OR app_access::text = 'null' OR app_access::text = '[]'"))
     db.execute(text("UPDATE users SET is_verified = true WHERE is_verified IS NULL"))
     db.commit()
 
@@ -1064,10 +1064,11 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
         password_hash=hash_password(payload.password),
         role="user",
         assigned_roles=["user"],
-        access_profile=normalize_access_profile(payload.access_profile),
+        access_profile="read",
         app_access=normalize_app_access(payload.app_access),
         birth_date=payload.birth_date,
         is_verified=False,
+        is_active=False,
         verification_channel=payload.verification_channel,
         personal_settings=merge_client_context_settings(payload.personal_settings or {
             "dashboard_density": "comfortable",
@@ -1092,7 +1093,18 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
         delivered = send_account_verification_email(user.email, verification_code)
         if not delivered:
             logger.warning("Verification email not delivered for %s (SMTP config missing or invalid)", user.email)
-    write_audit_log(db, user.id, "auth.registered", {"email": user.email, "assigned_roles": user.assigned_roles, "client_context": client_context}, ip_address=request.client.host if request.client else None)
+    write_audit_log(
+        db,
+        user.id,
+        "auth.registered",
+        {
+            "email": user.email,
+            "assigned_roles": user.assigned_roles,
+            "client_context": client_context,
+            "status": "pending_admin_approval",
+        },
+        ip_address=request.client.host if request.client else None,
+    )
     return to_user_profile(user)
 
 
@@ -1117,6 +1129,9 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
 
     if user.locked_until and user.locked_until > datetime.utcnow():
         raise HTTPException(status_code=status.HTTP_423_LOCKED, detail="Account temporarily locked")
+
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account pending admin approval")
 
     # MFA is no longer required at login; it is requested only for sensitive operations.
     mfa_verified = False
@@ -1629,8 +1644,40 @@ def admin_update_user(user_id: str, payload: AdminUserUpdateRequest, admin_user:
     if payload.assigned_roles is not None:
         user.assigned_roles = normalize_roles(payload.assigned_roles)
         user.role = primary_role_from_roles(user.assigned_roles)
+    if payload.access_profile is not None:
+        user.access_profile = normalize_access_profile(payload.access_profile)
+    if payload.app_access is not None:
+        user.app_access = normalize_app_access(payload.app_access)
     if payload.is_active is not None:
+        was_inactive = not user.is_active
         user.is_active = payload.is_active
+        if payload.is_active and was_inactive:
+            user.is_verified = True
+            merged_settings = dict(user.personal_settings or {})
+            merged_settings["approved_by_admin_at"] = datetime.utcnow().isoformat()
+            user.personal_settings = merged_settings
+    if payload.new_password:
+        validate_password_strength(payload.new_password)
+        user.password_hash = hash_password(payload.new_password)
+        user.failed_login_attempts = 0
+        user.locked_until = None
+    if payload.mfa_enabled is not None:
+        if payload.mfa_enabled:
+            device = primary_mfa_device(db, user.id)
+            if not device or not device.is_verified:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Cannot enable MFA without a verified device")
+            user.mfa_enabled = True
+        else:
+            user.mfa_enabled = False
+            db.execute(delete(MfaDevice).where(MfaDevice.user_id == user.id))
+    if payload.avatar_url is not None:
+        merged_settings = dict(user.personal_settings or {})
+        merged_settings["avatar_url"] = payload.avatar_url.strip() if payload.avatar_url else ""
+        user.personal_settings = merged_settings
+    if payload.risk_profile is not None:
+        merged_settings = dict(user.personal_settings or {})
+        merged_settings["risk_profile"] = payload.risk_profile
+        user.personal_settings = merged_settings
     if payload.personal_settings is not None:
         merged_settings = dict(user.personal_settings or {})
         merged_settings.update(payload.personal_settings)
@@ -1638,8 +1685,43 @@ def admin_update_user(user_id: str, payload: AdminUserUpdateRequest, admin_user:
     db.add(user)
     db.commit()
     db.refresh(user)
-    write_audit_log(db, admin_user.id, "admin.user_updated", {"target_user_id": user.id, "assigned_roles": user.assigned_roles, "is_active": user.is_active})
+    write_audit_log(
+        db,
+        admin_user.id,
+        "admin.user_updated",
+        {
+            "target_user_id": user.id,
+            "assigned_roles": user.assigned_roles,
+            "is_active": user.is_active,
+            "access_profile": user.access_profile,
+            "mfa_enabled": user.mfa_enabled,
+            "app_access": user.app_access,
+        },
+    )
     return to_user_profile(user)
+
+
+@app.delete("/api/v1/admin/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+def admin_delete_user(user_id: str, admin_user: User = Depends(require_admin_user), db: Session = Depends(get_db)) -> Response:
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if user.id == admin_user.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You cannot delete your own admin account")
+
+    connection_ids = db.scalars(select(BrokerConnection.id).where(BrokerConnection.user_id == user.id)).all()
+    if connection_ids:
+        db.execute(delete(IntegrationPosition).where(IntegrationPosition.connection_id.in_(connection_ids)))
+        db.execute(delete(IntegrationSyncEvent).where(IntegrationSyncEvent.connection_id.in_(connection_ids)))
+    db.execute(delete(BrokerConnection).where(BrokerConnection.user_id == user.id))
+    db.execute(delete(MfaDevice).where(MfaDevice.user_id == user.id))
+    db.execute(delete(OAuthIdentity).where(OAuthIdentity.user_id == user.id))
+    db.execute(delete(VirtualTransaction).where(VirtualTransaction.user_id == user.id))
+    db.execute(delete(User).where(User.id == user.id))
+    db.commit()
+
+    write_audit_log(db, admin_user.id, "admin.user_deleted", {"target_user_id": user_id, "target_email": user.email}, severity="warning")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/api/v1/admin/audit-trail", response_model=list[AuditLogResponse])

@@ -19,7 +19,7 @@ class UserProfileResponse(BaseModel):
     role: str
     assigned_roles: list[str]
     access_profile: Literal["read", "write", "admin"]
-    app_access: list[Literal["finance", "betting", "loto"]]
+    app_access: list[Literal["finance", "betting", "racing", "loto"]]
     birth_date: date | None = None
     last_login_at: datetime | None = None
     is_verified: bool
@@ -34,7 +34,7 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=14, max_length=128)
     birth_date: date | None = None
     access_profile: Literal["read", "write", "admin"] = "write"
-    app_access: list[Literal["finance", "betting", "loto"]] = Field(default_factory=lambda: ["finance", "betting", "loto"])
+    app_access: list[Literal["finance", "betting", "racing", "loto"]] = Field(default_factory=lambda: ["finance", "betting", "racing", "loto"])
     verification_channel: Literal["email", "sms"] = "email"
     personal_settings: dict = Field(default_factory=dict)
     client_context: ClientContext | None = None
@@ -232,8 +232,12 @@ class AdminUserUpdateRequest(BaseModel):
     full_name: str | None = Field(default=None, min_length=2, max_length=255)
     assigned_roles: list[str] | None = None
     access_profile: Literal["read", "write", "admin"] | None = None
-    app_access: list[Literal["finance", "betting", "loto"]] | None = None
+    app_access: list[Literal["finance", "betting", "racing", "loto"]] | None = None
     is_active: bool | None = None
+    new_password: str | None = Field(default=None, min_length=14, max_length=128)
+    mfa_enabled: bool | None = None
+    avatar_url: str | None = Field(default=None, max_length=1024)
+    risk_profile: Literal["low", "medium", "high"] | None = None
     personal_settings: dict | None = None
 
 
