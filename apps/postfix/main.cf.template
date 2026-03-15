@@ -1,0 +1,31 @@
+compatibility_level = 3.6
+
+myhostname = ${POSTFIX_MYHOSTNAME}
+mydomain = ${POSTFIX_MYDOMAIN}
+myorigin = ${POSTFIX_MYORIGIN}
+
+inet_interfaces = all
+inet_protocols = ipv4
+
+mydestination = localhost
+relay_domains =
+local_recipient_maps =
+
+mynetworks = ${POSTFIX_MYNETWORKS}
+smtpd_relay_restrictions = permit_mynetworks, reject_unauth_destination
+smtpd_recipient_restrictions = permit_mynetworks, reject_unauth_destination
+
+smtp_tls_security_level = may
+smtpd_tls_security_level = may
+smtp_tls_loglevel = 1
+
+message_size_limit = ${POSTFIX_MESSAGE_SIZE_LIMIT}
+mailbox_size_limit = 0
+
+append_dot_mydomain = no
+biff = no
+readme_directory = no
+
+maillog_file = /dev/stdout
+
+relayhost = ${POSTFIX_RELAYHOST}

@@ -44,7 +44,7 @@ from .odds_provider import OddsProviderError, fetch_the_odds_api_events
 from .poisson_model import FootballPoissonInput, football_outcome_probabilities
 from .config import settings
 from .database import Base, SessionLocal, engine, get_db
-from .emailing import send_account_verification_email, send_mfa_email_code, send_password_reset_email
+from .emailing import email_delivery_issue_reason, send_account_verification_email, send_mfa_email_code, send_password_reset_email
 from .models import AgentDecision, AuditLog, BrokerConnection, IntegrationPosition, IntegrationSyncEvent, KillSwitchEvent, MfaDevice, OAuthIdentity, Portfolio, TradeProposal, User, VirtualTransaction
 from .schemas import (
     BankIntegrationToggleRequest,
@@ -108,6 +108,10 @@ from .schemas import (
 redis_client = Redis.from_url(settings.redis_url, decode_responses=True)
 security = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
+
+smtp_issue = email_delivery_issue_reason()
+if smtp_issue:
+    logger.warning(smtp_issue)
 ACCESS_COOKIE_NAME = "picsou_access"
 REFRESH_COOKIE_NAME = "picsou_refresh"
 
@@ -740,7 +744,11 @@ def assert_sensitive_mfa_if_enabled(db: Session, user: User, mfa_code: str | Non
         return
     device = primary_mfa_device(db, user.id)
     if not device or not device.is_verified:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="MFA device unavailable")
+        logger.warning("Inconsistent MFA state for user %s: mfa_enabled=true but no verified primary device. Auto-disabling MFA.", user.id)
+        user.mfa_enabled = False
+        db.add(user)
+        db.commit()
+        return
     if not mfa_code:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="MFA code required for sensitive operation")
 
@@ -1427,9 +1435,10 @@ def test_user_communication_channel(payload: CommunicationTestRequest, current_u
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Canal email inactif.")
         preview_code = secrets.token_hex(3).upper()
         delivered = send_mfa_email_code(current_user.email, preview_code, "sensitive")
-        message = "Email de test envoye sur votre adresse principale." if delivered else "SMTP non configure: test email simule localement."
+        smtp_issue = email_delivery_issue_reason()
+        message = "Email de test envoye sur votre adresse principale." if delivered else f"Email non envoye. Diagnostic SMTP: {smtp_issue or 'inconnu'}"
         write_audit_log(db, current_user.id, "user.communication_test", {"channel": payload.channel, "delivered": delivered})
-        return CommunicationTestResponse(channel=payload.channel, status="ok", message=message)
+        return CommunicationTestResponse(channel=payload.channel, status="ok" if delivered else "error", message=message)
 
     if payload.channel == "sms":
         if settings_payload.get("notify_sms") is not True:
@@ -1577,7 +1586,11 @@ def mfa_challenge(payload: MfaChallengeRequest, current_user: User = Depends(get
 
     device = primary_mfa_device(db, current_user.id)
     if not device or not device.is_verified:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="MFA device not found")
+        logger.warning("Inconsistent MFA state detected in challenge for user %s; disabling MFA.", current_user.id)
+        current_user.mfa_enabled = False
+        db.add(current_user)
+        db.commit()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MFA a ete desactive car aucun appareil verifie n etait disponible. Reconfigurez MFA dans Mon compte.")
 
     preview_code = None
     delivery_hint = "Code TOTP attendu depuis votre application d authentification."

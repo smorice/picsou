@@ -26,6 +26,20 @@ services:
       timeout: 5s
       retries: 5
 
+  postfix:
+    build:
+      context: ./apps/postfix
+    restart: unless-stopped
+    environment:
+      POSTFIX_MYHOSTNAME: ${POSTFIX_MYHOSTNAME:-nayonne.ovh}
+      POSTFIX_MYDOMAIN: ${POSTFIX_MYDOMAIN:-nayonne.ovh}
+      POSTFIX_MYORIGIN: ${POSTFIX_MYORIGIN:-nayonne.ovh}
+      POSTFIX_MYNETWORKS: ${POSTFIX_MYNETWORKS:-127.0.0.0/8 172.16.0.0/12 10.0.0.0/8 192.168.0.0/16}
+      POSTFIX_MESSAGE_SIZE_LIMIT: ${POSTFIX_MESSAGE_SIZE_LIMIT:-26214400}
+      POSTFIX_RELAYHOST: ${POSTFIX_RELAYHOST:-}
+    expose:
+      - "25"
+
   api:
     build:
       context: ./apps/api
@@ -35,6 +49,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      postfix:
+        condition: service_started
     environment:
       ENVIRONMENT: ${ENVIRONMENT:-production}
       POSTGRES_DSN: postgresql+psycopg://${POSTGRES_USER:-picsou}:${POSTGRES_PASSWORD:-picsou-change-me}@postgres:5432/${POSTGRES_DB:-picsou}
@@ -49,13 +65,13 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://nayonne.ovh}
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
-      SMTP_HOST: ${SMTP_HOST:-ssl0.ovh.net}
-      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_HOST: ${SMTP_HOST:-postfix}
+      SMTP_PORT: ${SMTP_PORT:-25}
       SMTP_USERNAME: ${SMTP_USERNAME:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
-      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-no-reply@nayonne.ovh}
       SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Picsou IA}
-      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-false}
       SMTP_USE_SSL: ${SMTP_USE_SSL:-false}
       SMTP_TIMEOUT_SECONDS: ${SMTP_TIMEOUT_SECONDS:-10}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}

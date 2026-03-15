@@ -856,6 +856,7 @@ const GOAL_PERIOD_LABELS: Record<GoalPeriod, string> = {
 };
 
 const ESTIMATED_TAX_RATE = 0.30;
+const MIN_MONETARY_LIMIT = 0.1;
 
 function normalizeGoalPeriod(value: unknown): GoalPeriod {
   const normalized = String(value ?? '').trim().toLowerCase();
@@ -1114,7 +1115,7 @@ function serializeBettingStrategySettings(strategies: BettingStrategy[]): Record
       enabled: strategy.enabled,
       ai_enabled: strategy.ai_enabled,
       mode: strategy.mode,
-      max_stake: Math.max(1, Number(strategy.max_stake) || 1),
+      max_stake: Math.max(MIN_MONETARY_LIMIT, Number(strategy.max_stake) || MIN_MONETARY_LIMIT),
       max_bets_per_day: Math.max(1, Number(strategy.max_bets_per_day) || 1),
       risk_profile: strategy.risk_profile,
     };
@@ -1152,7 +1153,7 @@ function applyBettingStrategySettings(
       enabled: source.enabled !== false,
       ai_enabled: source.ai_enabled !== false,
       mode,
-      max_stake: Math.max(1, Number(source.max_stake ?? strategy.max_stake) || strategy.max_stake),
+      max_stake: Math.max(MIN_MONETARY_LIMIT, Number(source.max_stake ?? strategy.max_stake) || strategy.max_stake),
       max_bets_per_day: Math.max(1, Number(source.max_bets_per_day ?? strategy.max_bets_per_day) || strategy.max_bets_per_day),
       risk_profile: riskProfile,
     };
@@ -1952,7 +1953,7 @@ export default function RobinApp() {
       nextAgentConfigs[portfolioId] = {
         enabled: source.enabled === true,
         mode: sourceMode === 'autopilot' ? 'autopilot' : sourceMode === 'supervised' ? 'supervised' : 'manual',
-        max_amount: Math.max(1, Number(source.max_amount ?? riskBasedDefaults.max_amount) || riskBasedDefaults.max_amount),
+        max_amount: Math.max(MIN_MONETARY_LIMIT, Number(source.max_amount ?? riskBasedDefaults.max_amount) || riskBasedDefaults.max_amount),
         max_transactions_per_day: Math.max(1, Number(source.max_transactions_per_day ?? riskBasedDefaults.max_transactions_per_day) || riskBasedDefaults.max_transactions_per_day),
         domain_policy: {
           crypto: domainSource.crypto === 'reject' || domainSource.crypto === 'prefer' ? domainSource.crypto : 'allow',
@@ -2587,7 +2588,7 @@ export default function RobinApp() {
         ...current.domain_policy,
         ...(patch.domain_policy ?? {}),
       },
-      max_amount: Math.max(1, Number((patch.max_amount ?? current.max_amount) || defaultAgentConfig.max_amount)),
+      max_amount: Math.max(MIN_MONETARY_LIMIT, Number((patch.max_amount ?? current.max_amount) || defaultAgentConfig.max_amount)),
       max_transactions_per_day: Math.max(1, Math.min(1000, Number((patch.max_transactions_per_day ?? current.max_transactions_per_day) || defaultAgentConfig.max_transactions_per_day))),
     };
     const nextConfigs = { ...agentConfigs, [portfolioId]: nextConfig };
@@ -3445,8 +3446,84 @@ export default function RobinApp() {
       portfolio_label: portfolio.label,
     }));
   });
+  const coinbaseDecisionInsights: InsightItem[] = visiblePortfolios
+    .filter((portfolio) => portfolio.provider_code === 'coinbase')
+    .flatMap((portfolio) => {
+      const buyOps = portfolio.operations.filter((op) => op.side === 'buy');
+      const sellOps = portfolio.operations.filter((op) => op.side === 'sell');
+      const grossBuy = buyOps.reduce((sum, op) => sum + op.amount, 0);
+      const grossSell = sellOps.reduce((sum, op) => sum + op.amount, 0);
+      const netExposure = Math.max(0, grossBuy - grossSell);
+      const recentWindow = portfolio.operations.slice(0, 10);
+      const recentBuys = recentWindow.filter((op) => op.side === 'buy').length;
+      const recentSells = recentWindow.filter((op) => op.side === 'sell').length;
+      const topBuyAsset = buyOps
+        .reduce<Record<string, number>>((acc, op) => {
+          acc[op.asset] = (acc[op.asset] ?? 0) + op.amount;
+          return acc;
+        }, {});
+      const topAsset = Object.entries(topBuyAsset).sort((a, b) => b[1] - a[1])[0];
+      const topAssetShare = topAsset && grossBuy > 0 ? topAsset[1] / grossBuy : 0;
+
+      const insights: InsightItem[] = [];
+
+      if (portfolio.current_value > 0 && netExposure < portfolio.current_value * 0.55) {
+        insights.push({
+          id: `decision-coinbase-dca-${portfolio.id}`,
+          title: `${portfolio.label} · Achat suggere BTC`,
+          value: 'Confiance 2/3',
+          trend: 'Projection future · ↑ Renfort progressif',
+          detail: 'Approche DCA: fractionner le renfort en 3 ordres (BTC/ETH) pour lisser le prix et rester dans vos quotas de risque.',
+          section: 'decisions',
+          portfolio_id: portfolio.id,
+          portfolio_label: portfolio.label,
+        });
+      }
+
+      if (topAsset && topAssetShare >= 0.62) {
+        insights.push({
+          id: `decision-coinbase-rebalance-${portfolio.id}`,
+          title: `${portfolio.label} · Vente suggeree ${topAsset[0]}`,
+          value: 'Confiance 2/3',
+          trend: 'Projection future · ↓ Concentration elevée',
+          detail: `Le portefeuille est concentré à ${(topAssetShare * 100).toFixed(0)}% sur ${topAsset[0]}. Vente partielle puis rotation vers BTC/ETH/SOL pour diversifier le risque.`,
+          section: 'decisions',
+          portfolio_id: portfolio.id,
+          portfolio_label: portfolio.label,
+        });
+      }
+
+      if (portfolio.roi >= 9 || recentBuys >= recentSells + 3) {
+        insights.push({
+          id: `decision-coinbase-protect-${portfolio.id}`,
+          title: `${portfolio.label} · Vente suggeree partielle`,
+          value: 'Confiance 3/3',
+          trend: 'Projection future · ↓ Protection des gains',
+          detail: 'Sécuriser 10% à 20% des gains latents via une vente partielle et replacer sur prochain repli pour améliorer le ratio rendement/risque.',
+          section: 'decisions',
+          portfolio_id: portfolio.id,
+          portfolio_label: portfolio.label,
+        });
+      }
+
+      if (insights.length === 0) {
+        insights.push({
+          id: `decision-coinbase-keep-${portfolio.id}`,
+          title: `${portfolio.label} · Achat suggere ETH`,
+          value: 'Confiance 1/3',
+          trend: 'Projection future · → Scenario neutre',
+          detail: 'Portefeuille équilibré. Ajouter de petites lignes progressives en ETH/BTC si volatilité contenue, sinon rester en observation active.',
+          section: 'decisions',
+          portfolio_id: portfolio.id,
+          portfolio_label: portfolio.label,
+        });
+      }
+
+      return insights.slice(0, 4);
+    });
   const decisionInsightKey = (insight: InsightItem) => `${insight.portfolio_id ?? 'none'}||${insight.title}||${insight.detail}||${insight.trend}`;
-  const decisionInsights: InsightItem[] = [...suggestionInsights, ...aiDecisionInsights].filter((insight) => !resolvedDecisionKeys[decisionInsightKey(insight)]);
+  const decisionInsights: InsightItem[] = [...suggestionInsights, ...aiDecisionInsights, ...coinbaseDecisionInsights]
+    .filter((insight) => !resolvedDecisionKeys[decisionInsightKey(insight)]);
   const pendingDecisionCount = decisionInsights.length;
   const userBettingRiskProfile = resolveUserRiskProfile(user);
   const lotteryPredictions = useMemo(() => ({
@@ -3944,7 +4021,7 @@ export default function RobinApp() {
         throw new Error(policyCheck.reason);
       }
       const requestedAmount = typeof options.amount === 'number' && Number.isFinite(options.amount)
-        ? Math.max(1, options.amount)
+        ? Math.max(MIN_MONETARY_LIMIT, options.amount)
         : notional;
       notional = Math.min(requestedAmount, config.max_amount);
 
@@ -4257,7 +4334,7 @@ export default function RobinApp() {
       }
 
       const side: 'buy' | 'sell' = Math.random() > 0.45 ? 'buy' : 'sell';
-      const baseAmount = Math.max(8, Math.min(cfg.max_amount, prev.currentValue * 0.08));
+      const baseAmount = Math.max(MIN_MONETARY_LIMIT, Math.min(cfg.max_amount, prev.currentValue * 0.08));
       const amount = Number((baseAmount * (0.7 + Math.random() * 0.7)).toFixed(2));
       const move = (Math.random() * 0.05) - 0.018;
       const delta = Number((amount * move).toFixed(2));
@@ -4313,7 +4390,7 @@ export default function RobinApp() {
       return;
     }
 
-    const stake = Math.max(5, Math.min(virtual.max_stake, Number((virtual.bankroll * 0.14).toFixed(2))));
+    const stake = Math.max(MIN_MONETARY_LIMIT, Math.min(virtual.max_stake, Number((virtual.bankroll * 0.14).toFixed(2))));
     const win = Math.random() > (activeRiskProfile === 'high' ? 0.54 : activeRiskProfile === 'medium' ? 0.48 : 0.36);
     const pct = win
       ? (profile.minGainPct + Math.random() * (profile.maxGainPct - profile.minGainPct))
@@ -4943,37 +5020,33 @@ export default function RobinApp() {
             </div>
           </div>
 
-          {(appView !== 'admin' && appView !== 'account') ? (
+          {(appView !== 'admin' && appView !== 'account' && appView !== 'overview' && activeApp !== 'loto') ? (
             <nav className="workspaceNav">
               {activeApp === 'finance' ? (
                 <>
                   <button className={appView === 'dashboard' ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                    2.1 Accueil cockpit Finance
+                    Accueil cockpit Finance
                   </button>
                   <button className={appView === 'portfolios' ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                    2.2 Portefeuilles
+                    Portefeuilles
                   </button>
                   <button className={appView === 'settings' ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                    2.3 Options
+                    Options
                   </button>
                 </>
               ) : activeApp === 'betting' ? (
                 <>
                   <button className={appView === 'dashboard' ? 'navButton active' : 'navButton'} onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                    3.1 Accueil cockpit Paris
+                    Accueil cockpit Paris
                   </button>
                   <button className={appView === 'strategies' ? 'navButton active' : 'navButton'} onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('strategies'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                    3.2 Portefeuilles
+                    Portefeuilles
                   </button>
                   <button className={appView === 'settings' ? 'navButton active' : 'navButton'} onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                    3.3 Options
+                    Options
                   </button>
                 </>
-              ) : (
-                <button className={appView === 'dashboard' ? 'navButton active' : 'navButton'} onClick={() => { setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                  4. Loto
-                </button>
-              )}
+              ) : null}
             </nav>
           ) : null}
 
@@ -5183,10 +5256,10 @@ export default function RobinApp() {
                       return (
                         <article key={`home-loto-${game}`} className="featureCard" style={{ borderStyle: 'dashed' }}>
                           <div className="cardHeader" style={{ marginBottom: 6 }}>
-                            <h2 style={{ margin: 0, fontSize: '.95rem' }}>{LOTTERY_CONFIG[game].label}</h2>
+                            <h2 style={{ margin: 0, fontSize: '.95rem' }}>{game === 'loto' ? '🎯' : '🌟'} {LOTTERY_CONFIG[game].label}</h2>
                             <span>Prochain tirage: {next ? formatDateTimeFr(next.drawDate) : 'n/d'}</span>
                           </div>
-                          <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>Jackpot: {next?.jackpotLabel ?? 'n/d'}</p>
+                          <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>💵 Jackpot: {next?.jackpotLabel ?? 'n/d'}</p>
                           <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
                             {grids.map((grid, index) => (
                               <div key={`home-loto-grid-${grid.id}`} className="compactRow" style={{ alignItems: 'center' }}>
@@ -6055,7 +6128,7 @@ export default function RobinApp() {
                                       </label>
                                       <label>
                                         Montant (€)
-                                        <input type="number" min={1} step="1" value={selectedDecisionAmount} onChange={(event) => setSelectedDecisionAmount(Math.max(1, Number(event.target.value) || 1))} />
+                                        <input type="number" min={MIN_MONETARY_LIMIT} step="0.1" value={selectedDecisionAmount} onChange={(event) => setSelectedDecisionAmount(Math.max(MIN_MONETARY_LIMIT, Number(event.target.value) || MIN_MONETARY_LIMIT))} />
                                       </label>
                                     </div>
                                     <div className="providerActions fullWidth" style={{ marginTop: 2 }}>
@@ -6501,7 +6574,7 @@ export default function RobinApp() {
                                                 </label>
                                                 <label>
                                                   Montant (€)
-                                                  <input type="number" min={1} step="1" value={selectedDecisionAmount} onChange={(event) => setSelectedDecisionAmount(Math.max(1, Number(event.target.value) || 1))} />
+                                                  <input type="number" min={MIN_MONETARY_LIMIT} step="0.1" value={selectedDecisionAmount} onChange={(event) => setSelectedDecisionAmount(Math.max(MIN_MONETARY_LIMIT, Number(event.target.value) || MIN_MONETARY_LIMIT))} />
                                                 </label>
                                               </div>
                                               <div className="providerActions fullWidth" style={{ marginTop: 2 }}>
@@ -6592,16 +6665,16 @@ export default function RobinApp() {
                                   <label style={{ fontSize: '.82rem', display: 'grid', gap: 5 }}>
                                     <span style={{ fontSize: '.72rem', textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--muted)', fontWeight: 700 }}>Montant max / ordre</span>
                                     <div className="compactRow" style={{ margin: 0 }}>
-                                      <strong>{cfg.max_amount.toFixed(0)} €</strong>
-                                      <span className="metaPill">Plage 10 - {maxAmountCap} €</span>
+                                      <strong>{cfg.max_amount.toFixed(1)} €</strong>
+                                      <span className="metaPill">Plage 0.1 - {maxAmountCap} €</span>
                                     </div>
                                     <input
                                       type="range"
-                                      min={10}
+                                      min={MIN_MONETARY_LIMIT}
                                       max={maxAmountCap}
-                                      step={5}
-                                      value={Math.min(maxAmountCap, Math.max(10, Math.round(cfg.max_amount)))}
-                                      onChange={(e) => void updateAgentConfig(p.id, { max_amount: Math.max(10, Number(e.target.value) || 10) })}
+                                      step={0.1}
+                                      value={Math.min(maxAmountCap, Math.max(MIN_MONETARY_LIMIT, Number(cfg.max_amount.toFixed(1))))}
+                                      onChange={(e) => void updateAgentConfig(p.id, { max_amount: Math.max(MIN_MONETARY_LIMIT, Number(e.target.value) || MIN_MONETARY_LIMIT) })}
                                     />
                                   </label>
                                   <label style={{ fontSize: '.82rem', display: 'grid', gap: 5 }}>
@@ -6674,7 +6747,7 @@ export default function RobinApp() {
             <section className="workspaceGrid settingsGrid">
               <article className="featureCard settingsIntroCard">
                 <div className="cardHeader">
-                  <h2>2.3 Options Finance</h2>
+                  <h2>Options Finance</h2>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span>Compte, intégrations et communication</span>
                     <button className="ghostButton" onClick={() => toggleSettingsTile('intro')} type="button">{settingsTileCollapsed.intro ? 'Expand' : 'Réduire'}</button>
@@ -7424,7 +7497,7 @@ export default function RobinApp() {
               {filteredTopTipsterRecommendations.length > 0 ? (
                 <div className="decisionQueue">
                   <div className="decisionQueueHeader">
-                    <h2 style={{ margin: 0, fontSize: '1rem' }}>3.1 Cockpit Paris en ligne · recommandations IA</h2>
+                    <h2 style={{ margin: 0, fontSize: '1rem' }}>Cockpit Paris en ligne · recommandations IA</h2>
                     <span className="smallPill">{filteredTopTipsterRecommendations.length} / {pendingTipsterSignals.length} affichées</span>
                   </div>
                   {filteredTopTipsterRecommendations.map((signal) => (
@@ -7636,16 +7709,16 @@ export default function RobinApp() {
                   <label style={{ fontSize: '.78rem', color: 'var(--muted)', display: 'grid', gap: 4 }}>
                     Mise max / pari
                     <div className="compactRow" style={{ margin: 0 }}>
-                      <strong>{selectedStrategy.max_stake.toFixed(0)} €</strong>
-                      <span className="metaPill">Plage 5 - {Math.max(50, Math.min(2000, Math.round(selectedStrategy.bankroll * 0.8)))} €</span>
+                      <strong>{selectedStrategy.max_stake.toFixed(1)} €</strong>
+                      <span className="metaPill">Plage 0.1 - {Math.max(50, Math.min(2000, Math.round(selectedStrategy.bankroll * 0.8)))} €</span>
                     </div>
                     <input
                       type="range"
-                      min={5}
+                      min={MIN_MONETARY_LIMIT}
                       max={Math.max(50, Math.min(2000, Math.round(selectedStrategy.bankroll * 0.8)))}
-                      step={5}
-                      value={Math.max(5, Math.round(selectedStrategy.max_stake))}
-                      onChange={(event) => updateBettingStrategy(selectedStrategy.id, { max_stake: Math.max(5, Number(event.target.value || 5)) })}
+                      step={0.1}
+                      value={Math.max(MIN_MONETARY_LIMIT, Number(selectedStrategy.max_stake.toFixed(1)))}
+                      onChange={(event) => updateBettingStrategy(selectedStrategy.id, { max_stake: Math.max(MIN_MONETARY_LIMIT, Number(event.target.value || MIN_MONETARY_LIMIT)) })}
                     />
                   </label>
                   <label style={{ fontSize: '.78rem', color: 'var(--muted)', display: 'grid', gap: 4 }}>
@@ -7768,7 +7841,7 @@ export default function RobinApp() {
             <section className="workspaceGrid settingsGrid">
               <article className="featureCard settingsIntroCard">
                 <div className="cardHeader">
-                  <h2>3.3 Options Paris en ligne</h2>
+                  <h2>Options Paris en ligne</h2>
                   <span>Compte, bookmakers et alertes</span>
                 </div>
                 <p style={{ fontSize: '.85rem', color: 'var(--muted)', margin: 0 }}>Gérez votre profil, vos connexions aux bookmakers, vos limites de jeu responsable et vos préférences de notification.</p>
@@ -7780,15 +7853,15 @@ export default function RobinApp() {
                 <div style={{ display: 'grid', gap: 14 }}>
                   <label style={{ fontSize: '.85rem', fontWeight: 600 }}>
                     Mise maximale par pari (€)
-                    <input defaultValue="100" type="number" min="1" style={{ marginTop: 4 }} />
+                    <input defaultValue="100" type="number" min="0.1" step="0.1" style={{ marginTop: 4 }} />
                   </label>
                   <label style={{ fontSize: '.85rem', fontWeight: 600 }}>
                     Budget hebdomadaire maximum (€)
-                    <input defaultValue="500" type="number" min="1" style={{ marginTop: 4 }} />
+                    <input defaultValue="500" type="number" min="0.1" step="0.1" style={{ marginTop: 4 }} />
                   </label>
                   <label style={{ fontSize: '.85rem', fontWeight: 600 }}>
                     Perte journalière maximale (€)
-                    <input defaultValue="200" type="number" min="1" style={{ marginTop: 4 }} />
+                    <input defaultValue="200" type="number" min="0.1" step="0.1" style={{ marginTop: 4 }} />
                   </label>
                   <div className="infoPanel" style={{ background: 'var(--warn-soft)', border: '1px solid var(--warn-border)' }}>
                     <strong>⚠️ Jeu responsable</strong>
@@ -7886,22 +7959,26 @@ export default function RobinApp() {
                     </div>
                   ))}
                 </div>
-                <p className="helperText" style={{ marginTop: 10 }}>Predictions statistiques basees sur l historique recent. Elles n augmentent pas mathematiquement la probabilite de gain garantie.</p>
+                <div className="infoPanel" style={{ marginTop: 10, display: 'grid', gap: 8 }}>
+                  <strong>Jouer malin pour maximiser vos chances pratiques</strong>
+                  <p style={{ margin: 0, fontSize: '.82rem' }}>1) Multipliez de petites grilles équilibrées au lieu d une seule grosse mise. 2) Évitez les combinaisons ultra populaires (dates, suites évidentes) pour mieux partager un éventuel gain. 3) Mixez 1 grille "fiable" + 1 grille "diversifiée" et gardez un budget fixe par tirage.</p>
+                  <p className="helperText" style={{ margin: 0 }}>Rappel important: Loto et Euromillions restent 100% des jeux de hasard. Ces conseils optimisent surtout la discipline de jeu et la structure des grilles, jamais une garantie de gain.</p>
+                </div>
               </article>
 
               <article className="featureCard">
                 <div className="cardHeader">
-                  <h2>Prochains tirages & jackpots</h2>
+                  <h2>📅 Prochains tirages & jackpots</h2>
                   <span>Fermeture des prises de jeu incluse</span>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', gap: 10 }}>
                   {lotteryUpcoming.map((draw) => (
                     <div key={`${draw.game}-${draw.drawDate}`} className="lotteryUpcomingCard">
-                      <p className="sectionTag" style={{ marginBottom: 4 }}>{LOTTERY_CONFIG[draw.game].label}</p>
+                      <p className="sectionTag" style={{ marginBottom: 4 }}>{draw.game === 'loto' ? '🎯' : '🌟'} {LOTTERY_CONFIG[draw.game].label}</p>
                       <strong style={{ fontSize: '1rem' }}>{new Date(draw.drawDate).toLocaleString('fr-FR', { weekday: 'long', day: '2-digit', month: 'long', hour: '2-digit', minute: '2-digit' })}</strong>
-                      <p style={{ margin: '4px 0 0', fontSize: '.8rem', color: 'var(--muted)' }}>Cloture des grilles: {draw.closeAt}</p>
+                      <p style={{ margin: '4px 0 0', fontSize: '.8rem', color: 'var(--muted)' }}>⏳ Cloture des grilles: {draw.closeAt}</p>
                       <div style={{ marginTop: 8 }}>
-                        <span className="metaPill" style={{ fontWeight: 800 }}>{draw.jackpotLabel}</span>
+                        <span className="metaPill" style={{ fontWeight: 800 }}>💵 {draw.jackpotLabel}</span>
                       </div>
                     </div>
                   ))}

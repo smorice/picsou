@@ -8,8 +8,26 @@ from .config import settings
 logger = logging.getLogger(__name__)
 
 
+def email_delivery_issue_reason() -> str | None:
+    missing: list[str] = []
+    if not settings.smtp_host:
+        missing.append("SMTP_HOST")
+    if not settings.smtp_from_email:
+        missing.append("SMTP_FROM_EMAIL")
+    if missing:
+        return f"Email delivery disabled: missing required SMTP settings ({', '.join(missing)})."
+
+    if settings.smtp_use_ssl and settings.smtp_starttls:
+        return "Email delivery misconfigured: SMTP_USE_SSL and SMTP_STARTTLS cannot both be enabled."
+
+    if not settings.smtp_username or not settings.smtp_password:
+        return "Email delivery likely to fail: SMTP authentication credentials are missing (SMTP_USERNAME/SMTP_PASSWORD)."
+
+    return None
+
+
 def is_email_delivery_configured() -> bool:
-    return bool(settings.smtp_host and settings.smtp_from_email)
+    return email_delivery_issue_reason() is None
 
 
 def build_password_reset_url(reset_token: str) -> str:
@@ -19,6 +37,7 @@ def build_password_reset_url(reset_token: str) -> str:
 
 def send_password_reset_email(recipient_email: str, reset_token: str) -> bool:
     if not is_email_delivery_configured():
+        logger.warning(email_delivery_issue_reason())
         return False
 
     message = EmailMessage()
@@ -70,6 +89,7 @@ def send_password_reset_email(recipient_email: str, reset_token: str) -> bool:
 
 def send_mfa_email_code(recipient_email: str, code: str, purpose: str) -> bool:
     if not is_email_delivery_configured():
+        logger.warning(email_delivery_issue_reason())
         return False
 
     ttl_minutes = settings.mfa_email_code_ttl_minutes
@@ -118,6 +138,7 @@ def send_mfa_email_code(recipient_email: str, code: str, purpose: str) -> bool:
 
 def send_account_verification_email(recipient_email: str, code: str) -> bool:
     if not is_email_delivery_configured():
+        logger.warning(email_delivery_issue_reason())
         return False
 
     ttl_minutes = settings.mfa_email_code_ttl_minutes
