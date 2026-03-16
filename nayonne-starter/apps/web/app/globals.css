@@ -1,0 +1,241 @@
+@import url("https://fonts.googleapis.com/css2?family=Baloo+2:wght@400;600;700&family=Nunito:wght@400;600;700&display=swap");
+
+:root {
+  --bg-cream: #f6ecdc;
+  --bg-warm: #e8d7c0;
+  --ink: #1f1f1f;
+  --muted: #5e5a55;
+  --red: #d9342b;
+  --red-soft: #ef6a62;
+  --card: #fff8ed;
+  --shadow: rgba(31, 31, 31, 0.16);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  color: var(--ink);
+  font-family: "Nunito", sans-serif;
+  background:
+    radial-gradient(circle at 8% 14%, rgba(217, 52, 43, 0.14) 0 18%, transparent 19%),
+    radial-gradient(circle at 85% 8%, rgba(31, 31, 31, 0.08) 0 16%, transparent 17%),
+    linear-gradient(160deg, var(--bg-cream), var(--bg-warm));
+}
+
+.page-shell {
+  width: min(1024px, 92vw);
+  margin: 0 auto;
+  padding: 1rem 0 4rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.card {
+  background: var(--card);
+  border: 2px solid rgba(31, 31, 31, 0.08);
+  border-radius: 22px;
+  box-shadow: 0 14px 30px var(--shadow);
+  padding: 1rem;
+}
+
+.top-nav {
+  position: sticky;
+  top: 0.5rem;
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  background: rgba(255, 248, 237, 0.92);
+  backdrop-filter: blur(8px);
+  border: 2px solid rgba(31, 31, 31, 0.08);
+  border-radius: 999px;
+  padding: 0.4rem;
+}
+
+.top-nav a {
+  text-decoration: none;
+  color: var(--ink);
+  font-weight: 700;
+  font-size: 0.92rem;
+  padding: 0.4rem 0.8rem;
+  border-radius: 999px;
+}
+
+.top-nav a:hover {
+  background: var(--red);
+  color: #fff;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr;
+  gap: 1rem;
+}
+
+.eyebrow {
+  display: inline-flex;
+  margin: 0;
+  font-weight: 700;
+  color: #fff;
+  background: var(--ink);
+  border-radius: 999px;
+  padding: 0.15rem 0.7rem;
+  font-size: 0.82rem;
+}
+
+h1,
+h2,
+h3 {
+  margin-top: 0.3rem;
+  margin-bottom: 0.4rem;
+  font-family: "Baloo 2", cursive;
+}
+
+h1 {
+  font-size: clamp(1.8rem, 4vw, 3rem);
+  line-height: 1;
+}
+
+h2 {
+  font-size: clamp(1.4rem, 3vw, 2rem);
+}
+
+.pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.8rem;
+}
+
+.pill {
+  background: rgba(217, 52, 43, 0.1);
+  border: 1px solid rgba(217, 52, 43, 0.25);
+  color: #78251f;
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.85rem;
+}
+
+.mascot-box {
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #ffe6d9, #ffd0bf);
+  border: 2px dashed rgba(31, 31, 31, 0.2);
+  padding: 0.8rem;
+}
+
+.mascot-head {
+  position: relative;
+  width: 120px;
+  height: 92px;
+  border-radius: 55% 55% 48% 48%;
+  background: #f3d4b1;
+  border: 3px solid #1f1f1f;
+  animation: bob 3.2s ease-in-out infinite;
+}
+
+.ear {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  background: #f3d4b1;
+  border: 3px solid #1f1f1f;
+  border-radius: 50%;
+  top: -14px;
+}
+
+.ear.left { left: 12px; }
+.ear.right { right: 12px; }
+
+.eye {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: #1f1f1f;
+  border-radius: 50%;
+  top: 36px;
+}
+
+.eye.left { left: 36px; }
+.eye.right { right: 36px; }
+
+.nose {
+  position: absolute;
+  width: 18px;
+  height: 12px;
+  background: var(--red);
+  border-radius: 999px;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 22px;
+}
+
+.feed-list {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.feed-item {
+  border: 1px solid rgba(31, 31, 31, 0.12);
+  border-radius: 14px;
+  padding: 0.8rem;
+  background: #fff;
+}
+
+.map-box {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.7rem;
+}
+
+.map-chip {
+  background: #fff;
+  border: 1px solid rgba(31, 31, 31, 0.12);
+  border-radius: 14px;
+  padding: 0.6rem;
+  display: grid;
+  gap: 0.1rem;
+}
+
+.reveal {
+  animation: reveal 650ms ease both;
+}
+
+@keyframes reveal {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+@media (max-width: 800px) {
+  .hero {
+    grid-template-columns: 1fr;
+  }
+
+  .top-nav {
+    border-radius: 14px;
+    position: static;
+  }
+}

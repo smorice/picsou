@@ -662,8 +662,6 @@ def require_admin_user(current_user: User = Depends(require_mfa_for_sensitive_op
     assigned_roles = normalize_roles(current_user.assigned_roles or [current_user.role], current_user.role)
     if "admin" not in assigned_roles:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
-    if not current_user.mfa_enabled:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin MFA enrollment required")
     return current_user
 
 

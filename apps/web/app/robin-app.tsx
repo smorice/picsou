@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 
 type UserProfile = {
   id: string;
@@ -512,12 +512,61 @@ type AssistantTip = {
   trend?: string;
 };
 
+type HomePortfolioRow = {
+  id: string;
+  appKey: 'finance' | 'betting' | 'racing' | 'loto';
+  kind: 'real' | 'virtual';
+  source: 'portfolio' | 'strategy' | 'loto';
+  targetId: string;
+  label: string;
+  subtitle: string;
+  valueLabel: string;
+  statusLabel: string;
+  statusTone: 'ok' | 'idle' | 'warn';
+  trendLabel: string;
+  trendTone: 'up' | 'down' | 'neutral';
+  autonomousActive: boolean;
+};
+
+type HomeRecommendationRow = {
+  id: string;
+  appKey: 'finance' | 'betting' | 'racing' | 'loto';
+  badge: string;
+  title: string;
+  detail: string;
+  confidenceLevel: 1 | 2 | 3;
+  insight?: InsightItem;
+  game?: LotteryGame;
+};
+
+type HomeTransactionRow = {
+  id: string;
+  appKey: 'finance' | 'betting' | 'racing' | 'loto';
+  lane: 'upcoming' | 'closed';
+  title: string;
+  portfolioLabel: string;
+  date: string;
+  timestamp: number;
+  note: string;
+  gainLoss: number | null;
+  taxes: number | null;
+  moodImpact: number;
+};
+
 const APP_LABELS: Record<'finance' | 'betting' | 'racing' | 'loto', string> = {
   finance: 'Finance',
   betting: 'Paris sportifs',
   racing: 'Paris hippiques',
   loto: 'Loto',
 };
+
+const HOME_MOOD_THRESHOLDS = {
+  sensitive: 20,
+  balanced: 40,
+  conservative: 80,
+} as const;
+
+const HOME_MOOD_PROFILE: keyof typeof HOME_MOOD_THRESHOLDS = 'sensitive';
 
 // Section label used in the top-level tier-1 nav
 const PARIS_SECTION_APPS = ['betting', 'racing', 'loto'] as const;
@@ -580,6 +629,26 @@ function normalizeSelectedAppAccess(raw: unknown): Array<'finance' | 'betting' |
     cleaned.push('finance');
   }
   return cleaned;
+}
+
+function normalizeAdminUsersPayload(raw: unknown): UserProfile[] {
+  if (Array.isArray(raw)) {
+    return raw as UserProfile[];
+  }
+  if (raw && typeof raw === 'object') {
+    const record = raw as Record<string, unknown>;
+    const candidates = [record.users, record.items, record.results, record.data];
+    for (const candidate of candidates) {
+      if (Array.isArray(candidate)) {
+        return candidate as UserProfile[];
+      }
+    }
+  }
+  return [];
+}
+
+function isUserPendingApproval(entry: UserProfile) {
+  return !entry.is_active && !entry.assigned_roles.includes('banned');
 }
 
 const LOTTERY_CONFIG: Record<LotteryGame, { label: string; numbersCount: number; maxNumber: number; starsCount: number; maxStar: number; starLabel: string }> = {
@@ -1957,6 +2026,48 @@ function formatDateTimeFr(value: string) {
   });
 }
 
+function formatSignedEuro(value: number | null, fallback = 'n/d') {
+  if (value === null || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return `${value >= 0 ? '+' : ''}${value.toFixed(2)} €`;
+}
+
+function numericChangeTone(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return 'neutral' as const;
+  }
+  if (value > 0.01) {
+    return 'up' as const;
+  }
+  if (value < -0.01) {
+    return 'down' as const;
+  }
+  return 'neutral' as const;
+}
+
+function historyValueDelta(history: Array<{ date: string; value: number }>, days: number) {
+  if (history.length < 2) {
+    return null;
+  }
+  const points = history
+    .map((point) => ({ ...point, ts: Date.parse(point.date) }))
+    .filter((point) => Number.isFinite(point.ts))
+    .sort((a, b) => a.ts - b.ts);
+  if (points.length < 2) {
+    return null;
+  }
+  const nowTs = points[points.length - 1].ts;
+  const targetTs = nowTs - days * 24 * 60 * 60 * 1000;
+  const basePoint = [...points].reverse().find((point) => point.ts <= targetTs) ?? points[0];
+  const current = points[points.length - 1]?.value ?? 0;
+  const base = basePoint?.value ?? 0;
+  if (!Number.isFinite(current) || !Number.isFinite(base)) {
+    return null;
+  }
+  return Number((current - base).toFixed(2));
+}
+
 function inferCountryFromLocale(locale: string) {
   const match = locale.match(/[-_]([A-Za-z]{2})\b/);
   if (!match) {
@@ -2073,6 +2184,73 @@ function scoreToConfidenceLevel(score: number) {
     return 2;
   }
   return 1;
+}
+
+function confidenceLevelFromScale(score: number, scale: 3 | 5 | 100 = 100): 1 | 2 | 3 {
+  if (scale === 3) {
+    return Math.max(1, Math.min(3, Math.round(score))) as 1 | 2 | 3;
+  }
+  if (scale === 5) {
+    if (score >= 4) {
+      return 3;
+    }
+    if (score >= 3) {
+      return 2;
+    }
+    return 1;
+  }
+  return scoreToConfidenceLevel(score) as 1 | 2 | 3;
+}
+
+function discreteConfidenceLabel(level: 1 | 2 | 3) {
+  if (level === 3) {
+    return 'élevée';
+  }
+  if (level === 2) {
+    return 'modérée';
+  }
+  return 'faible';
+}
+
+function extractDiscreteConfidenceLevel(text: string | null | undefined): 1 | 2 | 3 | null {
+  if (!text) {
+    return null;
+  }
+  const threeScale = text.match(/Confiance\s+([123])\/3/i);
+  if (threeScale) {
+    return confidenceLevelFromScale(Number(threeScale[1]), 3);
+  }
+  const fiveScale = text.match(/Confiance\s+([1-5])\/5/i);
+  if (fiveScale) {
+    return confidenceLevelFromScale(Number(fiveScale[1]), 5);
+  }
+  const hundredScale = text.match(/(\d{1,3})\/100/);
+  if (hundredScale) {
+    return confidenceLevelFromScale(Math.max(0, Math.min(100, Number(hundredScale[1]))), 100);
+  }
+  return null;
+}
+
+function ConfidenceDots({
+  level,
+  label,
+  maxDots = 3,
+}: {
+  level: 1 | 2 | 3;
+  label?: string;
+  maxDots?: number;
+}) {
+  const resolvedLabel = label ?? `Confiance ${discreteConfidenceLabel(level)}`;
+  return (
+    <span className="confidenceInline" aria-label={resolvedLabel} title={resolvedLabel}>
+      <span className="confidenceDots" aria-hidden="true">
+        {Array.from({ length: maxDots }).map((_, index) => (
+          <span key={`confidence-${resolvedLabel}-${index}`} className={index < level ? 'confidenceDot filled' : 'confidenceDot'} />
+        ))}
+      </span>
+      <span className="confidenceInlineLabel">{resolvedLabel}</span>
+    </span>
+  );
 }
 
 function projectionConfidenceFromHistory(history: Array<{ date: string; value: number }>) {
@@ -2268,16 +2446,6 @@ const MOCK_RACING_STRATEGIES: BettingStrategy[] = [
     ai_enabled: true, mode: 'supervised', max_stake: 15, max_bets_per_day: 5, risk_profile: 'medium',
     history: [{ date: '2026-03-14', value: 100 }], recentBets: [],
   },
-  {
-    id: 'rc2', name: 'Value Racing', type: 'value_betting',
-    description: 'Sélection de chevaux sous-cotés via modèle de forme récente et statistiques jockey-entraîneur.',
-    isVirtual: false, bankroll: 500, roi: 2.8, winRate: 27, variance: 3.1, enabled: false, betsTotal: 37, betsWon: 10,
-    ai_enabled: false, mode: 'manual', max_stake: 20, max_bets_per_day: 3, risk_profile: 'medium',
-    history: [
-      { date: '2026-01-15', value: 500 }, { date: '2026-02-01', value: 512 },
-      { date: '2026-02-15', value: 508 }, { date: '2026-03-01', value: 514 },
-    ], recentBets: [],
-  },
 ];
 
 const RACING_SIGNALS: TipsterSignal[] = [
@@ -2419,6 +2587,9 @@ export default function RobinApp() {
   const [assistantExecutionMode] = useState<'recommendation' | 'direct'>('recommendation');
   const [pendingDecisionConfirmation, setPendingDecisionConfirmation] = useState<PendingDecisionConfirmation | null>(null);
   const [virtualAppsEnabled, setVirtualAppsEnabled] = useState<{ finance: boolean; betting: boolean; racing: boolean; loto: boolean }>({ finance: true, betting: false, racing: false, loto: false });
+  const [topMenuParentOpen, setTopMenuParentOpen] = useState<'home' | 'finance' | 'paris' | null>(null);
+  const [topMenuFinanceChildOpen, setTopMenuFinanceChildOpen] = useState<'crypto' | 'actions' | null>(null);
+  const [topMenuParisChildOpen, setTopMenuParisChildOpen] = useState<ParisApp | null>(null);
   const [visitedMenuKeys, setVisitedMenuKeys] = useState<Record<string, true>>({});
   const [portfolioSetupStepDone, setPortfolioSetupStepDone] = useState(false);
   const [bettingThemeVisibility, setBettingThemeVisibility] = useState<BettingThemeVisibility>(DEFAULT_BETTING_THEME_VISIBILITY);
@@ -2475,8 +2646,14 @@ export default function RobinApp() {
   const [virtualRiskProfile, setVirtualRiskProfile] = useState<VirtualRiskProfile>('medium');
   const [financeVirtualSimulation, setFinanceVirtualSimulation] = useState<FinanceVirtualSimulation | null>(null);
   const [localPortfolioOperations, setLocalPortfolioOperations] = useState<Record<string, Portfolio['operations']>>({});
+  const agentConfigsRef = useRef<Record<string, AgentQuotaConfig>>({});
+  const latestAgentConfigPersistRequestRef = useRef(0);
   const defaultAgentConfig = useMemo(() => defaultAgentConfigFromUserRisk(user), [user]);
   const allowedApps = useMemo(() => normalizeFrontendAppAccess(user?.app_access), [user?.app_access]);
+
+  useEffect(() => {
+    agentConfigsRef.current = agentConfigs;
+  }, [agentConfigs]);
 
   useEffect(() => {
     if (!selectedStrategy) {
@@ -2575,16 +2752,35 @@ export default function RobinApp() {
     if (adminSection !== 'approvals') {
       return;
     }
+    const filteredAdminEntries = adminUsers.filter((entry) => {
+      const matchesUser = !adminUserSearch || matchesSearch(`${entry.full_name} ${entry.email}`, adminUserSearch);
+      const matchesRole = adminRoleFilter === 'all' || entry.assigned_roles.includes(adminRoleFilter);
+      const isPendingApproval = isUserPendingApproval(entry);
+      const matchesStatus =
+        adminStatusFilter === 'all' ||
+        (adminStatusFilter === 'active' && entry.is_active) ||
+        (adminStatusFilter === 'pending' && isPendingApproval) ||
+        (adminStatusFilter === 'inactive' && !entry.is_active && !isPendingApproval);
+      return matchesUser && matchesRole && matchesStatus;
+    });
+    const queueRows = filteredAdminEntries
+      .filter((entry) => isUserPendingApproval(entry))
+      .filter((entry) => !approvalsSearch.trim() || matchesSearch(`${entry.full_name} ${entry.email} ${entry.id}`, approvalsSearch));
+    const sortedQueueRows = approvalsSort === 'name'
+      ? [...queueRows].sort((a, b) => a.full_name.localeCompare(b.full_name, 'fr-FR'))
+      : approvalsSort === 'oldest'
+        ? [...queueRows].reverse()
+        : queueRows;
     setApprovalAppSelections((state) => {
-      const queueIds = new Set(approvalQueueRows.map((entry) => entry.id));
+      const queueIds = new Set(sortedQueueRows.map((entry) => entry.id));
       const next: Record<string, Array<'finance' | 'betting' | 'racing' | 'loto'>> = {};
-      approvalQueueRows.forEach((entry) => {
+      sortedQueueRows.forEach((entry) => {
         next[entry.id] = normalizeSelectedAppAccess(state[entry.id] ?? entry.app_access);
       });
       const hasSameSize = Object.keys(state).length === queueIds.size;
       const hasSameKeys = hasSameSize && Object.keys(state).every((id) => queueIds.has(id));
       if (hasSameKeys) {
-        const unchanged = approvalQueueRows.every((entry) => {
+        const unchanged = sortedQueueRows.every((entry) => {
           const current = state[entry.id] ?? [];
           const normalizedCurrent = normalizeSelectedAppAccess(current);
           const normalizedNext = normalizeSelectedAppAccess(next[entry.id]);
@@ -2597,7 +2793,7 @@ export default function RobinApp() {
       }
       return next;
     });
-  }, [adminSection, approvalQueueRows]);
+  }, [adminSection, adminUsers, adminUserSearch, adminRoleFilter, adminStatusFilter, approvalsSearch, approvalsSort]);
 
   useEffect(() => {
     if (racingStrategies.some((strategy) => strategy.id === selectedRacingRecommendationStrategyId)) {
@@ -3252,18 +3448,36 @@ export default function RobinApp() {
       fetch(apiUrl('/api/v1/admin/audit-trail'), { headers: { ...authHeader(token) }, credentials: 'include' }),
     ]);
 
-    if (!usersResponse.ok || !auditResponse.ok) {
-      const failedPayload = await readJsonResponse(usersResponse.ok ? auditResponse : usersResponse);
-      setAdminFeedback(extractErrorMessage(failedPayload, 'Administration indisponible. Activez puis validez MFA pour continuer.'));
+    let usersLoadError: string | null = null;
+    let auditLoadError: string | null = null;
+
+    if (usersResponse.ok) {
+      const usersPayload = await readJsonResponse<unknown>(usersResponse);
+      setAdminUsers(normalizeAdminUsersPayload(usersPayload));
+    } else {
+      const failedUsersPayload = await readJsonResponse(usersResponse);
+      usersLoadError = extractErrorMessage(failedUsersPayload, 'Chargement des comptes impossible.');
       if (user) {
         setAdminUsers((prev) => prev.length > 0 ? prev : [user]);
       }
-      return;
     }
 
-    setAdminUsers((await readJsonResponse<UserProfile[]>(usersResponse)) ?? []);
-    setAuditTrail((await readJsonResponse<AuditEntry[]>(auditResponse)) ?? []);
-    setAdminFeedback(null);
+    if (auditResponse.ok) {
+      setAuditTrail((await readJsonResponse<AuditEntry[]>(auditResponse)) ?? []);
+    } else {
+      const failedAuditPayload = await readJsonResponse(auditResponse);
+      auditLoadError = extractErrorMessage(failedAuditPayload, 'Chargement de la piste d audit impossible.');
+    }
+
+    if (usersLoadError && auditLoadError) {
+      setAdminFeedback(`${usersLoadError} ${auditLoadError}`);
+    } else if (usersLoadError) {
+      setAdminFeedback(usersLoadError);
+    } else if (auditLoadError) {
+      setAdminFeedback(auditLoadError);
+    } else {
+      setAdminFeedback(null);
+    }
 
     const connsResponse = await fetch(apiUrl('/api/v1/admin/broker-connections'), { headers: { ...authHeader(token) }, credentials: 'include' });
     if (connsResponse.ok) {
@@ -3284,6 +3498,7 @@ export default function RobinApp() {
     virtualAppsState: { finance: boolean; betting: boolean; racing: boolean; loto: boolean } = virtualAppsEnabled,
     bettingStrategiesState: BettingStrategy[] = bettingStrategies,
     racingStrategiesState: BettingStrategy[] = racingStrategies,
+    agentConfigsState: Record<string, AgentQuotaConfig> = agentConfigsRef.current,
   ) {
     return {
       currency: settingsForm.currency,
@@ -3328,7 +3543,7 @@ export default function RobinApp() {
       racing_strategy_runtime: serializeBettingStrategyRuntime(racingStrategiesState),
       finance_virtual_runtime: financeVirtualSimulation,
       decision_resolutions: decisionState,
-      agent_quotas: agentConfigs,
+      agent_quotas: agentConfigsState,
       communication_google_chat: {
         enabled: commGoogleChat.enabled,
         webhook: commGoogleChat.webhook,
@@ -3544,7 +3759,8 @@ export default function RobinApp() {
   }
 
   async function updateAgentConfig(portfolioId: string, patch: Partial<AgentQuotaConfig>) {
-    const current = agentConfigs[portfolioId] ?? defaultAgentConfig;
+    const currentConfigs = agentConfigsRef.current;
+    const current = currentConfigs[portfolioId] ?? defaultAgentConfig;
     const nextConfig: AgentQuotaConfig = {
       ...current,
       ...patch,
@@ -3555,7 +3771,8 @@ export default function RobinApp() {
       max_amount: Math.max(MIN_MONETARY_LIMIT, Number((patch.max_amount ?? current.max_amount) || defaultAgentConfig.max_amount)),
       max_transactions_per_day: Math.max(1, Math.min(1000, Number((patch.max_transactions_per_day ?? current.max_transactions_per_day) || defaultAgentConfig.max_transactions_per_day))),
     };
-    const nextConfigs = { ...agentConfigs, [portfolioId]: nextConfig };
+    const nextConfigs = { ...currentConfigs, [portfolioId]: nextConfig };
+    agentConfigsRef.current = nextConfigs;
     setAgentConfigs(nextConfigs);
 
     if (!accessToken) {
@@ -3563,6 +3780,7 @@ export default function RobinApp() {
     }
 
     try {
+      const requestId = ++latestAgentConfigPersistRequestRef.current;
       const response = await fetch(apiUrl('/auth/me/settings'), {
         method: 'PUT',
         headers: {
@@ -3581,7 +3799,7 @@ export default function RobinApp() {
         }),
       });
       const payload = await readJsonResponse<UserProfile>(response);
-      if (response.ok && payload) {
+      if (response.ok && payload && requestId === latestAgentConfigPersistRequestRef.current) {
         setUser(payload);
       }
     } catch {
@@ -4403,7 +4621,7 @@ export default function RobinApp() {
   const filteredAdminUsers = adminUsers.filter((entry) => {
     const matchesUser = !adminUserSearch || matchesSearch(`${entry.full_name} ${entry.email}`, adminUserSearch);
     const matchesRole = adminRoleFilter === 'all' || entry.assigned_roles.includes(adminRoleFilter);
-    const isPendingApproval = !entry.is_active && !entry.is_verified;
+    const isPendingApproval = isUserPendingApproval(entry);
     const matchesStatus =
       adminStatusFilter === 'all' ||
       (adminStatusFilter === 'active' && entry.is_active) ||
@@ -4419,11 +4637,11 @@ export default function RobinApp() {
     return matchesText && matchesSeverity;
   });
   const pendingAdminUsers = useMemo(
-    () => adminUsers.filter((entry) => !entry.is_active && !entry.is_verified),
+    () => adminUsers.filter((entry) => isUserPendingApproval(entry)),
     [adminUsers],
   );
   const pendingFilteredAdminUsers = useMemo(
-    () => filteredAdminUsers.filter((entry) => !entry.is_active && !entry.is_verified),
+    () => filteredAdminUsers.filter((entry) => isUserPendingApproval(entry)),
     [filteredAdminUsers],
   );
   const approvalQueueRows = useMemo(() => {
@@ -4488,6 +4706,14 @@ export default function RobinApp() {
       return now - lastLoginTs <= ADMIN_CONNECTED_WINDOW_MS;
     }).length;
   }, [adminUsers]);
+  const adminActiveUsersCount = useMemo(
+    () => adminUsers.filter((entry) => entry.is_active).length,
+    [adminUsers],
+  );
+  const adminMfaEnabledCount = useMemo(
+    () => adminUsers.filter((entry) => entry.mfa_enabled).length,
+    [adminUsers],
+  );
   const siteAuditSummary = useMemo(() => {
     const warnings = auditTrail.filter((entry) => entry.severity === 'warning').length;
     const authEvents = auditTrail.filter((entry) => entry.event_type.startsWith('auth.')).length;
@@ -4594,9 +4820,11 @@ export default function RobinApp() {
   const objectiveRiskLossEstimate = (goalTargetNet * riskLossProfilePct) / 100;
   const objectiveEstimatedLoss = Math.max(0, Math.max(objectiveLossGuardEstimate, objectiveRiskLossEstimate));
   const goalWindowMs = goalPeriodDays * 24 * 60 * 60 * 1000;
-  const goalNowTs = goalNowPoint?.ts ?? Date.now();
-  const goalBaseTs = goalBasePoint?.ts ?? (goalNowTs - goalWindowMs);
-  const elapsedRatio = goalWindowMs > 0 ? Math.max(0, Math.min(1, (goalNowTs - goalBaseTs) / goalWindowMs)) : 0;
+  const goalNowTs = goalNowPoint?.ts ?? null;
+  const goalBaseTs = goalBasePoint?.ts ?? null;
+  const elapsedRatio = (goalWindowMs > 0 && goalNowTs !== null && goalBaseTs !== null)
+    ? Math.max(0, Math.min(1, (goalNowTs - goalBaseTs) / goalWindowMs))
+    : 0;
   const goalTrajectoryGap = goalProgress - elapsedRatio;
   const goalTrajectoryTone = goalReached
     ? 'up'
@@ -4623,27 +4851,52 @@ export default function RobinApp() {
   const uiNavigationProgress = progressMenuKeys.length > 0 ? Math.max(0, Math.min(1, visitedProgressCount / progressMenuKeys.length)) : 0;
   const uiNavigationProgressPct = Math.round(uiNavigationProgress * 100);
   const objectiveProgressPct = Math.round(Math.max(0, Math.min(1, goalProgress)) * 100);
+  const objectiveTimeConsumedPct = Math.round(Math.max(0, Math.min(1, elapsedRatio)) * 100);
   const topbarProgressPct = loading ? loadingProgressPct : objectiveProgressPct;
   const topbarProgressRatio = Math.max(0, Math.min(1, topbarProgressPct / 100));
+  const topbarDelayConsumedPct = loading ? 0 : objectiveTimeConsumedPct;
+  const topbarElapsedDays = (!loading && goalNowTs !== null && goalBaseTs !== null)
+    ? Math.max(0, Math.round((goalNowTs - goalBaseTs) / (24 * 60 * 60 * 1000)))
+    : null;
   const batteryTone = topbarProgressRatio >= 0.92 ? 'up' : topbarProgressRatio <= 0.34 ? 'down' : 'neutral';
   const topbarRealValue = realVisiblePortfolios.reduce((sum, portfolio) => sum + portfolio.current_value, 0);
+  const topbarFinanceVirtualPortfolio = allPortfolios.find((portfolio) => portfolio.type === 'virtual') ?? null;
+  const topbarBettingVirtualStrategy = bettingStrategies.find((strategy) => strategy.isVirtual && strategy.enabled) ?? null;
+  const topbarRacingVirtualStrategy = racingStrategies.find((strategy) => strategy.isVirtual && strategy.enabled) ?? null;
   const topbarBettingVirtualBankroll = virtualAppsEnabled.betting
-    ? (bettingStrategies.find((strategy) => strategy.isVirtual && strategy.enabled)?.bankroll ?? 0)
+    ? (topbarBettingVirtualStrategy?.bankroll ?? 0)
     : 0;
   const topbarRacingVirtualBankroll = virtualAppsEnabled.racing
-    ? (racingStrategies.find((strategy) => strategy.isVirtual && strategy.enabled)?.bankroll ?? 0)
+    ? (topbarRacingVirtualStrategy?.bankroll ?? 0)
     : 0;
   const topbarFinanceVirtualValue = virtualAppsEnabled.finance
-    ? (visiblePortfolios.find((portfolio) => portfolio.type === 'virtual')?.current_value ?? 0)
+    ? (topbarFinanceVirtualPortfolio?.current_value ?? 0)
     : 0;
   const topbarVirtualValue =
     topbarFinanceVirtualValue
     + topbarBettingVirtualBankroll
     + topbarRacingVirtualBankroll
     + (virtualAppsEnabled.loto && lotteryVirtualPortfolio.enabled ? lotteryVirtualPortfolio.bankroll : 0);
+  const topbarLotteryVirtualTrend = virtualAppsEnabled.loto && lotteryVirtualPortfolio.enabled
+    ? Number((lotteryVirtualPortfolio.bankroll - lotteryVirtualPortfolio.initial_balance).toFixed(2))
+    : 0;
+  const topbarVirtualTrendAmount =
+    (virtualAppsEnabled.finance ? (historyValueDelta(topbarFinanceVirtualPortfolio?.history ?? [], 7) ?? 0) : 0)
+    + (virtualAppsEnabled.betting ? (historyValueDelta(topbarBettingVirtualStrategy?.history ?? [], 7) ?? 0) : 0)
+    + (virtualAppsEnabled.racing ? (historyValueDelta(topbarRacingVirtualStrategy?.history ?? [], 7) ?? 0) : 0)
+    + topbarLotteryVirtualTrend;
+  const topbarVirtualTrendTone = numericChangeTone(topbarVirtualTrendAmount);
   const topbarProgressLabel = loading
     ? `Chargement ${topbarProgressPct}%`
-    : `Objectif ${topbarProgressPct}%`; 
+    : `${topbarProgressPct}% atteint`;
+  const topbarObjectiveLabel = loading
+    ? 'Objectif: calcul en cours'
+    : `Objectif: ${goalProgressText}`;
+  const topbarDelayLabel = loading
+    ? 'Jours consommés: calcul en cours'
+    : `Jours consommés: ${topbarElapsedDays ?? 0} / ${goalPeriodDays} jours`;
+  const topbarRealTrendLabel = `24h ${evolution24h.value}`;
+  const topbarVirtualTrendLabel = `Tendance ${formatSignedEuro(topbarVirtualTrendAmount, 'n/d')}`;
   const portfolioEvolutionRows = visiblePortfolios.map((portfolio) => ({
     id: portfolio.id,
     label: portfolio.label,
@@ -4870,7 +5123,30 @@ export default function RobinApp() {
   const decisionInsightKey = (insight: InsightItem) => `${insight.portfolio_id ?? 'none'}||${insight.title}||${insight.detail}||${insight.trend}`;
   const decisionInsights: InsightItem[] = [...suggestionInsights, ...aiDecisionInsights, ...coinbaseDecisionInsights]
     .filter((insight) => !resolvedDecisionKeys[decisionInsightKey(insight)]);
-  const pendingDecisionCount = decisionInsights.length;
+  const financeAiEnabledPortfolioIds = useMemo(() => {
+    const enabledIds = new Set<string>();
+    allPortfolios.forEach((portfolio) => {
+      if (portfolio.status !== 'active') {
+        return;
+      }
+      if (portfolio.type === 'virtual' && (!virtualAppsEnabled.finance || portfolioActivation[portfolio.id] === false)) {
+        return;
+      }
+      const cfg = getAgentConfig(portfolio.id);
+      if (cfg.enabled) {
+        enabledIds.add(portfolio.id);
+      }
+    });
+    return enabledIds;
+  }, [allPortfolios, virtualAppsEnabled.finance, portfolioActivation, agentConfigs, defaultAgentConfig]);
+  const visibleDecisionInsights = useMemo(
+    () => decisionInsights.filter((insight) => {
+      const portfolioId = inferDecisionPortfolioId(insight);
+      return Boolean(portfolioId && financeAiEnabledPortfolioIds.has(portfolioId));
+    }),
+    [decisionInsights, financeAiEnabledPortfolioIds],
+  );
+  const pendingDecisionCount = visibleDecisionInsights.length;
   const userBettingRiskProfile = resolveUserRiskProfile(user);
   const normalizedLotteryGridCount = Math.max(1, Math.min(MAX_LOTTERY_GRID_COUNT, lotteryGridCount));
   const lotteryPredictions = useMemo(() => ({
@@ -4915,8 +5191,42 @@ export default function RobinApp() {
     [pendingTipsterSignals, userBettingRiskProfile]
   );
   const filteredTopTipsterRecommendations = useMemo(
-    () => topTipsterRecommendations.filter((signal) => bettingThemeVisibility[signal.sport as BettingThemeKey] !== false),
-    [topTipsterRecommendations, bettingThemeVisibility]
+    () => {
+      const base = topTipsterRecommendations.filter((signal) => bettingThemeVisibility[signal.sport as BettingThemeKey] !== false);
+      const bettingAgentEnabled = bettingStrategies.some((strategy) => strategy.enabled && strategy.ai_enabled);
+      return bettingAgentEnabled ? base : [];
+    },
+    [topTipsterRecommendations, bettingThemeVisibility, bettingStrategies]
+  );
+  const racingPendingSignalsDisplay = useMemo(
+    () => {
+      const racingAgentEnabled = racingStrategies.some((strategy) => strategy.enabled && strategy.ai_enabled);
+      return racingAgentEnabled ? racingSignals.filter((signal) => signal.status === 'pending') : [];
+    },
+    [racingStrategies, racingSignals],
+  );
+  const lotoAiRecommendationsEnabled = useMemo(
+    () => {
+      const virtualEnabled = virtualAppsEnabled.loto && lotteryVirtualPortfolio.enabled && lotteryVirtualPortfolio.ai_enabled;
+      const realEnabled = lotoIntegrationPortfolios.some((portfolio) => {
+        const cfg = getAgentConfig(portfolio.id);
+        return portfolio.status === 'active' && cfg.enabled;
+      });
+      return virtualEnabled || realEnabled;
+    },
+    [virtualAppsEnabled.loto, lotteryVirtualPortfolio.enabled, lotteryVirtualPortfolio.ai_enabled, lotoIntegrationPortfolios, agentConfigs, defaultAgentConfig],
+  );
+  const lotteryPredictionsDisplay = useMemo(
+    () => {
+      if (lotoAiRecommendationsEnabled) {
+        return lotteryPredictions;
+      }
+      return {
+        loto: { ...lotteryPredictions.loto, predictedGrids: [] },
+        euromillions: { ...lotteryPredictions.euromillions, predictedGrids: [] },
+      };
+    },
+    [lotoAiRecommendationsEnabled, lotteryPredictions],
   );
   const activeBettingVirtualPortfolio = useMemo(
     () => bettingStrategies.find((strategy) => strategy.isVirtual),
@@ -4991,7 +5301,7 @@ export default function RobinApp() {
   );
   const assistantOptimizationTips = useMemo<AssistantTip[]>(() => {
     if (activeApp === 'finance') {
-      const decisionTips = decisionInsights.slice(0, 4).map((insight) => ({
+      const decisionTips = visibleDecisionInsights.slice(0, 4).map((insight) => ({
         id: `assistant-decision-${insight.id}`,
         title: insight.title,
         detail: insight.detail,
@@ -5020,7 +5330,7 @@ export default function RobinApp() {
       return tips;
     }
     if (activeApp === 'loto') {
-      const focusPrediction = lotteryPredictions[lotteryGameFocus];
+      const focusPrediction = lotteryPredictionsDisplay[lotteryGameFocus];
       const tips = focusPrediction.predictedGrids.slice(0, 3).map((grid, index) => ({
         id: `loto-tip-${grid.id}`,
         title: `Grille #${index + 1} ${LOTTERY_CONFIG[lotteryGameFocus].label}`,
@@ -5034,20 +5344,28 @@ export default function RobinApp() {
       detail: `Indice confiance profil ${signal.profileConfidenceIndex}/100 · Value +${signal.value_pct.toFixed(1)}%.`,
     }));
     if (activeApp === 'racing') {
-      return racingSignals.filter((s) => s.status === 'pending').slice(0, 4).map((signal) => ({
+      return racingPendingSignalsDisplay.slice(0, 4).map((signal) => ({
         id: `racing-tip-${signal.id}`,
         title: signal.event,
         detail: `${signal.market} · Cote ${signal.odds} · Value +${signal.value_pct.toFixed(1)}%`,
       }));
     }
     return tips;
-  }, [activeApp, visiblePortfolios, filteredTopTipsterRecommendations, lotteryPredictions, lotteryGameFocus, decisionInsights, racingSignals]);
+  }, [activeApp, visiblePortfolios, filteredTopTipsterRecommendations, lotteryPredictionsDisplay, lotteryGameFocus, visibleDecisionInsights, racingPendingSignalsDisplay]);
   const showAssistantDock = appView === 'dashboard' && activeApp !== 'loto' && assistantOptimizationTips.length > 0;
   const assistantDockVisible = showAssistantDock && assistantDockOpen;
   const isFinanceSectionActive = activeApp === 'finance';
   const isFinanceCryptoActive = activeApp === 'finance' && financeSubApp === 'crypto';
   const isFinanceActionsActive = activeApp === 'finance' && financeSubApp === 'actions';
   const isParisSectionActive = activeApp === 'betting' || activeApp === 'racing' || activeApp === 'loto';
+  const hasParisApps = allowedApps.includes('betting') || allowedApps.includes('racing') || allowedApps.includes('loto');
+  const topbarParisActiveApp: ParisApp = isParisSectionActive
+    ? activeApp
+    : (allowedApps.includes('betting')
+      ? 'betting'
+      : allowedApps.includes('racing')
+        ? 'racing'
+        : 'loto');
   const peaMarketSignals = useMemo(
     () => MARKET_SIGNALS.filter((signal) => signal.category === 'actions' || signal.category === 'etf'),
     [],
@@ -5116,6 +5434,434 @@ export default function RobinApp() {
     () => Number((lotteryVirtualPortfolio.bankroll - lotteryVirtualPortfolio.initial_balance).toFixed(2)),
     [lotteryVirtualPortfolio.bankroll, lotteryVirtualPortfolio.initial_balance],
   );
+  const lotteryRecentExecutionRequests = useMemo(
+    () => [...lotteryExecutionRequests]
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+      .slice(0, 6),
+    [lotteryExecutionRequests],
+  );
+  const homePortfolioRows = useMemo<HomePortfolioRow[]>(() => {
+    const financeRows = allPortfolios.map<HomePortfolioRow>((portfolio) => {
+      const evolution = formatPortfolioEvolution(portfolio.history, 7);
+      const cfg = getAgentConfig(portfolio.id);
+      return {
+        id: `home-finance-${portfolio.id}`,
+        appKey: 'finance',
+        kind: portfolio.type === 'virtual' ? 'virtual' : 'real',
+        source: 'portfolio',
+        targetId: portfolio.id,
+        label: portfolio.label,
+        subtitle: `Finance · ${portfolio.type === 'virtual' ? 'portefeuille fictif' : 'portefeuille reel'}`,
+        valueLabel: `${portfolio.current_value.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €`,
+        statusLabel: statusLabel(portfolio.status),
+        statusTone: portfolio.status === 'active' ? 'ok' : portfolio.status === 'pending_user_consent' ? 'warn' : 'idle',
+        trendLabel: `7j: ${evolution.value}`,
+        trendTone: evolution.tone,
+        autonomousActive: portfolio.status === 'active' && cfg.enabled && cfg.mode === 'autopilot',
+      };
+    });
+    const bettingRows = bettingStrategies.map<HomePortfolioRow>((strategy) => {
+      const evolution = formatPortfolioEvolution(strategy.history, 7);
+      return {
+        id: `home-betting-${strategy.id}`,
+        appKey: 'betting',
+        kind: strategy.isVirtual ? 'virtual' : 'real',
+        source: 'strategy',
+        targetId: strategy.id,
+        label: strategy.name,
+        subtitle: `Paris sportifs · ${strategy.isVirtual ? 'simulation' : 'strategie reelle'}`,
+        valueLabel: `${strategy.bankroll.toFixed(0)} €`,
+        statusLabel: strategy.enabled ? 'Actif' : 'Inactif',
+        statusTone: strategy.enabled ? 'ok' : 'idle',
+        trendLabel: `7j: ${evolution.value}`,
+        trendTone: evolution.tone,
+        autonomousActive: strategy.enabled && strategy.ai_enabled && strategy.mode === 'autonomous',
+      };
+    });
+    const racingRows = racingStrategies.map<HomePortfolioRow>((strategy) => {
+      const evolution = formatPortfolioEvolution(strategy.history, 7);
+      return {
+        id: `home-racing-${strategy.id}`,
+        appKey: 'racing',
+        kind: strategy.isVirtual ? 'virtual' : 'real',
+        source: 'strategy',
+        targetId: strategy.id,
+        label: strategy.name,
+        subtitle: `Paris hippiques · ${strategy.isVirtual ? 'simulation' : 'strategie reelle'}`,
+        valueLabel: `${strategy.bankroll.toFixed(0)} €`,
+        statusLabel: strategy.enabled ? 'Actif' : 'Inactif',
+        statusTone: strategy.enabled ? 'ok' : 'idle',
+        trendLabel: `7j: ${evolution.value}`,
+        trendTone: evolution.tone,
+        autonomousActive: strategy.enabled && strategy.ai_enabled && strategy.mode === 'autonomous',
+      };
+    });
+    const lotoRows: HomePortfolioRow[] = [
+      {
+        id: 'home-loto-virtual',
+        appKey: 'loto',
+        kind: 'virtual',
+        source: 'loto',
+        targetId: 'loto-virtual',
+        label: 'Portefeuille fictif Loto',
+        subtitle: 'Loto / EuroMillions · simulation',
+        valueLabel: `${lotteryVirtualPortfolio.bankroll.toFixed(0)} €`,
+        statusLabel: virtualAppsEnabled.loto && lotteryVirtualPortfolio.enabled ? 'Actif' : 'Inactif',
+        statusTone: virtualAppsEnabled.loto && lotteryVirtualPortfolio.enabled ? 'ok' : 'idle',
+        trendLabel: `PnL ${lotteryVirtualPnl >= 0 ? '+' : ''}${lotteryVirtualPnl.toFixed(2)} €`,
+        trendTone: lotteryVirtualPnl > 0 ? 'up' : lotteryVirtualPnl < 0 ? 'down' : 'neutral',
+        autonomousActive: virtualAppsEnabled.loto && lotteryVirtualPortfolio.enabled && lotteryVirtualPortfolio.ai_enabled && lotteryVirtualPortfolio.mode === 'autonomous',
+      },
+      ...lotoIntegrationPortfolios.map<HomePortfolioRow>((portfolio) => {
+        const relatedCount = lotteryExecutionRequests.filter((request) => request.targetPortfolioId === portfolio.id).length;
+        const cfg = getAgentConfig(portfolio.id);
+        return {
+          id: `home-loto-${portfolio.id}`,
+          appKey: 'loto',
+          kind: 'real',
+          source: 'loto',
+          targetId: portfolio.id,
+          label: portfolio.label,
+          subtitle: `Loto reel · ${portfolio.providerName}`,
+          valueLabel: `${relatedCount} reco`,
+          statusLabel: portfolio.status === 'active' ? 'Connecte' : 'Disponible',
+          statusTone: portfolio.status === 'active' ? 'ok' : 'idle',
+          trendLabel: cfg.enabled ? `IA ${cfg.mode}` : 'IA inactive',
+          trendTone: cfg.enabled && cfg.mode === 'autopilot' ? 'up' : 'neutral',
+          autonomousActive: portfolio.status === 'active' && cfg.enabled && cfg.mode === 'autopilot',
+        };
+      }),
+    ];
+    return [...financeRows, ...bettingRows, ...racingRows, ...lotoRows];
+  }, [allPortfolios, bettingStrategies, racingStrategies, lotteryVirtualPortfolio, virtualAppsEnabled.loto, lotteryVirtualPnl, lotoIntegrationPortfolios, lotteryExecutionRequests, agentConfigs, defaultAgentConfig]);
+  const homeImportantRecommendations = useMemo<HomeRecommendationRow[]>(() => {
+    const financeItems = visibleDecisionInsights.slice(0, 3).map<HomeRecommendationRow>((insight) => ({
+      id: `home-reco-finance-${insight.id}`,
+      appKey: 'finance',
+      badge: insight.portfolio_label ? `Finance · ${insight.portfolio_label}` : 'Finance',
+      title: insight.title,
+      detail: insight.detail,
+      confidenceLevel: extractDiscreteConfidenceLevel(insight.value) ?? 2,
+      insight,
+    }));
+    const bettingItems = filteredTopTipsterRecommendations.slice(0, 2).map<HomeRecommendationRow>((signal) => ({
+      id: `home-reco-betting-${signal.id}`,
+      appKey: 'betting',
+      badge: 'Paris sportifs',
+      title: signal.event,
+      detail: `${signal.market} · Value +${signal.value_pct.toFixed(1)}%`,
+      confidenceLevel: confidenceLevelFromScale(signal.profileConfidenceIndex, 100),
+    }));
+    const racingItems = racingPendingSignalsDisplay
+      .slice(0, 2)
+      .map<HomeRecommendationRow>((signal) => ({
+        id: `home-reco-racing-${signal.id}`,
+        appKey: 'racing',
+        badge: 'Paris hippiques',
+        title: signal.event,
+        detail: `${signal.market} · Cote ${signal.odds.toFixed(2)}`,
+        confidenceLevel: confidenceLevelFromScale(signal.confidence, 5),
+      }));
+    const lotoItems = (['loto', 'euromillions'] as LotteryGame[])
+      .flatMap((game) => lotteryPredictionsDisplay[game].predictedGrids.slice(0, 1).map<HomeRecommendationRow>((grid, index) => ({
+        id: `home-reco-loto-${game}-${grid.id}-${index}`,
+        appKey: 'loto',
+        badge: game === 'loto' ? 'Loto' : 'EuroMillions',
+        title: `${game === 'loto' ? 'Grille prioritaire' : 'Grille prioritaire EuroMillions'}`,
+        detail: `${grid.numbers.join(' - ')}${grid.stars.length > 0 ? ` · ${grid.stars.join(' - ')}` : ''}`,
+        confidenceLevel: confidenceLevelFromScale(grid.confidenceIndex, 100),
+        game,
+      })));
+    return [...financeItems, ...bettingItems, ...racingItems, ...lotoItems]
+      .sort((a, b) => b.confidenceLevel - a.confidenceLevel)
+      .slice(0, 6);
+  }, [visibleDecisionInsights, filteredTopTipsterRecommendations, racingPendingSignalsDisplay, lotteryPredictionsDisplay]);
+  const homeRealPortfolioRows = useMemo(
+    () => homePortfolioRows.filter((row) => row.kind === 'real'),
+    [homePortfolioRows],
+  );
+  const homeVirtualPortfolioRows = useMemo(
+    () => homePortfolioRows.filter((row) => row.kind === 'virtual'),
+    [homePortfolioRows],
+  );
+  const homePendingAiCount = visibleDecisionInsights.length + filteredTopTipsterRecommendations.length + racingPendingSignalsDisplay.length;
+  const homeTransactionsInFlight = activeBettingBets.length + racingStrategies.flatMap((strategy) => strategy.recentBets).filter((bet) => bet.result === 'pending').length + lotteryPendingTickets.length;
+  const homeUpcomingTransactions = useMemo<HomeTransactionRow[]>(() => {
+    const nowTs = Date.now();
+    const financeUpcoming = allPortfolios.flatMap((portfolio) => portfolio.operations
+      .filter((operation) => {
+        const ts = Date.parse(operation.date);
+        return Number.isFinite(ts) && ts >= nowTs;
+      })
+      .map<HomeTransactionRow>((operation) => {
+        const ts = Date.parse(operation.date);
+        return {
+          id: `home-up-finance-${portfolio.id}-${operation.id}`,
+          appKey: 'finance',
+          lane: 'upcoming',
+          title: `${operation.side === 'buy' ? 'Achat' : 'Vente'} ${operation.asset}`,
+          portfolioLabel: portfolio.label,
+          date: operation.date,
+          timestamp: ts,
+          note: `${operation.amount.toFixed(2)} € · ${operation.intermediary}`,
+          gainLoss: null,
+          taxes: null,
+          moodImpact: 0,
+        };
+      }));
+    const bettingUpcoming = bettingStrategies.flatMap((strategy) => strategy.recentBets
+      .filter((bet) => bet.result === 'pending')
+      .map<HomeTransactionRow>((bet) => {
+        const ts = Date.parse(bet.date);
+        return {
+          id: `home-up-betting-${strategy.id}-${bet.id}`,
+          appKey: 'betting',
+          lane: 'upcoming',
+          title: bet.event,
+          portfolioLabel: strategy.name,
+          date: bet.date,
+          timestamp: Number.isFinite(ts) ? ts : nowTs + 9_999_999,
+          note: `${bet.market} · Mise ${bet.stake.toFixed(2)} €`,
+          gainLoss: null,
+          taxes: null,
+          moodImpact: 0,
+        };
+      }));
+    const racingUpcoming = racingStrategies.flatMap((strategy) => strategy.recentBets
+      .filter((bet) => bet.result === 'pending')
+      .map<HomeTransactionRow>((bet) => {
+        const ts = Date.parse(bet.date);
+        return {
+          id: `home-up-racing-${strategy.id}-${bet.id}`,
+          appKey: 'racing',
+          lane: 'upcoming',
+          title: bet.event,
+          portfolioLabel: strategy.name,
+          date: bet.date,
+          timestamp: Number.isFinite(ts) ? ts : nowTs + 9_999_999,
+          note: `${bet.market} · Mise ${bet.stake.toFixed(2)} €`,
+          gainLoss: null,
+          taxes: null,
+          moodImpact: 0,
+        };
+      }));
+    const lotoTicketUpcoming = lotteryPendingTickets.map<HomeTransactionRow>((ticket) => {
+      const ts = Date.parse(ticket.drawDate);
+      return {
+        id: `home-up-loto-ticket-${ticket.id}`,
+        appKey: 'loto',
+        lane: 'upcoming',
+        title: `${LOTTERY_CONFIG[ticket.game].label} · ${ticket.gridLabel}`,
+        portfolioLabel: 'Portefeuille fictif Loto',
+        date: ticket.drawDate,
+        timestamp: Number.isFinite(ts) ? ts : nowTs + 9_999_999,
+        note: `${ticket.subscriptionLabel ?? 'Ponctuel'} · Mise ${ticket.stake.toFixed(2)} €`,
+        gainLoss: null,
+        taxes: null,
+        moodImpact: 0,
+      };
+    });
+    const lotoExecutionUpcoming = lotteryExecutionRequests.map<HomeTransactionRow>((request) => {
+      const ts = Date.parse(request.drawDate);
+      return {
+        id: `home-up-loto-request-${request.id}`,
+        appKey: 'loto',
+        lane: 'upcoming',
+        title: `${LOTTERY_CONFIG[request.game].label} · ${request.gridLabel}`,
+        portfolioLabel: request.targetPortfolioLabel,
+        date: request.drawDate,
+        timestamp: Number.isFinite(ts) ? ts : nowTs + 9_999_999,
+        note: `${request.executionMode === 'real' ? 'Execution reelle' : 'Simulation'} · ${request.subscriptionLabel ?? 'Ponctuel'}`,
+        gainLoss: null,
+        taxes: null,
+        moodImpact: 0,
+      };
+    });
+    return [...financeUpcoming, ...bettingUpcoming, ...racingUpcoming, ...lotoTicketUpcoming, ...lotoExecutionUpcoming]
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .slice(0, 8);
+  }, [allPortfolios, bettingStrategies, racingStrategies, lotteryPendingTickets, lotteryExecutionRequests]);
+  const homeClosedTransactions = useMemo<HomeTransactionRow[]>(() => {
+    const financeClosed = allPortfolios.flatMap((portfolio) => portfolio.operations.map<HomeTransactionRow>((operation) => {
+      const ts = Date.parse(operation.date);
+      const taxes = (operation.tax_state ?? 0) + (operation.tax_intermediary ?? 0);
+      return {
+        id: `home-closed-finance-${portfolio.id}-${operation.id}`,
+        appKey: 'finance',
+        lane: 'closed',
+        title: `${operation.side === 'buy' ? 'Achat' : 'Vente'} ${operation.asset}`,
+        portfolioLabel: portfolio.label,
+        date: operation.date,
+        timestamp: Number.isFinite(ts) ? ts : 0,
+        note: `${operation.intermediary}`,
+        gainLoss: operation.side === 'sell' ? operation.amount : -operation.amount,
+        taxes,
+        moodImpact: 0,
+      };
+    }));
+    const bettingClosed = bettingStrategies.flatMap((strategy) => strategy.recentBets
+      .filter((bet) => bet.result !== 'pending')
+      .map<HomeTransactionRow>((bet) => {
+        const ts = Date.parse(bet.date);
+        return {
+          id: `home-closed-betting-${strategy.id}-${bet.id}`,
+          appKey: 'betting',
+          lane: 'closed',
+          title: bet.event,
+          portfolioLabel: strategy.name,
+          date: bet.date,
+          timestamp: Number.isFinite(ts) ? ts : 0,
+          note: `${bet.market} · ${bet.result}`,
+          gainLoss: bet.profit,
+          taxes: 0,
+          moodImpact: bet.profit,
+        };
+      }));
+    const racingClosed = racingStrategies.flatMap((strategy) => strategy.recentBets
+      .filter((bet) => bet.result !== 'pending')
+      .map<HomeTransactionRow>((bet) => {
+        const ts = Date.parse(bet.date);
+        return {
+          id: `home-closed-racing-${strategy.id}-${bet.id}`,
+          appKey: 'racing',
+          lane: 'closed',
+          title: bet.event,
+          portfolioLabel: strategy.name,
+          date: bet.date,
+          timestamp: Number.isFinite(ts) ? ts : 0,
+          note: `${bet.market} · ${bet.result}`,
+          gainLoss: bet.profit,
+          taxes: 0,
+          moodImpact: bet.profit,
+        };
+      }));
+    const lotoClosed = lotterySettledTickets.map<HomeTransactionRow>((ticket) => {
+      const resolvedAt = ticket.settledAt ?? ticket.drawDate;
+      const ts = Date.parse(resolvedAt);
+      return {
+        id: `home-closed-loto-${ticket.id}`,
+        appKey: 'loto',
+        lane: 'closed',
+        title: `${LOTTERY_CONFIG[ticket.game].label} · ${ticket.gridLabel}`,
+        portfolioLabel: 'Portefeuille fictif Loto',
+        date: resolvedAt,
+        timestamp: Number.isFinite(ts) ? ts : 0,
+        note: ticket.rankLabel ?? (ticket.status === 'won' ? 'Gagnant' : 'Perdant'),
+        gainLoss: ticket.profit,
+        taxes: 0,
+        moodImpact: ticket.profit,
+      };
+    });
+    return [...financeClosed, ...bettingClosed, ...racingClosed, ...lotoClosed]
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .slice(0, 8);
+  }, [allPortfolios, bettingStrategies, racingStrategies, lotterySettledTickets]);
+  const homeMood = useMemo(() => {
+    const threshold = HOME_MOOD_THRESHOLDS[HOME_MOOD_PROFILE];
+    const net = homeClosedTransactions.reduce((sum, row) => sum + row.moodImpact, 0);
+    if (net >= threshold) {
+      return {
+        tone: 'up' as const,
+        title: 'Mood offensif',
+        detail: `Gains recents ${formatSignedEuro(net, '+0.00 €')}`,
+      };
+    }
+    if (net <= -threshold) {
+      return {
+        tone: 'down' as const,
+        title: 'Mood defensif',
+        detail: `Pertes recentes ${formatSignedEuro(net, '-0.00 €')}`,
+      };
+    }
+    return {
+      tone: 'neutral' as const,
+      title: 'Mood stable',
+      detail: `Equilibre recent ${formatSignedEuro(net, '0.00 €')}`,
+    };
+  }, [homeClosedTransactions]);
+  const homeUpcomingTransactions48h = useMemo(() => {
+    const nowTs = Date.now();
+    const horizonTs = nowTs + 48 * 60 * 60 * 1000;
+    return homeUpcomingTransactions
+      .filter((row) => row.timestamp >= nowTs && row.timestamp <= horizonTs)
+      .slice(0, 12);
+  }, [homeUpcomingTransactions]);
+  const homeFinanceVirtualPortfolio = useMemo(
+    () => allPortfolios.find((portfolio) => portfolio.type === 'virtual') ?? null,
+    [allPortfolios],
+  );
+  const homeCumulativeRows = useMemo(() => {
+    const bettingReal = bettingStrategies.filter((strategy) => !strategy.isVirtual);
+    const racingReal = racingStrategies.filter((strategy) => !strategy.isVirtual);
+
+    const realRows = [
+      {
+        key: 'finance-real',
+        category: 'Finance réel',
+        value: `${topbarRealValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`,
+        evolution: `Évolution 7j: ${evolution7d.value}`,
+      },
+      {
+        key: 'betting-real',
+        category: 'Sportif réel',
+        value: `${bettingReal.reduce((sum, strategy) => sum + strategy.bankroll, 0).toFixed(2)} €`,
+        evolution: `PnL clôturé: ${formatSignedEuro(bettingReal.flatMap((strategy) => strategy.recentBets).filter((bet) => bet.result !== 'pending').reduce((sum, bet) => sum + bet.profit, 0), '0.00 €')}`,
+      },
+      {
+        key: 'racing-real',
+        category: 'Hippique réel',
+        value: `${racingReal.reduce((sum, strategy) => sum + strategy.bankroll, 0).toFixed(2)} €`,
+        evolution: `PnL clôturé: ${formatSignedEuro(racingReal.flatMap((strategy) => strategy.recentBets).filter((bet) => bet.result !== 'pending').reduce((sum, bet) => sum + bet.profit, 0), '0.00 €')}`,
+      },
+      {
+        key: 'loto-real',
+        category: 'Loto réel',
+        value: `${lotoIntegrationPortfolios.length} portefeuille(s)`,
+        evolution: `${lotteryExecutionRequests.filter((request) => request.executionMode === 'real').length} confirmation(s)`,
+      },
+    ];
+
+    const virtualRows = [
+      {
+        key: 'finance-virtual',
+        category: 'Finance fictif',
+        value: `${(homeFinanceVirtualPortfolio?.current_value ?? 0).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`,
+        evolution: `Évolution 7j: ${homeFinanceVirtualPortfolio ? formatPortfolioEvolution(homeFinanceVirtualPortfolio.history, 7).value : 'n/d'}`,
+      },
+      {
+        key: 'betting-virtual',
+        category: 'Sportif fictif',
+        value: `${(activeBettingVirtualStrategy?.bankroll ?? 0).toFixed(2)} €`,
+        evolution: `Évolution 7j: ${activeBettingVirtualStrategy ? formatPortfolioEvolution(activeBettingVirtualStrategy.history, 7).value : 'n/d'}`,
+      },
+      {
+        key: 'racing-virtual',
+        category: 'Hippique fictif',
+        value: `${(activeRacingVirtualStrategy?.bankroll ?? 0).toFixed(2)} €`,
+        evolution: `Évolution 7j: ${activeRacingVirtualStrategy ? formatPortfolioEvolution(activeRacingVirtualStrategy.history, 7).value : 'n/d'}`,
+      },
+      {
+        key: 'loto-virtual',
+        category: 'Loto fictif',
+        value: `${lotteryVirtualPortfolio.bankroll.toFixed(2)} €`,
+        evolution: `PnL: ${formatSignedEuro(lotteryVirtualPnl, '0.00 €')}`,
+      },
+    ];
+
+    return { realRows, virtualRows };
+  }, [
+    topbarRealValue,
+    evolution7d.value,
+    bettingStrategies,
+    racingStrategies,
+    lotoIntegrationPortfolios,
+    lotteryExecutionRequests,
+    homeFinanceVirtualPortfolio,
+    activeBettingVirtualStrategy,
+    activeRacingVirtualStrategy,
+    lotteryVirtualPortfolio.bankroll,
+    lotteryVirtualPnl,
+  ]);
   const selectedLotteryRecommendationPortfolio = lotteryAssignablePortfolios.find((portfolio) => portfolio.id === selectedLotteryRecommendationPortfolioId) ?? lotteryAssignablePortfolios[0] ?? null;
   const financeVirtualLastOperation = useMemo(() => {
     const virtualPortfolio = allPortfolios.find((portfolio) => portfolio.type === 'virtual');
@@ -5270,7 +6016,7 @@ export default function RobinApp() {
       return cfg.enabled && cfg.mode === 'supervised';
     });
     return supervisedPortfolios.map((portfolio) => {
-      const pending = decisionInsights.filter((insight) => insight.portfolio_id === portfolio.id).length;
+      const pending = visibleDecisionInsights.filter((insight) => insight.portfolio_id === portfolio.id).length;
       const evolution = formatPortfolioEvolution(portfolio.history, 7);
       return {
         id: `supervised-finance-${portfolio.id}`,
@@ -5281,7 +6027,7 @@ export default function RobinApp() {
         trend: `7j ${evolution.value}`,
       };
     });
-  }, [allPortfolios, decisionInsights, agentConfigs]);
+  }, [allPortfolios, visibleDecisionInsights, agentConfigs]);
   const supervisedBettingMessages = useMemo(() => {
     const supervisedStrategies = bettingStrategies.filter((strategy) => strategy.enabled && strategy.ai_enabled && strategy.mode === 'supervised');
     return supervisedStrategies.map((strategy) => {
@@ -5843,7 +6589,7 @@ export default function RobinApp() {
     }
 
     const cfg = getAgentConfig(virtualPortfolioId);
-    if (!cfg.enabled || cfg.mode === 'manual') {
+    if (!cfg.enabled || cfg.mode !== 'autopilot') {
       return;
     }
 
@@ -6272,12 +7018,14 @@ export default function RobinApp() {
       if (todayCount >= effectiveLimit) {
         return prev;
       }
-
       const side: 'buy' | 'sell' = Math.random() > 0.45 ? 'buy' : 'sell';
       const baseAmount = Math.max(MIN_MONETARY_LIMIT, Math.min(cfg.max_amount, prev.currentValue * 0.08));
       const amount = Number((baseAmount * (0.7 + Math.random() * 0.7)).toFixed(2));
-      const move = (Math.random() * 0.05) - 0.018;
-      const delta = Number((amount * move).toFixed(2));
+      const marketMove = (Math.random() * 0.07) - 0.03;
+      const directional = side === 'buy' ? 1 : -1;
+      const grossPnl = amount * marketMove * directional;
+      const intermediaryFee = Number((amount * 0.0015).toFixed(2));
+      const delta = Number((grossPnl - intermediaryFee).toFixed(2));
       const nextValue = Math.max(20, Number((prev.currentValue + delta).toFixed(2)));
       const assets = ['CW8', 'SP500', 'BTC', 'ETH', 'AIR'];
       const asset = assets[Math.floor(Math.random() * assets.length)] ?? 'CW8';
@@ -6288,8 +7036,8 @@ export default function RobinApp() {
         asset,
         amount,
         tax_state: null,
-        tax_intermediary: null,
-        intermediary: 'Robin IA (virtuel)',
+        tax_intermediary: intermediaryFee,
+        intermediary: 'Robin IA (virtuel autonome)',
       };
 
       if (hasAdminRole(user)) {
@@ -7045,6 +7793,132 @@ export default function RobinApp() {
     setSelectedDecisionAmount(Number(suggestedAmount.toFixed(2)));
   }, [selectedInsight, allPortfolios]);
 
+  function openHomePortfolio(row: HomePortfolioRow) {
+    if (row.appKey === 'finance') {
+      const target = allPortfolios.find((portfolio) => portfolio.id === row.targetId);
+      setActiveApp('finance');
+      if (target) {
+        setSelectedPortfolio(target);
+        setPortfolioDetailOpen(true);
+      }
+      setAppView('portfolios');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    if (row.appKey === 'betting') {
+      const target = bettingStrategies.find((strategy) => strategy.id === row.targetId) ?? null;
+      setActiveApp('betting');
+      setSelectedStrategy(target);
+      setStrategyDetailOpen(Boolean(target));
+      setAppView('strategies');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    if (row.appKey === 'racing') {
+      const target = racingStrategies.find((strategy) => strategy.id === row.targetId) ?? null;
+      setActiveApp('racing');
+      setSelectedRacingStrategy(target);
+      setRacingStrategyDetailOpen(Boolean(target));
+      setAppView('strategies');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    setActiveApp('loto');
+    setLotoPortfolioMenuSelection(row.targetId);
+    setAppView('portfolios');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function openHomeRecommendation(item: HomeRecommendationRow) {
+    if (item.appKey === 'finance' && item.insight) {
+      setActiveApp('finance');
+      setAppView('dashboard');
+      openDecisionWizard(item.insight);
+      window.scrollTo({ top: 120, behavior: 'smooth' });
+      return;
+    }
+    if (item.appKey === 'betting') {
+      setActiveApp('betting');
+      setAppView('dashboard');
+      window.scrollTo({ top: 180, behavior: 'smooth' });
+      return;
+    }
+    if (item.appKey === 'racing') {
+      setActiveApp('racing');
+      setAppView('dashboard');
+      window.scrollTo({ top: 180, behavior: 'smooth' });
+      return;
+    }
+    setActiveApp('loto');
+    if (item.game) {
+      setLotteryGameFocus(item.game);
+    }
+    setAppView('dashboard');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function clearViewSelections() {
+    setPortfolioDetailOpen(false);
+    setSelectedPortfolio(null);
+    setStrategyDetailOpen(false);
+    setSelectedStrategy(null);
+    setRacingStrategyDetailOpen(false);
+    setSelectedRacingStrategy(null);
+  }
+
+  function toggleTopbarParentMenu(parent: 'home' | 'finance' | 'paris') {
+    const isSameParent = topMenuParentOpen === parent;
+    setTopMenuParentOpen(isSameParent ? null : parent);
+    if (parent !== 'finance' || isSameParent) {
+      setTopMenuFinanceChildOpen(null);
+    }
+    if (parent !== 'paris' || isSameParent) {
+      setTopMenuParisChildOpen(null);
+    }
+  }
+
+  function openFinanceTopbarBranch(subApp: 'crypto' | 'actions') {
+    setTopMenuParentOpen('finance');
+    setTopMenuFinanceChildOpen(subApp);
+    setTopMenuParisChildOpen(null);
+    setActiveApp('finance');
+    setFinanceSubApp(subApp);
+    clearViewSelections();
+    setAppView('dashboard');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function openFinanceTopbarView(view: 'dashboard' | 'portfolios' | 'settings') {
+    const targetSubApp = topMenuFinanceChildOpen ?? financeSubApp;
+    setTopMenuParentOpen('finance');
+    setTopMenuFinanceChildOpen(targetSubApp);
+    setActiveApp('finance');
+    setFinanceSubApp(targetSubApp);
+    clearViewSelections();
+    setAppView(view);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function openParisTopbarBranch(app: ParisApp) {
+    setTopMenuParentOpen('paris');
+    setTopMenuParisChildOpen(app);
+    setTopMenuFinanceChildOpen(null);
+    setActiveApp(app);
+    clearViewSelections();
+    setAppView('dashboard');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function openParisTopbarView(view: 'dashboard' | 'portfolios' | 'strategies' | 'settings') {
+    const targetApp = topMenuParisChildOpen ?? topbarParisActiveApp;
+    setTopMenuParentOpen('paris');
+    setTopMenuParisChildOpen(targetApp);
+    setActiveApp(targetApp);
+    clearViewSelections();
+    setAppView(view);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
   return (
     <main className={`investShell appTheme-${activeApp}`}>
       <div className="appWatermarkLayer" aria-hidden="true">
@@ -7089,20 +7963,35 @@ export default function RobinApp() {
                     ['--trend-scale' as string]: `${trendArrowScale}`,
                     ['--goal-progress' as string]: `${topbarProgressRatio}`,
                     ['--goal-progress-pct' as string]: `${topbarProgressPct}%`,
+                    ['--goal-elapsed-pct' as string]: `${topbarDelayConsumedPct}%`,
                   } as Record<string, string>}
                 >
+                  <div className="batteryHeader">
+                    <span className="batteryEyebrow">Objectif:</span>
+                    <strong>{topbarProgressLabel}</strong>
+                    <span>{goalProgressText}</span>
+                  </div>
                   <div className="batteryShell">
                     <div className="batteryChargingFlow" />
                     <div className="batteryLevel" />
                     <div className="batteryNeedle" />
-                    <div className="batteryPercent">{topbarProgressLabel}</div>
-                    <div className="batteryBolt" aria-hidden="true">⚡</div>
+                    <div className="batteryPercent">{topbarObjectiveLabel}</div>
                   </div>
-                  <div className="batteryCap" />
+                  <div className="batteryTimeline">
+                    <div className="batteryTimelineRail">
+                      <div className="batteryTimelineProgress" />
+                    </div>
+                    <div className="batteryTimelineMascot" aria-hidden="true">🦊</div>
+                    <div
+                      className={`batteryDelayInfo ${loading ? 'loading' : topbarDelayConsumedPct >= 100 ? 'done' : topbarDelayConsumedPct >= 75 ? 'warn' : 'ok'}`}
+                    >
+                      {topbarDelayLabel}
+                    </div>
+                  </div>
                 </div>
                 <div className="topbarKpis">
                   <button
-                    className={`smallPill selectedPortfolioPill ${goalTrajectoryTone}`}
+                    className={`smallPill selectedPortfolioPill topbarTrendPill ${evolution24h.tone}`}
                     onClick={() => {
                       setSelectedInsight({
                         id: 'topbar-real-24h',
@@ -7116,17 +8005,17 @@ export default function RobinApp() {
                     }}
                     type="button"
                   >
-                    <span className="topbarObjectiveDot" aria-hidden="true" />
-                    Portefeuilles réels {topbarRealValue.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €
+                    <span className="topbarTrendTitle"><span className="topbarObjectiveDot" aria-hidden="true" />Réels {topbarRealValue.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €</span>
+                    <span className={`topbarTrendValue ${evolution24h.tone}`}>{topbarRealTrendLabel}</span>
                   </button>
                   <button
-                    className={`smallPill selectedPortfolioPill ${goalTrajectoryTone}`}
+                    className={`smallPill selectedPortfolioPill topbarTrendPill ${topbarVirtualTrendTone}`}
                     onClick={() => {
                       setSelectedInsight({
                         id: 'topbar-virtual-live',
                         title: 'Valeur portefeuilles fictifs actifs',
                         value: `${topbarVirtualValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`,
-                        trend: topbarVirtualValue >= 0 ? '↑ Portefeuilles simulés actifs' : '↓ Portefeuilles simulés en repli',
+                        trend: `${topbarVirtualTrendTone === 'up' ? '↑' : topbarVirtualTrendTone === 'down' ? '↓' : '→'} ${topbarVirtualTrendLabel}`,
                         detail: 'Somme des portefeuilles fictifs actifs: Finance, Paris en ligne, Hippiques et Loto.',
                         section: 'indicator',
                       });
@@ -7134,8 +8023,8 @@ export default function RobinApp() {
                     }}
                     type="button"
                   >
-                    <span className="topbarObjectiveDot" aria-hidden="true" />
-                    Portefeuilles fictifs {topbarVirtualValue.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €
+                    <span className="topbarTrendTitle"><span className="topbarObjectiveDot" aria-hidden="true" />Fictifs {topbarVirtualValue.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €</span>
+                    <span className={`topbarTrendValue ${topbarVirtualTrendTone}`}>{topbarVirtualTrendLabel}</span>
                   </button>
                 </div>
               </>
@@ -7160,9 +8049,163 @@ export default function RobinApp() {
               Se deconnecter
             </button>
           </div>
-        ) : (
-          <div className="smallPill">Investissez avec des reperes clairs, pas avec du bruit</div>
-        )}
+        ) : null}
+        {user ? (
+          <div className="topbarMenuDock">
+            <div className="topbarParentNav">
+              <button
+                className={appView === 'overview' ? 'appSwitchBtn active' : 'appSwitchBtn'}
+                onClick={() => toggleTopbarParentMenu('home')}
+                type="button"
+              >
+                🏠 Home
+              </button>
+              {allowedApps.includes('finance') ? (
+                <button
+                  className={activeApp === 'finance' && appView !== 'account' && appView !== 'admin' && appView !== 'overview' ? 'appSwitchBtn finance active' : 'appSwitchBtn finance'}
+                  onClick={() => toggleTopbarParentMenu('finance')}
+                  type="button"
+                >
+                  🏦 Finance
+                </button>
+              ) : null}
+              {hasParisApps ? (
+                <button
+                  className={isParisSectionActive && appView !== 'account' && appView !== 'admin' && appView !== 'overview' ? 'appSwitchBtn betting active' : 'appSwitchBtn betting'}
+                  onClick={() => toggleTopbarParentMenu('paris')}
+                  type="button"
+                >
+                  🎲 Paris en ligne
+                </button>
+              ) : null}
+              {canAccessAdmin ? (
+                <button
+                  className={appView === 'admin' ? 'appSwitchBtn admin active' : 'appSwitchBtn admin'}
+                  onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setRacingStrategyDetailOpen(false); setSelectedRacingStrategy(null); setAppView('admin'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                  type="button"
+                >
+                  🛡️ Admin
+                </button>
+              ) : null}
+              <button
+                className={appView === 'account' ? 'appSwitchBtn account active' : 'appSwitchBtn account'}
+                onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setRacingStrategyDetailOpen(false); setSelectedRacingStrategy(null); setAppView('account'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                type="button"
+              >
+                👤 Mon compte
+              </button>
+            </div>
+
+            {topMenuParentOpen === 'home' ? (
+              <div className="topbarNavPanel">
+                <nav className="workspaceNav">
+                  <button
+                    className={appView === 'overview' ? 'navButton active' : 'navButton'}
+                    onClick={() => { clearViewSelections(); setAppView('overview'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                    type="button"
+                  >
+                    Accueil global
+                  </button>
+                </nav>
+              </div>
+            ) : null}
+
+            {topMenuParentOpen === 'finance' && allowedApps.includes('finance') ? (
+              <div className="topbarNavPanel">
+                <nav className="parisSubNav">
+                  <span className="parisSubNavLabel">Finance</span>
+                  <button
+                    className={financeSubApp === 'crypto' ? 'parisSubBtn active' : 'parisSubBtn'}
+                    onClick={() => openFinanceTopbarBranch('crypto')}
+                    type="button"
+                  >
+                    ₿ Cryptos
+                  </button>
+                  <button
+                    className={financeSubApp === 'actions' ? 'parisSubBtn active' : 'parisSubBtn'}
+                    onClick={() => openFinanceTopbarBranch('actions')}
+                    type="button"
+                  >
+                    📈 Actions
+                  </button>
+                </nav>
+                {topMenuFinanceChildOpen ? (
+                  <nav className="workspaceNav">
+                    <button className={activeApp === 'finance' && appView === 'dashboard' ? 'navButton active' : 'navButton'} onClick={() => openFinanceTopbarView('dashboard')} type="button">
+                      Accueil cockpit
+                    </button>
+                    <button className={activeApp === 'finance' && appView === 'portfolios' ? 'navButton active' : 'navButton'} onClick={() => openFinanceTopbarView('portfolios')} type="button">
+                      Portefeuilles
+                    </button>
+                    <button className={activeApp === 'finance' && appView === 'settings' ? 'navButton active' : 'navButton'} onClick={() => openFinanceTopbarView('settings')} type="button">
+                      Options
+                    </button>
+                  </nav>
+                ) : null}
+              </div>
+            ) : null}
+
+            {topMenuParentOpen === 'paris' && hasParisApps ? (
+              <div className="topbarNavPanel">
+                <nav className="parisSubNav">
+                  <span className="parisSubNavLabel">Paris en ligne</span>
+                  {allowedApps.includes('betting') ? (
+                    <button
+                      className={topbarParisActiveApp === 'betting' ? 'parisSubBtn active' : 'parisSubBtn'}
+                      onClick={() => openParisTopbarBranch('betting')}
+                      type="button"
+                    >
+                      ⚽ Paris sportifs
+                    </button>
+                  ) : null}
+                  {allowedApps.includes('racing') ? (
+                    <button
+                      className={topbarParisActiveApp === 'racing' ? 'parisSubBtn active' : 'parisSubBtn'}
+                      onClick={() => openParisTopbarBranch('racing')}
+                      type="button"
+                    >
+                      🏇 Paris hippiques
+                    </button>
+                  ) : null}
+                  {allowedApps.includes('loto') ? (
+                    <button
+                      className={topbarParisActiveApp === 'loto' ? 'parisSubBtn active' : 'parisSubBtn'}
+                      onClick={() => openParisTopbarBranch('loto')}
+                      type="button"
+                    >
+                      🎟️ Loto
+                    </button>
+                  ) : null}
+                </nav>
+                {topMenuParisChildOpen ? (
+                  <nav className="workspaceNav">
+                    <button
+                      className={appView === 'dashboard' && isParisSectionActive ? 'navButton active' : 'navButton'}
+                      onClick={() => openParisTopbarView('dashboard')}
+                      type="button"
+                    >
+                      Accueil cockpit
+                    </button>
+                    <button
+                      className={((topMenuParisChildOpen === 'loto' && appView === 'portfolios') || ((topMenuParisChildOpen === 'betting' || topMenuParisChildOpen === 'racing') && appView === 'strategies')) ? 'navButton active' : 'navButton'}
+                      onClick={() => openParisTopbarView(topMenuParisChildOpen === 'loto' ? 'portfolios' : 'strategies')}
+                      type="button"
+                    >
+                      Portefeuilles
+                    </button>
+                    <button
+                      className={appView === 'settings' && isParisSectionActive ? 'navButton active' : 'navButton'}
+                      onClick={() => openParisTopbarView('settings')}
+                      type="button"
+                    >
+                      Options
+                    </button>
+                  </nav>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </header>
 
       {error ? <p className="formMessage">{error}</p> : null}
@@ -7234,7 +8277,7 @@ export default function RobinApp() {
 
             {authMode === 'login' ? (
               <form className="authForm" onSubmit={handleLogin}>
-                <h2>Reprendre la main sur vos investissements</h2>
+                <h2>Connexion</h2>
                 <label>
                   Email
                   <input value={loginForm.email} onChange={(event) => setLoginForm((state) => ({ ...state, email: event.target.value }))} type="email" required />
@@ -7392,180 +8435,6 @@ export default function RobinApp() {
             </article>
           ) : null}
 
-          {/* ============================================================
-               TIER 1 — App switcher: Home | Finance | Paris en ligne | Admin | Compte
-               ============================================================ */}
-          <div className="appSwitcher">
-            <div className="appSwitcherSide left">
-              <button
-                className={appView === 'overview' ? 'appSwitchBtn active' : 'appSwitchBtn'}
-                onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setRacingStrategyDetailOpen(false); setSelectedRacingStrategy(null); setAppView('overview'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                type="button"
-              >
-                🏠 Home
-              </button>
-              {allowedApps.includes('finance') ? (
-                <button
-                  className={activeApp === 'finance' && appView !== 'account' && appView !== 'admin' && appView !== 'overview' ? 'appSwitchBtn finance active' : 'appSwitchBtn finance'}
-                  onClick={() => { setActiveApp('finance'); setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                  type="button"
-                >
-                  🏦 Finance
-                </button>
-              ) : null}
-              {(allowedApps.includes('betting') || allowedApps.includes('racing') || allowedApps.includes('loto')) ? (
-                <button
-                  className={isParisSectionActive && appView !== 'account' && appView !== 'admin' && appView !== 'overview' ? 'appSwitchBtn betting active' : 'appSwitchBtn betting'}
-                  onClick={() => {
-                    const nextSub = activeApp === 'betting' || activeApp === 'racing' || activeApp === 'loto' ? activeApp : 'betting';
-                    setActiveApp(nextSub);
-                    setPortfolioDetailOpen(false); setSelectedPortfolio(null);
-                    setStrategyDetailOpen(false); setSelectedStrategy(null);
-                    setRacingStrategyDetailOpen(false); setSelectedRacingStrategy(null);
-                    setAppView(nextSub === 'loto' ? 'dashboard' : 'dashboard');
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
-                  }}
-                  type="button"
-                >
-                  🎲 Paris en ligne
-                </button>
-              ) : null}
-            </div>
-            <div className="appSwitcherSide right">
-              {canAccessAdmin ? (
-                <button
-                  className={appView === 'admin' ? 'appSwitchBtn admin active' : 'appSwitchBtn admin'}
-                  onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setRacingStrategyDetailOpen(false); setSelectedRacingStrategy(null); setAppView('admin'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                  type="button"
-                >
-                  🛡️ Admin
-                </button>
-              ) : null}
-              <button
-                className={appView === 'account' ? 'appSwitchBtn account active' : 'appSwitchBtn account'}
-                onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setRacingStrategyDetailOpen(false); setSelectedRacingStrategy(null); setAppView('account'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                type="button"
-              >
-                👤 Mon compte
-              </button>
-            </div>
-          </div>
-
-          {isFinanceSectionActive && appView !== 'admin' && appView !== 'account' && appView !== 'overview' ? (
-            <nav className="parisSubNav">
-              <span className="parisSubNavLabel">Finance</span>
-              <button
-                className={financeSubApp === 'crypto' ? 'parisSubBtn active' : 'parisSubBtn'}
-                onClick={() => { setFinanceSubApp('crypto'); setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                type="button"
-              >
-                ₿ Cryptos
-              </button>
-              <button
-                className={financeSubApp === 'actions' ? 'parisSubBtn active' : 'parisSubBtn'}
-                onClick={() => { setFinanceSubApp('actions'); setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                type="button"
-              >
-                📈 Actions
-              </button>
-            </nav>
-          ) : null}
-
-          {/* ============================================================
-               TIER 2 — Paris en ligne sub-nav: Sportifs | Hippiques | Loto
-               Only visible when a Paris section is active
-               ============================================================ */}
-          {isParisSectionActive && appView !== 'admin' && appView !== 'account' && appView !== 'overview' ? (
-            <nav className="parisSubNav">
-              <span className="parisSubNavLabel">Paris en ligne</span>
-              {allowedApps.includes('betting') ? (
-                <button
-                  className={activeApp === 'betting' ? 'parisSubBtn active' : 'parisSubBtn'}
-                  onClick={() => { setActiveApp('betting'); setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                  type="button"
-                >
-                  ⚽ Paris sportifs
-                </button>
-              ) : null}
-              {allowedApps.includes('racing') ? (
-                <button
-                  className={activeApp === 'racing' ? 'parisSubBtn active' : 'parisSubBtn'}
-                  onClick={() => { setActiveApp('racing'); setRacingStrategyDetailOpen(false); setSelectedRacingStrategy(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                  type="button"
-                >
-                  🏇 Paris hippiques
-                </button>
-              ) : null}
-              {allowedApps.includes('loto') ? (
-                <button
-                  className={activeApp === 'loto' ? 'parisSubBtn active' : 'parisSubBtn'}
-                  onClick={() => { setActiveApp('loto'); setPortfolioDetailOpen(false); setSelectedPortfolio(null); setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                  type="button"
-                >
-                  🎟️ Loto
-                </button>
-              ) : null}
-            </nav>
-          ) : null}
-
-          {/* ============================================================
-               TIER 3 — Section sub-nav: Cockpit | Portefeuilles | Options
-               Shown for Finance and Paris sportifs/hippiques (not Loto, not overview)
-               ============================================================ */}
-          {(activeApp === 'finance' || activeApp === 'betting' || activeApp === 'racing' || activeApp === 'loto') && appView !== 'admin' && appView !== 'account' && appView !== 'overview' ? (
-            <nav className="workspaceNav">
-              {activeApp === 'finance' ? (
-                <>
-                  <button className={appView === 'dashboard' ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                    Accueil cockpit
-                  </button>
-                  <button className={appView === 'portfolios' ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                    Portefeuilles
-                  </button>
-                  <button className={appView === 'settings' ? 'navButton active' : 'navButton'} onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                    Options
-                  </button>
-                </>
-              ) : activeApp === 'betting' ? (
-                <>
-                  <button className={appView === 'dashboard' ? 'navButton active' : 'navButton'} onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                    Accueil cockpit
-                  </button>
-                  <button className={appView === 'strategies' ? 'navButton active' : 'navButton'} onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('strategies'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                    Portefeuilles
-                  </button>
-                  <button className={appView === 'settings' ? 'navButton active' : 'navButton'} onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                    Options
-                  </button>
-                </>
-              ) : activeApp === 'racing' ? (
-                <>
-                  <button className={appView === 'dashboard' ? 'navButton active' : 'navButton'} onClick={() => { setRacingStrategyDetailOpen(false); setSelectedRacingStrategy(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                    Accueil cockpit
-                  </button>
-                  <button className={appView === 'strategies' ? 'navButton active' : 'navButton'} onClick={() => { setRacingStrategyDetailOpen(false); setSelectedRacingStrategy(null); setAppView('strategies'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                    Portefeuilles
-                  </button>
-                  <button className={appView === 'settings' ? 'navButton active' : 'navButton'} onClick={() => { setRacingStrategyDetailOpen(false); setSelectedRacingStrategy(null); setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                    Options
-                  </button>
-                </>
-              ) : activeApp === 'loto' ? (
-                <>
-                  <button className={appView === 'dashboard' ? 'navButton active' : 'navButton'} onClick={() => { setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                    Accueil cockpit
-                  </button>
-                  <button className={appView === 'portfolios' ? 'navButton active' : 'navButton'} onClick={() => { setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                    Portefeuilles
-                  </button>
-                  <button className={appView === 'settings' ? 'navButton active' : 'navButton'} onClick={() => { setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">
-                    Options
-                  </button>
-                </>
-              ) : null}
-            </nav>
-          ) : null}
-
           {((activeApp === 'finance' && appView === 'portfolios') || (activeApp === 'betting' && appView === 'strategies') || (activeApp === 'loto' && appView === 'portfolios')) ? (
             <section className="selectedPortfolioStrip">
               <div className="selectedPortfolioHeader">
@@ -7686,520 +8555,103 @@ export default function RobinApp() {
             <section className="workspaceGrid" style={{ gap: 16 }}>
               <article className="featureCard" style={{ gridColumn: '1 / -1' }}>
                 <div className="cardHeader">
-                  <h2>{activeApp === 'finance' ? `Finance · ${financeSubApp === 'crypto' ? 'Cryptos' : 'Actions'}` : APP_LABELS[activeApp]} · Vue synthétique</h2>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <span>État global, évolution récente et recommandations IA</span>
-                    {activeApp === 'finance' ? (
-                      <>
-                        <button className="ghostButton" onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Détail portefeuilles</button>
-                        <button className="secondaryButton" onClick={() => { setPortfolioDetailOpen(false); setSelectedPortfolio(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Accompagnement IA</button>
-                      </>
-                    ) : activeApp === 'betting' ? (
-                      <>
-                        <button className="ghostButton" onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('strategies'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Détail portefeuilles</button>
-                        <button className="secondaryButton" onClick={() => { setStrategyDetailOpen(false); setSelectedStrategy(null); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Accompagnement IA</button>
-                      </>
-                    ) : (
-                      <>
-                        <button className="ghostButton" onClick={() => { setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Historique détaillé</button>
-                        <button className="secondaryButton" onClick={() => { setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Prédictions IA</button>
-                      </>
-                    )}
-                  </div>
+                  <h2>Home · État cumulé des portefeuilles</h2>
+                  <span>{homeMood.title} · {homeMood.detail}</span>
                 </div>
-                {(() => {
-                  const financeRealVisiblePortfolios = visiblePortfolios.filter((portfolio) => portfolio.type === 'integration');
-                  const financeRealCount = financeRealVisiblePortfolios.length;
-                  const financeRealValue = financeRealVisiblePortfolios.reduce((sum, portfolio) => sum + portfolio.current_value, 0);
-                  const financeVirtual = visiblePortfolios.find((portfolio) => portfolio.type === 'virtual') ?? null;
-                  const financeVirtualEnabled = virtualAppsEnabled.finance && Boolean(financeVirtual);
-                  const financeVirtualValue = financeVirtualEnabled && financeVirtual ? financeVirtual.current_value : 0;
-                  const financeOps7dCount = financeOps7d.reduce((sum, row) => sum + row.count, 0);
-
-                  const bettingSettledPnl = bettingStrategies
-                    .flatMap((strategy) => strategy.recentBets)
-                    .filter((bet) => bet.result !== 'pending')
-                    .reduce((sum, bet) => sum + bet.profit, 0);
-
-                  const racingPendingBets = racingStrategies
-                    .flatMap((strategy) => strategy.recentBets)
-                    .filter((bet) => bet.result === 'pending').length;
-                  const racingSettledPnl = racingStrategies
-                    .flatMap((strategy) => strategy.recentBets)
-                    .filter((bet) => bet.result !== 'pending')
-                    .reduce((sum, bet) => sum + bet.profit, 0);
-
-                  const lotoPredictionCount = lotteryPredictions.loto.predictedGrids.length;
-                  const euroPredictionCount = lotteryPredictions.euromillions.predictedGrids.length;
-                  const nextLotoDraw = lotteryUpcoming.find((draw) => draw.game === 'loto');
-                  const nextEuroDraw = lotteryUpcoming.find((draw) => draw.game === 'euromillions');
-                  const bestTipsterSignal = filteredTopTipsterRecommendations[0] ?? null;
-                  const bestRacingSignal = racingSignals
-                    .filter((signal) => signal.status === 'pending')
-                    .sort((a, b) => scoreTipsterSignal(b) - scoreTipsterSignal(a))[0] ?? null;
-
-                  return (
-                    <section className="overviewHeroPanel">
-                      <div className="overviewKpiGrid">
-                        {activeApp === 'finance' ? (
-                          <>
-                            <article className="overviewKpiCard">
-                              <span>Portefeuilles réels actifs</span>
-                              <strong>{financeRealCount}</strong>
-                              <small>{financeRealCount > 0 ? 'Issus des intégrations tierces' : 'Aucun connecteur actif'}</small>
-                            </article>
-                            <article className="overviewKpiCard">
-                              <span>Montant réel cumulé</span>
-                              <strong>{financeRealValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €</strong>
-                              <small className={evolution24h.tone}>24h: {evolution24h.value}</small>
-                            </article>
-                            <article className="overviewKpiCard">
-                              <span>Portefeuille fictif Finance</span>
-                              <strong>{financeVirtualValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €</strong>
-                              <small>{financeVirtualEnabled ? 'Actif · simulation uniquement' : 'Inactif'}</small>
-                            </article>
-                            <article className="overviewKpiCard">
-                              <span>Décisions IA</span>
-                              <strong>{pendingDecisionCount}</strong>
-                              <small>{pendingDecisionCount > 0 ? 'Priorité haute' : 'RAS'}</small>
-                            </article>
-                            <article className="overviewKpiCard">
-                              <span>Transactions 7j</span>
-                              <strong>{financeOps7dCount}</strong>
-                              <small className={evolution7d.tone}>ROI 7j: {evolution7d.value}</small>
-                            </article>
-                          </>
-                        ) : activeApp === 'betting' ? (
-                          <>
-                            <article className="overviewKpiCard">
-                              <span>Paris en cours</span>
-                              <strong>{activeBettingBets.length}</strong>
-                              <small>Exposition: {activeBettingExposure.toFixed(2)} €</small>
-                            </article>
-                            <article className="overviewKpiCard">
-                              <span>Portefeuille virtuel</span>
-                              <strong>{activeBettingVirtualStrategy ? `${activeBettingVirtualStrategy.bankroll.toFixed(2)} €` : 'n/d'}</strong>
-                              <small>{activeBettingVirtualStrategy?.enabled ? 'Actif' : 'Inactif'}</small>
-                            </article>
-                            <article className="overviewKpiCard">
-                              <span>PnL réglé</span>
-                              <strong className={bettingSettledPnl >= 0 ? 'up' : 'down'}>{bettingSettledPnl >= 0 ? '+' : ''}{bettingSettledPnl.toFixed(2)} €</strong>
-                              <small>Clôturés uniquement</small>
-                            </article>
-                            <article className="overviewKpiCard">
-                              <span>Signaux IA visibles</span>
-                              <strong>{filteredTopTipsterRecommendations.length}</strong>
-                              <small>{bestTipsterSignal ? `Top: ${bestTipsterSignal.event}` : 'Aucun top signal'}</small>
-                            </article>
-                          </>
-                        ) : activeApp === 'racing' ? (
-                          <>
-                            <article className="overviewKpiCard">
-                              <span>Paris hippiques en cours</span>
-                              <strong>{racingPendingBets}</strong>
-                              <small>En attente réel</small>
-                            </article>
-                            <article className="overviewKpiCard">
-                              <span>Portefeuille virtuel</span>
-                              <strong>{activeRacingVirtualStrategy ? `${activeRacingVirtualStrategy.bankroll.toFixed(2)} €` : 'n/d'}</strong>
-                              <small>{activeRacingVirtualStrategy?.enabled ? 'Actif' : 'Inactif'} · IA {activeRacingVirtualStrategy?.ai_enabled ? 'active' : 'inactive'}</small>
-                            </article>
-                            <article className="overviewKpiCard">
-                              <span>PnL réglé</span>
-                              <strong className={racingSettledPnl >= 0 ? 'up' : 'down'}>{racingSettledPnl >= 0 ? '+' : ''}{racingSettledPnl.toFixed(2)} €</strong>
-                              <small>Clôturés uniquement</small>
-                            </article>
-                            <article className="overviewKpiCard">
-                              <span>Signal IA prioritaire</span>
-                              <strong>{bestRacingSignal ? bestRacingSignal.confidence : 0}/5</strong>
-                              <small>{bestRacingSignal ? bestRacingSignal.event : 'Aucun signal prioritaire'}</small>
-                            </article>
-                          </>
-                        ) : (
-                          <>
-                            <article className="overviewKpiCard">
-                              <span>Grilles Loto simulées</span>
-                              <strong>{lotoPredictionCount}</strong>
-                              <small>{nextLotoDraw ? `Tirage: ${formatDateTimeFr(nextLotoDraw.drawDate)}` : 'Tirage non disponible'}</small>
-                            </article>
-                            <article className="overviewKpiCard">
-                              <span>Grilles EuroMillions simulées</span>
-                              <strong>{euroPredictionCount}</strong>
-                              <small>{nextEuroDraw ? `Tirage: ${formatDateTimeFr(nextEuroDraw.drawDate)}` : 'Tirage non disponible'}</small>
-                            </article>
-                            <article className="overviewKpiCard">
-                              <span>Confiance moyenne Loto</span>
-                              <strong>{lotoPredictionCount > 0 ? Math.round(lotteryPredictions.loto.predictedGrids.reduce((sum, grid) => sum + grid.confidenceIndex, 0) / lotoPredictionCount) : 0}/100</strong>
-                              <small>Grilles simulées</small>
-                            </article>
-                            <article className="overviewKpiCard">
-                              <span>Confiance moyenne EuroMillions</span>
-                              <strong>{euroPredictionCount > 0 ? Math.round(lotteryPredictions.euromillions.predictedGrids.reduce((sum, grid) => sum + grid.confidenceIndex, 0) / euroPredictionCount) : 0}/100</strong>
-                              <small>Grilles simulées</small>
-                            </article>
-                          </>
-                        )}
-                      </div>
-
-                      <article className="overviewCrossAppPanel">
-                        <div className="cardHeader" style={{ marginBottom: 8 }}>
-                          <h2>Vue synthétique transverse</h2>
-                          <span>Finance + Paris en ligne</span>
-                        </div>
-                        <div className="overviewCrossAppGrid">
-                          <div className="overviewKpiCard">
-                            <span>💹 Finance (réel)</span>
-                            <strong>{topbarRealValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €</strong>
-                            <small className={evolution7d.tone}>7j: {evolution7d.value}</small>
+                <div className="homePortfolioColumns" style={{ marginBottom: 0 }}>
+                  <section className="homePortfolioColumn real">
+                    <div className="cardHeader" style={{ marginBottom: 6 }}>
+                      <h3>Réels</h3>
+                      <span>Finance, Sportif, Hippique, Loto</span>
+                    </div>
+                    <div className="homeTransactionList">
+                      {homeCumulativeRows.realRows.map((row) => (
+                        <article className="homeTransactionItem" key={row.key}>
+                          <div className="homeTransactionTop">
+                            <strong>{row.category}</strong>
+                            <span className="metaPill">Cumulé</span>
                           </div>
-                          <div className="overviewKpiCard">
-                            <span>⚽ Paris sportifs</span>
-                            <strong>{activeBettingBets.length} en cours</strong>
-                            <small>PnL réglé: {bettingSettledPnl >= 0 ? '+' : ''}{bettingSettledPnl.toFixed(2)} €</small>
-                          </div>
-                          <div className="overviewKpiCard">
-                            <span>🐎 Paris hippiques</span>
-                            <strong>{racingPendingBets} en cours</strong>
-                            <small>PnL réglé: {racingSettledPnl >= 0 ? '+' : ''}{racingSettledPnl.toFixed(2)} €</small>
-                          </div>
-                          <div className="overviewKpiCard">
-                            <span>⚗️ Portefeuilles fictifs actifs</span>
-                            <strong>{topbarVirtualValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €</strong>
-                            <small>Finance + Betting + Racing + Loto</small>
-                          </div>
-                        </div>
-                      </article>
-
-                      <article className="overviewPulsePanel">
-                        <div className="cardHeader" style={{ marginBottom: 8 }}>
-                          <h2>À lire maintenant</h2>
-                          <span>Synthèse clé en 30 secondes</span>
-                        </div>
-                        <div className="overviewPulseGrid">
-                          {activeApp === 'finance' ? (
-                            <>
-                              <div className="overviewPulseItem">
-                                <strong>Priorité IA</strong>
-                                <p>
-                                  {pendingDecisionCount > 0
-                                    ? `${pendingDecisionCount} décision(s) en attente.`
-                                    : 'Aucun blocage IA.'}
-                                </p>
-                              </div>
-                              <div className="overviewPulseItem">
-                                <strong>Portefeuille virtuel</strong>
-                                <p>
-                                  {financeVirtualEnabled && financeVirtual
-                                    ? `${financeVirtual.label}: ${financeVirtual.current_value.toFixed(2)} € (${financeVirtual.roi >= 0 ? '+' : ''}${financeVirtual.roi.toFixed(1)}%).`
-                                    : 'Aucun portefeuille virtuel actif.'}
-                                </p>
-                              </div>
-                              <div className="overviewPulseItem">
-                                <strong>Élan marché</strong>
-                                <p>
-                                  {evolution1m.tone === 'up'
-                                    ? `Momentum 1m positif (${evolution1m.value}).`
-                                    : evolution1m.tone === 'down'
-                                      ? `Momentum 1m en baisse (${evolution1m.value}).`
-                                      : 'Momentum 1m neutre.'}
-                                </p>
-                              </div>
-                            </>
-                          ) : activeApp === 'betting' ? (
-                            <>
-                              <div className="overviewPulseItem">
-                                <strong>Exposition actuelle</strong>
-                                <p>{activeBettingBets.length} pending · {activeBettingExposure.toFixed(2)} € engagés.</p>
-                              </div>
-                              <div className="overviewPulseItem">
-                                <strong>Qualité des signaux</strong>
-                                <p>{bestTipsterSignal ? `Top: ${bestTipsterSignal.event} (${bestTipsterSignal.confidence}/5).` : 'Aucun top signal visible.'}</p>
-                              </div>
-                              <div className="overviewPulseItem">
-                                <strong>Performance réglée</strong>
-                                <p>PnL clôturé: {bettingSettledPnl >= 0 ? '+' : ''}{bettingSettledPnl.toFixed(2)} €.</p>
-                              </div>
-                            </>
-                          ) : activeApp === 'racing' ? (
-                            <>
-                              <div className="overviewPulseItem">
-                                <strong>File en attente</strong>
-                                <p>{racingPendingBets} ticket(s) en attente réel.</p>
-                              </div>
-                              <div className="overviewPulseItem">
-                                <strong>Signal principal</strong>
-                                <p>{bestRacingSignal ? `${bestRacingSignal.event} · cote ${bestRacingSignal.odds}.` : 'Aucun top signal.'}</p>
-                              </div>
-                              <div className="overviewPulseItem">
-                                <strong>Lecture de performance</strong>
-                                <p>PnL clôturé: {racingSettledPnl >= 0 ? '+' : ''}{racingSettledPnl.toFixed(2)} €.</p>
-                              </div>
-                            </>
-                          ) : (
-                            <>
-                              <div className="overviewPulseItem">
-                                <strong>Prochains tirages</strong>
-                                <p>Loto: {nextLotoDraw ? formatDateTimeFr(nextLotoDraw.drawDate) : 'n/d'} · EuroMillions: {nextEuroDraw ? formatDateTimeFr(nextEuroDraw.drawDate) : 'n/d'}.</p>
-                              </div>
-                              <div className="overviewPulseItem">
-                                <strong>Lecture des indices</strong>
-                                <p>Loto {lotoPredictionCount > 0 ? Math.round(lotteryPredictions.loto.predictedGrids.reduce((sum, grid) => sum + grid.confidenceIndex, 0) / lotoPredictionCount) : 0}/100 · EuroMillions {euroPredictionCount > 0 ? Math.round(lotteryPredictions.euromillions.predictedGrids.reduce((sum, grid) => sum + grid.confidenceIndex, 0) / euroPredictionCount) : 0}/100.</p>
-                              </div>
-                              <div className="overviewPulseItem">
-                                <strong>Conseil pratique</strong>
-                                <p>Mises régulières + suivi post-tirage.</p>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      </article>
-                    </section>
-                  );
-                })()}
-                {isFinanceCryptoActive ? (
-                  <div style={{ display: 'grid', gap: 10 }}>
-                    {supervisedFinanceMessages.length > 0 ? (
-                      <article className="featureCard" style={{ borderColor: 'var(--gold-border)', background: 'linear-gradient(120deg,var(--gold-soft),#fff)' }}>
-                        <div className="cardHeader">
-                          <h2>Mode supervisé Finance</h2>
-                          <span>{supervisedFinanceMessages.length} portefeuille(s)</span>
-                        </div>
-                        <div style={{ display: 'grid', gap: 8 }}>
-                          {supervisedFinanceMessages.map((message) => (
-                            <div key={message.id} className="compactRow" style={{ alignItems: 'center' }}>
-                              <div style={{ display: 'grid', gap: 2 }}>
-                                <strong style={{ fontSize: '.86rem' }}>{message.title}</strong>
-                                <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>{message.detail}</p>
-                              </div>
-                              <span className="metaPill">{message.trend}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </article>
-                    ) : null}
-                    {allPortfolios.map((portfolio) => {
-                      const evo7 = formatPortfolioEvolution(portfolio.history, 7);
-                      const weeklyTrend = buildRecentWeeksEvolution(portfolio.history);
-                      const miniHistory = filterHistoryByScale(portfolio.history, '1m').slice(-24);
-                      const recos = decisionInsights.filter((item) => item.portfolio_id === portfolio.id).slice(0, 2);
-                      return (
-                        <div key={`home-finance-${portfolio.id}`} className={`compactRow ${portfolio.type === 'virtual' ? 'portfolioRowVirtual' : 'portfolioRowReal'}`} style={{ alignItems: 'center' }}>
-                          <div style={{ display: 'grid', gap: 4 }}>
-                            <strong style={{ fontSize: '.9rem' }}>{portfolio.label}</strong>
-                            <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>Évolution 7j: {evo7.value} · {portfolio.agent_name}</p>
-                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                              {weeklyTrend.map((item) => (
-                                <span key={`home-finance-trend-${portfolio.id}-${item.key}`} className={`metaPill ${item.tone}`} style={{ fontSize: '.7rem' }}>
-                                  {item.label}: {item.value}
-                                </span>
-                              ))}
-                            </div>
-                            {miniHistory.length >= 2 ? (
-                              <div style={{ width: '100%', maxWidth: 210 }}>
-                                <Sparkline data={miniHistory} color={evo7.tone === 'up' ? 'var(--ok)' : evo7.tone === 'down' ? 'var(--danger)' : 'var(--brand)'} />
-                              </div>
-                            ) : null}
-                            {recos.length > 0 ? (
-                              recos.map((reco) => (
-                                <p key={reco.id} style={{ margin: 0, fontSize: '.75rem', color: 'var(--text-2)' }}>IA: {reco.title}</p>
-                              ))
-                            ) : (
-                              <p style={{ margin: 0, fontSize: '.75rem', color: 'var(--muted)' }}>IA: aucune recommandation prioritaire pour ce portefeuille.</p>
-                            )}
-                          </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <span className={portfolio.type === 'virtual' ? 'portfolioTypeBadge virtual' : 'portfolioTypeBadge real'}>{portfolio.type === 'virtual' ? 'Virtuel' : 'Réel'}</span>
-                            <span className="metaPill">{portfolio.current_value.toFixed(2)} €</span>
-                            {recos[0] ? (
-                              <button className="secondaryButton" onClick={() => { openDecisionWizard(recos[0]); setAppView('dashboard'); window.scrollTo({ top: 120, behavior: 'smooth' }); }} type="button">Assistant IA</button>
-                            ) : null}
-                            <button className="ghostButton" onClick={() => { setSelectedPortfolio(portfolio); setPortfolioDetailOpen(true); setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Voir</button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : isFinanceActionsActive ? (
-                  <div style={{ display: 'grid', gap: 10 }}>
-                    <article className="featureCard" style={{ borderColor: 'var(--brand-border)', background: 'linear-gradient(120deg,var(--brand-soft),#fff)' }}>
-                      <div className="cardHeader">
-                        <h2>Actions PEA — Banque française</h2>
-                        <span>{peaMarketSignals.length} opportunité(s) suivie(s)</span>
-                      </div>
-                      <p className="helperText" style={{ margin: 0 }}>
-                        Univers Actions/ETF éligible PEA, avec exécution guidée sur portefeuille réel ou virtuel selon votre sélection.
-                      </p>
-                    </article>
-                    {peaMarketSignals.slice(0, 5).map((signal) => (
-                      <div key={`home-pea-${signal.id}`} className="compactRow" style={{ alignItems: 'center' }}>
-                        <div style={{ display: 'grid', gap: 3 }}>
-                          <strong style={{ fontSize: '.9rem' }}>{signal.name} ({signal.symbol})</strong>
-                          <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>{signal.rationale}</p>
-                          <span className={`metaPill ${signal.performance_30d >= 0 ? 'up' : 'down'}`}>30j: {signal.performance_30d >= 0 ? '+' : ''}{signal.performance_30d.toFixed(1)}%</span>
-                        </div>
-                        <button
-                          className="secondaryButton"
-                          onClick={() => {
-                            setSubscribeSignalId(signal.id);
-                            setSubscribeAmount(signal.min_investment);
-                            setSubscribeAmountInput(String(signal.min_investment));
-                            setSubscribePortfolioId(allPortfolios[0]?.id ?? '');
-                            setAppView('dashboard');
-                            window.scrollTo({ top: 120, behavior: 'smooth' });
-                          }}
-                          type="button"
-                        >
-                          Souscrire
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                ) : activeApp === 'betting' ? (
-                  <div style={{ display: 'grid', gap: 10 }}>
-                    {supervisedBettingMessages.length > 0 ? (
-                      <article className="featureCard" style={{ borderColor: 'var(--gold-border)', background: 'linear-gradient(120deg,var(--gold-soft),#fff)' }}>
-                        <div className="cardHeader">
-                          <h2>Mode supervisé Paris</h2>
-                          <span>{supervisedBettingMessages.length} stratégie(s)</span>
-                        </div>
-                        <div style={{ display: 'grid', gap: 8 }}>
-                          {supervisedBettingMessages.map((message) => (
-                            <div key={message.id} className="compactRow" style={{ alignItems: 'center' }}>
-                              <div style={{ display: 'grid', gap: 2 }}>
-                                <strong style={{ fontSize: '.86rem' }}>{message.title}</strong>
-                                <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>{message.detail}</p>
-                              </div>
-                              <span className="metaPill">{message.trend}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </article>
-                    ) : null}
-                    {activeBettingVirtualPortfolio ? (
-                      <div className="compactRow" style={{ alignItems: 'center' }}>
-                        <div style={{ display: 'grid', gap: 4 }}>
-                          <strong style={{ fontSize: '.9rem' }}>Portefeuille virtuel Paris</strong>
-                          <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>
-                            Statut: {activeBettingVirtualPortfolio.enabled ? 'Actif' : 'Inactif'} · Bankroll {activeBettingVirtualPortfolio.bankroll.toFixed(2)} €
-                          </p>
-                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                            {buildRecentWeeksEvolution(activeBettingVirtualPortfolio.history).map((item) => (
-                              <span key={`home-betting-virtual-trend-${item.key}`} className={`metaPill ${item.tone}`} style={{ fontSize: '.7rem' }}>
-                                {item.label}: {item.value}
-                              </span>
-                            ))}
-                          </div>
-                          {activeBettingVirtualPortfolio.history.length >= 2 ? (
-                            <div style={{ width: '100%', maxWidth: 210 }}>
-                              <Sparkline data={filterHistoryByScale(activeBettingVirtualPortfolio.history, '1m').slice(-24)} color={bettingVirtualEvolution.tone === 'up' ? 'var(--ok)' : bettingVirtualEvolution.tone === 'down' ? 'var(--danger)' : 'var(--brand)'} />
-                            </div>
-                          ) : null}
-                          {activeBettingVirtualPortfolio.enabled ? (
-                            <p style={{ margin: 0, fontSize: '.75rem', color: 'var(--text-2)' }}>
-                              Évolution récente: <span className={bettingVirtualEvolution.tone}>{bettingVirtualEvolution.label}</span> · ROI {activeBettingVirtualPortfolio.roi >= 0 ? '+' : ''}{activeBettingVirtualPortfolio.roi.toFixed(1)}%
-                            </p>
-                          ) : (
-                            <p style={{ margin: 0, fontSize: '.75rem', color: 'var(--muted)' }}>Activez-le dans Mon compte pour suivre son évolution.</p>
-                          )}
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <span className="metaPill">{activeBettingVirtualPortfolio.betsTotal} paris</span>
-                          <button className="ghostButton" onClick={() => { setSelectedStrategy(activeBettingVirtualPortfolio); setStrategyDetailOpen(true); setAppView('strategies'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Voir</button>
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {bettingStrategies.filter((strategy) => !strategy.isVirtual).map((strategy) => {
-                      const weeklyTrend = buildRecentWeeksEvolution(strategy.history);
-                      const trend7d = formatPortfolioEvolution(strategy.history, 7);
-                      const miniHistory = filterHistoryByScale(strategy.history, '1m').slice(-24);
-                      return (
-                        <div key={`home-betting-strategy-${strategy.id}`} className="compactRow" style={{ alignItems: 'center' }}>
-                          <div style={{ display: 'grid', gap: 4 }}>
-                            <strong style={{ fontSize: '.9rem' }}>{strategy.name}</strong>
-                            <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>
-                              Mode: {strategy.mode === 'autonomous' ? 'Autonome' : strategy.mode === 'supervised' ? 'Supervisé' : 'Manuel'} · Bankroll {strategy.bankroll.toFixed(0)} €
-                            </p>
-                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                              {weeklyTrend.map((item) => (
-                                <span key={`home-betting-trend-${strategy.id}-${item.key}`} className={`metaPill ${item.tone}`} style={{ fontSize: '.7rem' }}>
-                                  {item.label}: {item.value}
-                                </span>
-                              ))}
-                            </div>
-                            {miniHistory.length >= 2 ? (
-                              <div style={{ width: '100%', maxWidth: 210 }}>
-                                <Sparkline data={miniHistory} color={trend7d.tone === 'up' ? 'var(--ok)' : trend7d.tone === 'down' ? 'var(--danger)' : 'var(--brand)'} />
-                              </div>
-                            ) : null}
-                          </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <span className={`metaPill ${trend7d.tone}`}>7j: {trend7d.value}</span>
-                            <button className="ghostButton" onClick={() => { setSelectedStrategy(strategy); setStrategyDetailOpen(true); setAppView('strategies'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Voir</button>
-                          </div>
-                        </div>
-                      );
-                    })}
-
-                    <article className="featureCard" style={{ borderStyle: 'dashed' }}>
-                      <div className="cardHeader">
-                        <h2 style={{ margin: 0, fontSize: '.95rem' }}>Meilleures recommandations Paris en ligne</h2>
-                        <span>{filteredTopTipsterRecommendations.length} visible(s)</span>
-                      </div>
-                      {filteredTopTipsterRecommendations.length === 0 ? (
-                        <p className="helperText">Aucune recommandation visible avec vos thèmes actuels. Ajustez-les dans Mon compte.</p>
-                      ) : (
-                        <div style={{ display: 'grid', gap: 8 }}>
-                          {filteredTopTipsterRecommendations.slice(0, 5).map((signal) => (
-                            <div key={`home-betting-reco-${signal.id}`} className="compactRow" style={{ alignItems: 'center' }}>
-                              <div style={{ display: 'grid', gap: 2 }}>
-                                <strong style={{ fontSize: '.88rem' }}>{signal.event}</strong>
-                                <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>{BETTING_THEME_LABELS[signal.sport as BettingThemeKey]} · {signal.market} · {signal.bookmaker}</p>
-                                <p style={{ margin: 0, fontSize: '.75rem', color: 'var(--text-2)' }}>Confiance profil {signal.profileConfidenceIndex}/100 · Value +{signal.value_pct.toFixed(1)}% · Gain potentiel +{signal.potentialGain.toFixed(1)} € · 📅 {formatDateTimeFr(signal.deadline)}</p>
-                              </div>
-                              <button className="secondaryButton" onClick={() => { setAppView('dashboard'); window.scrollTo({ top: 200, behavior: 'smooth' }); }} type="button">Voir IA</button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </article>
-                  </div>
-                ) : (
-                  <div style={{ display: 'grid', gap: 10 }}>
-                    {(['loto', 'euromillions'] as LotteryGame[]).map((game) => {
-                      const next = lotteryUpcoming.find((entry) => entry.game === game);
-                      const grids = lotteryPredictions[game].predictedGrids.slice(0, Math.min(3, normalizedLotteryGridCount));
-                      return (
-                        <article key={`home-loto-${game}`} className="featureCard" style={{ borderStyle: 'dashed' }}>
-                          <div className="cardHeader" style={{ marginBottom: 6 }}>
-                            <h2 style={{ margin: 0, fontSize: '.95rem' }}>{game === 'loto' ? '🎯' : '🌟'} {LOTTERY_CONFIG[game].label}</h2>
-                            <span>Prochain tirage: {next ? formatDateTimeFr(next.drawDate) : 'n/d'}</span>
-                          </div>
-                          <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>💵 Jackpot: {next?.jackpotLabel ?? 'n/d'}</p>
-                          <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
-                            {grids.map((grid, index) => (
-                              <div key={`home-loto-grid-${grid.id}`} className="compactRow" style={{ alignItems: 'center' }}>
-                                <div style={{ display: 'grid', gap: 4 }}>
-                                  <strong style={{ fontSize: '.82rem' }}>Grille #{index + 1} · Indice {grid.confidenceIndex}/100</strong>
-                                  <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-                                    {grid.numbers.map((value) => (
-                                      <span key={`home-loto-grid-${grid.id}-n-${value}`} className="lotteryBall">{value}</span>
-                                    ))}
-                                    {grid.stars.map((value) => (
-                                      <span key={`home-loto-grid-${grid.id}-s-${value}`} className="lotteryBall star">{value}</span>
-                                    ))}
-                                  </div>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
-                            <button className="ghostButton" onClick={() => { setLotteryGameFocus(game); setAppView('dashboard'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Analyse complète</button>
+                          <p>{row.value}</p>
+                          <div className="homeTransactionBottom">
+                            <small>{row.evolution}</small>
                           </div>
                         </article>
-                      );
-                    })}
-                  </div>
+                      ))}
+                    </div>
+                  </section>
+                  <section className="homePortfolioColumn virtual">
+                    <div className="cardHeader" style={{ marginBottom: 6 }}>
+                      <h3>Fictifs</h3>
+                      <span>Finance, Sportif, Hippique, Loto</span>
+                    </div>
+                    <div className="homeTransactionList">
+                      {homeCumulativeRows.virtualRows.map((row) => (
+                        <article className="homeTransactionItem" key={row.key}>
+                          <div className="homeTransactionTop">
+                            <strong>{row.category}</strong>
+                            <span className="metaPill">Simulation</span>
+                          </div>
+                          <p>{row.value}</p>
+                          <div className="homeTransactionBottom">
+                            <small>{row.evolution}</small>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+                </div>
+              </article>
+
+              <article className="featureCard" style={{ gridColumn: '1 / -1' }}>
+                <div className="cardHeader">
+                  <h2>Transactions planifiées (48h)</h2>
+                  <span>{homeUpcomingTransactions48h.length} élément(s)</span>
+                </div>
+                {homeUpcomingTransactions48h.length === 0 ? (
+                  <p className="helperText" style={{ margin: 0 }}>Aucune transaction planifiée dans les 48 prochaines heures.</p>
+                ) : (
+                  <table className="txLogTable">
+                    <thead><tr><th>Date & heure</th><th>Catégorie</th><th>Titre</th><th>Portefeuille</th><th>Détail</th></tr></thead>
+                    <tbody>
+                      {homeUpcomingTransactions48h.map((row) => (
+                        <tr key={row.id}>
+                          <td>{formatDateTimeFr(row.date)}</td>
+                          <td>{APP_LABELS[row.appKey]}</td>
+                          <td>{row.title}</td>
+                          <td>{row.portfolioLabel}</td>
+                          <td>{row.note}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </article>
+
+              <article className="featureCard" style={{ gridColumn: '1 / -1' }}>
+                <div className="cardHeader">
+                  <h2>Transactions réalisées</h2>
+                  <span>{homeClosedTransactions.length} élément(s)</span>
+                </div>
+                {homeClosedTransactions.length === 0 ? (
+                  <p className="helperText" style={{ margin: 0 }}>Aucune transaction réalisée récente.</p>
+                ) : (
+                  <table className="txLogTable">
+                    <thead><tr><th>Date & heure</th><th>Catégorie</th><th>Titre</th><th>Portefeuille</th><th>Gain / Perte</th><th>Frais + impôts</th></tr></thead>
+                    <tbody>
+                      {homeClosedTransactions.map((row) => (
+                        <tr key={row.id}>
+                          <td>{formatDateTimeFr(row.date)}</td>
+                          <td>{APP_LABELS[row.appKey]}</td>
+                          <td>{row.title}</td>
+                          <td>{row.portfolioLabel}</td>
+                          <td style={{ color: (row.gainLoss ?? 0) > 0 ? 'var(--ok)' : (row.gainLoss ?? 0) < 0 ? 'var(--danger)' : 'var(--muted)', fontWeight: 700 }}>
+                            {formatSignedEuro(row.gainLoss)}
+                          </td>
+                          <td>{(row.taxes ?? 0).toFixed(2)} €</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 )}
               </article>
             </section>
@@ -8216,7 +8668,9 @@ export default function RobinApp() {
                   </div>
                 </div>
                 <div style={{ display: 'grid', gap: 8 }}>
-                  {assistantOptimizationTips.map((tip) => (
+                  {assistantOptimizationTips.map((tip) => {
+                    const tipConfidenceLevel = extractDiscreteConfidenceLevel(`${tip.value ?? ''} ${tip.detail}`);
+                    return (
                     <button
                       className="compactRow compactRowButton"
                       key={tip.id}
@@ -8241,9 +8695,13 @@ export default function RobinApp() {
                         <strong style={{ fontSize: '.88rem' }}>{tip.title}</strong>
                         <p style={{ margin: 0, fontSize: '.78rem', color: 'var(--muted)' }}>{tip.detail}</p>
                       </div>
-                      <span className="metaPill">Voir détail</span>
+                      <div style={{ display: 'grid', gap: 6, justifyItems: 'end' }}>
+                        {tipConfidenceLevel ? <ConfidenceDots level={tipConfidenceLevel} /> : null}
+                        <span className="metaPill">Voir détail</span>
+                      </div>
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>
               </aside>
             ) : (
@@ -9150,10 +9608,10 @@ export default function RobinApp() {
                   <strong className={evolution7d.tone}>{evolution7d.value}</strong>
                   <small className={evolution1m.tone}>1m: {evolution1m.value}</small>
                 </div>
-                {decisionInsights.length > 0 ? (
+                {visibleDecisionInsights.length > 0 ? (
                   <div className="heroKpiItem">
                     <span>Décisions IA</span>
-                    <strong style={{ color: 'var(--brand)' }}>{decisionInsights.length}</strong>
+                    <strong style={{ color: 'var(--brand)' }}>{visibleDecisionInsights.length}</strong>
                     <small>en attente de validation</small>
                   </div>
                 ) : (
@@ -9400,8 +9858,8 @@ export default function RobinApp() {
                     vigilanceItems.push({ level: 'info', message: `${p.label}: valeur nulle. Synchronisez pour récupérer les positions.` });
                   }
                 }
-                if (decisionInsights.length > 5) {
-                  vigilanceItems.push({ level: 'warn', message: `${decisionInsights.length} décisions IA en attente de validation. Traitez-les dans Portefeuilles.`, action: 'Portefeuilles', actionView: 'portfolios' });
+                if (visibleDecisionInsights.length > 5) {
+                  vigilanceItems.push({ level: 'warn', message: `${visibleDecisionInsights.length} décisions IA en attente de validation. Traitez-les dans Portefeuilles.`, action: 'Portefeuilles', actionView: 'portfolios' });
                 }
                 const autopilotPortfolios = allPortfolios.filter((p) => getAgentConfig(p.id).enabled && getAgentConfig(p.id).mode === 'autopilot');
                 if (autopilotPortfolios.length > 0) {
@@ -9435,21 +9893,22 @@ export default function RobinApp() {
               {loading ? <article className="featureCard">Chargement de votre espace...</article> : null}
               {dashboard ? (
                 <>
-                  {decisionInsights.length > 0 ? (
+                  {visibleDecisionInsights.length > 0 ? (
                     <section style={{ marginBottom: 18 }}>
                       <article className="featureCard" style={{ borderColor: 'var(--brand-border)', background: 'linear-gradient(135deg,var(--brand-soft) 0%,#fff 60%)' }}>
                         <div className="decisionQueueHeader">
                           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                             <h2>🤖 Décisions IA en attente</h2>
-                            <span className="decisionQueueBadge">{decisionInsights.length}</span>
+                            <span className="decisionQueueBadge">{visibleDecisionInsights.length}</span>
                           </div>
                           <button className="ghostButton" style={{ fontSize: '.78rem' }} onClick={() => { setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Tout voir →</button>
                         </div>
                         <div className="decisionQueue">
-                          {decisionInsights.slice(0, 3).map((decision) => {
+                          {visibleDecisionInsights.slice(0, 3).map((decision) => {
                             const side = inferDecisionSide(decision);
                             const decisionKey = decisionInsightKey(decision);
                             const isWizardOpen = assistantWizardDecisionId === decisionKey;
+                            const confidenceLevel = extractDiscreteConfidenceLevel(decision.value);
                             return (
                               <div className={`decisionCard ${side}`} key={decision.id}>
                                 <div className="decisionCardTop">
@@ -9457,6 +9916,7 @@ export default function RobinApp() {
                                   <span className="decisionAsset">{inferDecisionAsset(decision)}</span>
                                   {decision.portfolio_label ? <span className="metaPill" style={{ fontSize: '.68rem' }}>{decision.portfolio_label}</span> : null}
                                   <span className="decisionAmount">{decision.value}</span>
+                                  {confidenceLevel ? <ConfidenceDots level={confidenceLevel} /> : null}
                                 </div>
                                 <p className="decisionRationale">{decision.detail}</p>
                                 <div className="decisionActions">
@@ -9493,8 +9953,8 @@ export default function RobinApp() {
                               </div>
                             );
                           })}
-                          {decisionInsights.length > 3 ? (
-                            <p className="helperText" style={{ textAlign: 'center', padding: '8px 0' }}>+{decisionInsights.length - 3} autre(s) dans <button className="textLinkButton" onClick={() => { setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Portefeuilles</button></p>
+                          {visibleDecisionInsights.length > 3 ? (
+                            <p className="helperText" style={{ textAlign: 'center', padding: '8px 0' }}>+{visibleDecisionInsights.length - 3} autre(s) dans <button className="textLinkButton" onClick={() => { setAppView('portfolios'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Portefeuilles</button></p>
                           ) : null}
                         </div>
                       </article>
@@ -9866,7 +10326,7 @@ export default function RobinApp() {
                 <div style={{ display: 'grid', gap: 24 }}>
                   {allPortfolios.map((p) => {
                     const cfg = getAgentConfig(p.id);
-                    const portfolioDecisions = decisionInsights.filter((d) => d.portfolio_id === p.id);
+                    const portfolioDecisions = visibleDecisionInsights.filter((d) => d.portfolio_id === p.id);
                     const maxAmountCap = Math.max(250, Math.min(5000, Math.round((p.current_value > 0 ? p.current_value : 1000) * 1.2)));
                     return (
                       <article key={p.id} className="featureCard" style={{ display: 'grid', gap: 18 }}>
@@ -9909,7 +10369,13 @@ export default function RobinApp() {
                             <div className="suggestionGrid">
                               {portfolioDecisions.map((decision) => (
                                 <div className="suggestionCard" key={decision.id}>
-                                  <div className="compactRow"><strong>{decision.title}</strong><span className="metaPill">{decision.value}</span></div>
+                                  <div className="compactRow">
+                                    <strong>{decision.title}</strong>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                      <span className="metaPill">{decision.value}</span>
+                                      {extractDiscreteConfidenceLevel(decision.value) ? <ConfidenceDots level={extractDiscreteConfidenceLevel(decision.value)!} /> : null}
+                                    </div>
+                                  </div>
                                   <p style={{ fontSize: '.82rem', margin: '6px 0 4px' }}>{decision.detail}</p>
                                   <small className={trendTone(decision.trend)}>{decision.trend}</small>
                                   {cfg.enabled && cfg.mode === 'autopilot' ? (
@@ -11396,7 +11862,9 @@ export default function RobinApp() {
                     <h2 style={{ margin: 0, fontSize: '1rem' }}>Cockpit Paris en ligne · recommandations IA</h2>
                     <span className="smallPill">{filteredTopTipsterRecommendations.length} / {pendingTipsterSignals.length} affichées</span>
                   </div>
-                  {filteredTopTipsterRecommendations.map((signal) => (
+                  {filteredTopTipsterRecommendations.map((signal) => {
+                    const confidenceLevel = confidenceLevelFromScale(signal.profileConfidenceIndex, 100);
+                    return (
                     <div className="decisionCard" key={signal.id}>
                       <div className="decisionCardMeta">
                         <span className="decisionCardBadge">{sportEmoji(signal.sport)} {signal.sport === 'football' ? 'Football' : signal.sport === 'tennis' ? 'Tennis' : signal.sport === 'basketball' ? 'Basketball' : signal.sport === 'rugby' ? 'Rugby' : 'Sport'}</span>
@@ -11404,15 +11872,14 @@ export default function RobinApp() {
                         <span className="decisionCardBadge" style={{ background: 'var(--brand-soft)', color: 'var(--brand)' }}>Value +{signal.value_pct.toFixed(1)}%</span>
                         <span className="decisionCardBadge" style={{ background: 'var(--ok-soft)', color: 'var(--ok)' }}>Gain potentiel +{signal.potentialGain.toFixed(1)} €</span>
                         <span className="decisionCardBadge">📚 {signal.bookmaker}</span>
-                        <span className="decisionCardBadge" style={{ background: 'var(--indigo-soft)', color: '#3730a3' }}>Indice confiance profil: {signal.profileConfidenceIndex}/100</span>
+                        <span className="decisionCardBadge" style={{ background: 'var(--surface-2)', color: 'var(--text-2)' }}><ConfidenceDots level={confidenceLevel} /></span>
                         <span className="decisionCardBadge">📅 {formatDateTimeFr(signal.deadline)}</span>
                       </div>
                       <strong style={{ fontSize: '.95rem' }}>{signal.event}</strong>
                       <p style={{ margin: '4px 0 2px', fontSize: '.82rem', color: 'var(--muted)' }}>{signal.market} — Cote <strong style={{ color: 'var(--text)' }}>{signal.odds}</strong></p>
                       <p style={{ margin: 0, fontSize: '.8rem', color: 'var(--text-2)' }}>{signal.rationale}</p>
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
-                        <div style={{ display: 'flex', gap: 3 }}>{Array.from({ length: 5 }).map((_, i) => (<span key={i} style={{ width: 7, height: 7, borderRadius: '50%', background: i < signal.confidence ? 'var(--brand)' : 'var(--border-md)' }} />))}</div>
-                        <span style={{ fontSize: '.72rem', color: 'var(--muted)' }}>Confiance {signal.confidence}/5</span>
+                        <ConfidenceDots level={confidenceLevel} />
                       </div>
                       <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                         <button
@@ -11436,7 +11903,8 @@ export default function RobinApp() {
                         </button>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : null}
 
@@ -11500,11 +11968,16 @@ export default function RobinApp() {
               <article id="betting-recent-detail" className={`featureCard ${bettingDetailFocus === 'recent' ? 'bettingDetailCardFocused' : ''}`} style={{ gridColumn: '1 / -1' }}>
                 <div className="cardHeader"><h2>Paris récents</h2><span>Historique consolidé de toutes les stratégies</span></div>
                 <table className="txLogTable">
-                  <thead><tr><th>Date & heure</th><th>Sport</th><th>Événement</th><th>Marché</th><th>Cote</th><th>Mise</th><th>Résultat</th><th>Profit</th></tr></thead>
+                  <thead><tr><th>Date du pari</th><th>Clôture / résultat</th><th>Sport</th><th>Événement</th><th>Marché</th><th>Cote</th><th>Mise</th><th>Résultat</th><th>Profit</th></tr></thead>
                   <tbody>
                     {recentBettingBets.map((bet) => (
                       <tr key={bet.id}>
                         <td>{formatDateTimeFr(bet.date)}</td>
+                        <td>
+                          {bet.result === 'pending'
+                            ? `Résultat attendu vers ${formatDateTimeFr(bet.date)}`
+                            : `Résultat connu depuis ${formatDateTimeFr(bet.date)}`}
+                        </td>
                         <td>{sportEmoji(bet.sport)}</td>
                         <td style={{ maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bet.event}</td>
                         <td>{bet.market}</td>
@@ -11929,7 +12402,7 @@ export default function RobinApp() {
                       <div className="heroKpiItem"><span>Bankroll totale</span><strong>{totalBankroll.toLocaleString('fr-FR')} €</strong><small style={{ color: 'var(--ok)' }}>{activeStrategies} stratégie(s) active(s)</small></div>
                       <div className="heroKpiItem"><span>ROI moyen</span><strong className={avgRoi >= 0 ? 'up' : ''}>{avgRoi >= 0 ? '+' : ''}{avgRoi.toFixed(1)} %</strong><small>sur toutes les stratégies</small></div>
                       <div className="heroKpiItem"><span>Win Rate global</span><strong>{globalWinRate.toFixed(0)} %</strong><small>{totalWon} / {totalBets} paris</small></div>
-                      <div className="heroKpiItem"><span>Signaux IA</span><strong>{racingSignals.filter((signal) => signal.status === 'pending').length}</strong><small>en attente</small></div>
+                      <div className="heroKpiItem"><span>Signaux IA</span><strong>{racingPendingSignalsDisplay.length}</strong><small>en attente</small></div>
                     </>
                   );
                 })()}
@@ -12023,8 +12496,8 @@ export default function RobinApp() {
               ) : null}
 
               <article className="featureCard">
-                <div className="cardHeader"><h2>🏇 Recommandations hippiques IA</h2><span>{racingSignals.filter((signal) => signal.status === 'pending').length} course(s) analysée(s)</span></div>
-                {racingSignals.filter((signal) => signal.status === 'pending').length === 0 ? (
+                <div className="cardHeader"><h2>🏇 Recommandations hippiques IA</h2><span>{racingPendingSignalsDisplay.length} course(s) analysée(s)</span></div>
+                {racingPendingSignalsDisplay.length === 0 ? (
                   <div className="emptyState"><span className="emptyStateIcon">🏇</span><p className="emptyStateTitle">Aucune recommandation disponible</p><p className="emptyStateText">Robin IA analyse les prochaines courses. Revenez avant chaque réunion PMU.</p></div>
                 ) : (
                   <div style={{ display: 'grid', gap: 12 }}>
@@ -12054,7 +12527,9 @@ export default function RobinApp() {
                         ) : null;
                       })()}
                     </div>
-                    {racingSignals.filter((signal) => signal.status === 'pending').map((signal) => (
+                    {racingPendingSignalsDisplay.map((signal) => {
+                      const confidenceLevel = confidenceLevelFromScale(signal.confidence, 5);
+                      return (
                       <div key={signal.id} className="compactRow" style={{ alignItems: 'flex-start' }}>
                         <div style={{ display: 'grid', gap: 4, flex: 1 }}>
                           <strong style={{ fontSize: '.9rem' }}>{signal.event}</strong>
@@ -12065,6 +12540,7 @@ export default function RobinApp() {
                             <span className="metaPill">Value: +{signal.value_pct.toFixed(1)}%</span>
                             <span className="metaPill">Gain potentiel: {signal.potentialGain.toFixed(2)} €</span>
                             <span className={`metaPill ${signal.risk === 'faible' ? 'ok' : signal.risk === 'eleve' ? 'warn' : ''}`}>Risque: {signal.risk}</span>
+                            <span className="metaPill" style={{ background: 'var(--surface-2)', color: 'var(--text-2)' }}><ConfidenceDots level={confidenceLevel} /></span>
                             <span className="metaPill">📅 {formatDateTimeFr(signal.deadline)}</span>
                           </div>
                         </div>
@@ -12073,7 +12549,7 @@ export default function RobinApp() {
                           <button className="secondaryButton" onClick={() => confirmRacingRecommendation(signal, selectedRacingRecommendationStrategyId)} type="button">Confirmer sur le portefeuille</button>
                         </div>
                       </div>
-                    ))}
+                    );})}
                   </div>
                 )}
               </article>
@@ -12300,11 +12776,17 @@ export default function RobinApp() {
                   <div className="emptyState"><span className="emptyStateIcon">📋</span><p className="emptyStateTitle">Aucun pari enregistré</p><p className="emptyStateText">Les paris validés apparaîtront ici.</p></div>
                 ) : (
                   <table className="txLogTable">
-                    <thead><tr><th>Date</th><th>Course</th><th>Marché</th><th>Bookmaker</th><th>Cote</th><th>Mise</th><th>Statut</th><th>Profit</th></tr></thead>
+                    <thead><tr><th>Date du pari</th><th>Clôture / résultat</th><th>Course</th><th>Marché</th><th>Bookmaker</th><th>Cote</th><th>Mise</th><th>Statut</th><th>Profit</th></tr></thead>
                     <tbody>
                       {selectedRacingStrategy.recentBets.map((bet) => (
                         <tr key={bet.id}>
-                          <td>{formatDateTimeFr(bet.date)}</td><td>{bet.event}</td><td>{bet.market}</td><td>{bet.bookmaker}</td>
+                          <td>{formatDateTimeFr(bet.date)}</td>
+                          <td>
+                            {bet.result === 'pending'
+                              ? `Résultat attendu vers ${formatDateTimeFr(bet.date)}`
+                              : `Résultat connu depuis ${formatDateTimeFr(bet.date)}`}
+                          </td>
+                          <td>{bet.event}</td><td>{bet.market}</td><td>{bet.bookmaker}</td>
                           <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 700 }}>{bet.odds > 0 ? bet.odds.toFixed(2) : '—'}</td>
                           <td>{bet.stake.toFixed(0)} €</td>
                           <td><span className={bet.result === 'won' ? 'statusBadge ok' : bet.result === 'lost' ? 'statusBadge warn' : 'statusBadge idle'}>{bet.result === 'won' ? 'Gagné' : bet.result === 'lost' ? 'Perdu' : 'En cours'}</span></td>
@@ -12505,7 +12987,7 @@ export default function RobinApp() {
 
           {activeApp === 'loto' && appView === 'dashboard' ? (
             <section style={{ display: 'grid', gap: 18 }}>
-              {!virtualAppsEnabled.loto ? (
+              {(!virtualAppsEnabled.loto && !lotteryVirtualPortfolio.enabled) ? (
               <article className="featureCard">
                 <div className="cardHeader">
                   <h2>Pilotage Cockpit · Loto fictif</h2>
@@ -12621,6 +13103,125 @@ export default function RobinApp() {
                 </div>
               </article>
               ) : null}
+
+              <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(320px,1fr))', gap: 12 }}>
+                {lotoAiRecommendationsEnabled ? (
+                  <article className="featureCard" style={{ margin: 0 }}>
+                    <div className="cardHeader">
+                      <h2>Recommandations de l agent IA</h2>
+                      <span>Loto + Euromillions en temps réel</span>
+                    </div>
+                    <div style={{ display: 'grid', gap: 10 }}>
+                      {(['loto', 'euromillions'] as const).map((game) => {
+                        const predictions = lotteryPredictionsDisplay[game].predictedGrids;
+                        const avgConfidence = predictions.length > 0
+                          ? Math.round(predictions.reduce((sum, grid) => sum + grid.confidenceIndex, 0) / predictions.length)
+                          : 0;
+                        const topGrid = predictions[0] ?? null;
+                        const nextDraw = lotteryUpcoming.find((draw) => draw.game === game);
+                        return (
+                          <div key={`cockpit-loto-ia-${game}`} className="infoPanel mutedPanel" style={{ margin: 0, display: 'grid', gap: 6 }}>
+                            <div className="compactRow" style={{ margin: 0 }}>
+                              <strong>{LOTTERY_CONFIG[game].label}</strong>
+                              <span className="metaPill">Confiance moyenne {avgConfidence}/100</span>
+                            </div>
+                            <p style={{ margin: 0, fontSize: '.8rem', color: 'var(--muted)' }}>
+                              {predictions.length} recommandation(s) IA · Prochain tirage {nextDraw ? formatDateTimeFr(nextDraw.drawDate) : 'à venir'}
+                            </p>
+                            {topGrid ? (
+                              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                {topGrid.numbers.map((value) => (
+                                  <span key={`cockpit-grid-${game}-n-${value}`} className="lotteryBall" style={{ width: 22, height: 22, fontSize: '.7rem' }}>{value}</span>
+                                ))}
+                                {topGrid.stars.map((value) => (
+                                  <span key={`cockpit-grid-${game}-s-${value}`} className="lotteryBall star" style={{ width: 22, height: 22, fontSize: '.7rem' }}>{value}</span>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                      <div className="providerActions fullWidth">
+                        <button className="secondaryButton" onClick={() => window.scrollTo({ top: document.body.scrollHeight * 0.46, behavior: 'smooth' })} type="button">
+                          Voir toutes les recommandations
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                ) : (
+                  <article className="featureCard" style={{ margin: 0 }}>
+                    <div className="cardHeader">
+                      <h2>Recommandations de l agent IA</h2>
+                      <span>IA désactivée</span>
+                    </div>
+                    <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
+                      <strong>Aucune recommandation affichée</strong>
+                      <p>Activez l agent IA sur le portefeuille fictif Loto ou sur une intégration réelle pour afficher les grilles recommandées.</p>
+                    </div>
+                  </article>
+                )}
+
+                <article className="featureCard" style={{ margin: 0 }}>
+                  <div className="cardHeader">
+                    <h2>État des portefeuilles</h2>
+                    <span>Virtuel et intégrations Loto</span>
+                  </div>
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    <div className="infoPanel mutedPanel" style={{ margin: 0, display: 'grid', gap: 6 }}>
+                      <div className="compactRow" style={{ margin: 0 }}>
+                        <strong>Portefeuille fictif Loto</strong>
+                        <span className={virtualAppsEnabled.loto ? 'statusBadge ok' : 'statusBadge warn'}>{virtualAppsEnabled.loto ? 'Actif' : 'Inactif'}</span>
+                      </div>
+                      <p style={{ margin: 0, fontSize: '.8rem', color: 'var(--muted)' }}>
+                        Solde {lotteryVirtualPortfolio.bankroll.toFixed(2)} € · IA {lotteryVirtualPortfolio.ai_enabled ? 'active' : 'inactive'} · Mode {lotteryVirtualPortfolio.mode}
+                      </p>
+                      <p style={{ margin: 0, fontSize: '.78rem', color: 'var(--muted)' }}>
+                        {lotteryPendingTickets.length} ticket(s) en cours · {lotterySettledTickets.length} ticket(s) réglé(s)
+                      </p>
+                    </div>
+
+                    {lotoIntegrationPortfolios.length === 0 ? (
+                      <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
+                        <strong>Aucune intégration active</strong>
+                        <p>Connectez un prestataire tiers pour suivre un portefeuille réel dans ce cockpit.</p>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'grid', gap: 8 }}>
+                        {lotoIntegrationPortfolios.map((portfolio) => {
+                          const cfg = getAgentConfig(portfolio.id);
+                          const relatedCount = lotteryExecutionRequests.filter((request) => request.targetPortfolioId === portfolio.id).length;
+                          return (
+                            <div key={`cockpit-loto-state-${portfolio.id}`} className="infoPanel mutedPanel" style={{ margin: 0, display: 'grid', gap: 6 }}>
+                              <div className="compactRow" style={{ margin: 0 }}>
+                                <strong>{portfolio.label}</strong>
+                                <span className={portfolio.status === 'active' ? 'statusBadge ok' : 'statusBadge idle'}>{portfolio.status === 'active' ? 'Connecté' : 'Disponible'}</span>
+                              </div>
+                              <p style={{ margin: 0, fontSize: '.8rem', color: 'var(--muted)' }}>
+                                IA {cfg.enabled ? 'active' : 'inactive'} · Mode {cfg.mode} · Recommandations confirmées {relatedCount}
+                              </p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    <div className="infoPanel" style={{ margin: 0 }}>
+                      <strong>Dernières confirmations IA</strong>
+                      {lotteryRecentExecutionRequests.length === 0 ? (
+                        <p style={{ margin: '6px 0 0', fontSize: '.8rem' }}>Aucune recommandation confirmée pour le moment.</p>
+                      ) : (
+                        <ul style={{ margin: '6px 0 0', paddingLeft: 18, display: 'grid', gap: 4 }}>
+                          {lotteryRecentExecutionRequests.slice(0, 3).map((request) => (
+                            <li key={`cockpit-loto-last-${request.id}`} style={{ fontSize: '.8rem' }}>
+                              {LOTTERY_CONFIG[request.game].label} · {request.targetPortfolioLabel} · {formatDateTimeFr(request.createdAt)}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                </article>
+              </section>
 
               {lotteryPendingTickets.length > 0 ? (
                 <article className="featureCard lotoSecondaryCard">
@@ -12745,10 +13346,11 @@ export default function RobinApp() {
                   ) : null}
                 </div>
                 <div style={{ display: 'grid', gap: 10 }}>
-                  {lotteryPredictions[lotteryGameFocus].predictedGrids.map((grid, index) => {
+                  {lotteryPredictionsDisplay[lotteryGameFocus].predictedGrids.map((grid, index) => {
                     const backtest = lotteryBacktests[lotteryGameFocus][grid.id];
                     const isProjectedWinner = backtest.totalEstimatedWinnings > 0;
                     const netLabel = `${backtest.netResult >= 0 ? '+' : '-'}${formatCurrency(String(Math.abs(backtest.netResult)))}`;
+                    const confidenceLevel = confidenceLevelFromScale(grid.confidenceIndex, 100);
                     return (
                       <div key={grid.id} className={isProjectedWinner ? 'compactRow lotteryWinningGrid' : 'compactRow'} style={{ alignItems: 'center' }}>
                         <div style={{ display: 'grid', gap: 6 }}>
@@ -12770,7 +13372,7 @@ export default function RobinApp() {
                           )}
                         </div>
                         <div style={{ display: 'grid', gap: 6, justifyItems: 'end' }}>
-                          <span className="metaPill">Confiance: {grid.confidenceIndex}%</span>
+                          <span className="metaPill" style={{ background: 'var(--surface-2)', color: 'var(--text-2)' }}><ConfidenceDots level={confidenceLevel} /></span>
                           {isProjectedWinner ? <span className="metaPill lotteryWinnerPill">+{formatCurrency(String(backtest.totalEstimatedWinnings))} aurait rapporté — net {netLabel}</span> : null}
                           <button
                             className="secondaryButton"
@@ -13009,7 +13611,7 @@ export default function RobinApp() {
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))', gap: 14 }}>
                   {(['loto', 'euromillions'] as LotteryGame[]).map((game) => {
-                    const prediction = lotteryPredictions[game];
+                    const prediction = lotteryPredictionsDisplay[game];
                     const draws = game === 'loto' ? LOTO_HISTORY : EUROMILLIONS_HISTORY;
                     return (
                       <article key={`history-${game}`} className="lotteryHistoryCard">
@@ -13188,26 +13790,48 @@ export default function RobinApp() {
 
           {appView === 'admin' ? (
             <section className="workspaceGrid adminGrid">
-              <article className="featureCard" style={{ gridColumn: '1 / -1' }}>
-                <div className="cardHeader">
-                  <h2>Administration</h2>
-                  <span>Menus enfants</span>
+              <article className="featureCard adminConsoleHero" style={{ gridColumn: '1 / -1' }}>
+                <div className="cardHeader" style={{ marginBottom: 8 }}>
+                  <h2>Console Admin</h2>
+                  <span>Pilotage comptes, audit, sécurité et transactions</span>
                 </div>
-                <div className="adminChildMenu">
+                <div className="adminConsoleStats">
+                  <article className="adminConsoleStatCard">
+                    <span>Comptes total</span>
+                    <strong>{adminUsers.length}</strong>
+                    <small>{adminActiveUsersCount} actif(s)</small>
+                  </article>
+                  <article className="adminConsoleStatCard pending">
+                    <span>En attente</span>
+                    <strong>{pendingAdminUsers.length}</strong>
+                    <small>Validation requise</small>
+                  </article>
+                  <article className="adminConsoleStatCard">
+                    <span>MFA activé</span>
+                    <strong>{adminMfaEnabledCount}</strong>
+                    <small>sur {adminUsers.length} compte(s)</small>
+                  </article>
+                  <article className="adminConsoleStatCard">
+                    <span>Connectés récents</span>
+                    <strong>{adminConnectedUsersCount}</strong>
+                    <small>fenêtre 15 min</small>
+                  </article>
+                </div>
+                <div className="adminChildMenu adminConsoleTabs">
                   <button className={adminSection === 'approvals' ? 'tagButton active' : 'tagButton'} onClick={() => setAdminSection('approvals')} type="button">
-                    Approbations ({pendingAdminUsers.length})
+                    Validation comptes ({pendingAdminUsers.length})
                   </button>
                   <button className={adminSection === 'users' ? 'tagButton active' : 'tagButton'} onClick={() => setAdminSection('users')} type="button">
-                    Utilisateurs
+                    Annuaire utilisateurs
                   </button>
                   <button className={adminSection === 'audit' ? 'tagButton active' : 'tagButton'} onClick={() => setAdminSection('audit')} type="button">
-                    Audit trail
+                    Journal d audit
                   </button>
                   <button className={adminSection === 'transactions' ? 'tagButton active' : 'tagButton'} onClick={() => setAdminSection('transactions')} type="button">
-                    Transactions
+                    Journal transactions
                   </button>
                   <button className={adminSection === 'security' ? 'tagButton active' : 'tagButton'} onClick={() => setAdminSection('security')} type="button">
-                    Sécurité
+                    Sécurité plateforme
                   </button>
                 </div>
               </article>
@@ -13285,14 +13909,14 @@ export default function RobinApp() {
               {(adminSection === 'users' || adminSection === 'approvals') ? (
               <article className="featureCard">
                 <div className="cardHeader">
-                  <h2>{adminSection === 'approvals' ? '5.1 Utilisateurs en attente d approbation' : '5.1 Gestion des comptes'}</h2>
+                  <h2>{adminSection === 'approvals' ? 'Comptes en attente de validation' : 'Gestion des comptes'}</h2>
                   <span>{adminSection === 'approvals' ? 'Validation admin avant première connexion' : 'Roles, applications autorisées et activation des comptes'}</span>
                 </div>
                 {adminFeedback ? <p className="helperText">{adminFeedback}</p> : null}
                 {!user.mfa_enabled ? (
                   <div className="infoPanel">
-                    <strong>MFA requise</strong>
-                    <p>Activez MFA dans Configuration puis reconnectez-vous pour administrer la plateforme. Les données restent visibles ci-dessous, mais les actions sensibles peuvent être refusées.</p>
+                    <strong>MFA recommandée</strong>
+                    <p>Activez MFA dans Configuration pour renforcer la sécurité de l’administration. Les actions admin restent disponibles, mais une session MFA reste recommandée pour les comptes sensibles.</p>
                   </div>
                 ) : null}
                 <>
@@ -13384,9 +14008,8 @@ export default function RobinApp() {
                         </button>
                         <button
                           className="primaryButton"
-                          disabled={!user.mfa_enabled || submitting || selectedApprovalCount === 0}
+                          disabled={submitting || selectedApprovalCount === 0}
                           onClick={() => void approvePendingUsersBatch(Object.keys(selectedApprovalIds), approvalAppSelections)}
-                          title={!user.mfa_enabled ? 'Activez MFA pour modifier les comptes.' : ''}
                           type="button"
                         >
                           {submitting ? 'Validation...' : `Valider la sélection (${selectedApprovalCount})`}
@@ -13426,7 +14049,7 @@ export default function RobinApp() {
                                 const appAccess = normalizeSelectedAppAccess(approvalAppSelections[entry.id] ?? entry.app_access);
                                 const roles = new Set(entry.assigned_roles);
                                 const selected = Boolean(selectedApprovalIds[entry.id]);
-                                const adminActionsDisabled = !user.mfa_enabled || submitting;
+                                const adminActionsDisabled = submitting;
                                 return (
                                   <tr key={`approval-row-${entry.id}`}>
                                     <td>
@@ -13469,7 +14092,6 @@ export default function RobinApp() {
                                                   };
                                                 });
                                               }}
-                                              title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}
                                               type="button"
                                             >
                                               {APP_LABELS[appKey]}
@@ -13489,7 +14111,6 @@ export default function RobinApp() {
                                         className="primaryButton"
                                         disabled={adminActionsDisabled}
                                         onClick={() => updateAdminUser(entry, roles.has('banned') ? ['user'] : entry.assigned_roles, true, appAccess, { access_profile: 'write' })}
-                                        title={!user.mfa_enabled ? 'Activez MFA pour modifier les comptes.' : ''}
                                         type="button"
                                       >
                                         Valider
@@ -13507,9 +14128,9 @@ export default function RobinApp() {
                       const roles = new Set(entry.assigned_roles);
                       const appAccess = normalizeFrontendAppAccess(entry.app_access);
                       const userConns = adminConnections[entry.id] ?? [];
-                      const adminActionsDisabled = !user.mfa_enabled;
+                      const adminActionsDisabled = submitting;
                       const lastConnection = entry.last_login_at ? new Date(entry.last_login_at).toLocaleString('fr-FR') : 'Aucune connexion';
-                      const pendingApproval = !entry.is_active && !entry.is_verified;
+                      const pendingApproval = isUserPendingApproval(entry);
                       const avatarUrl = String(entry.personal_settings.avatar_url ?? '').trim();
                       const riskProfile = normalizeUserRiskProfile(entry.personal_settings.risk_profile);
                       return (
@@ -13535,22 +14156,21 @@ export default function RobinApp() {
                                   className="primaryButton"
                                   disabled={adminActionsDisabled}
                                   onClick={() => updateAdminUser(entry, roles.has('banned') ? ['user'] : entry.assigned_roles, true, appAccess, { access_profile: 'write' })}
-                                  title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}
                                   type="button"
                                 >
                                   Valider compte
                                 </button>
                               ) : null}
-                              <button className={roles.has('user') ? 'tagButton active' : 'tagButton'} disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, roles.has('admin') ? ['admin', 'user'] : ['user'], entry.is_active, appAccess)} type="button" title={adminActionsDisabled ? 'Activez MFA pour modifier les rôles.' : ''}>
-                                  onClick={() => void approvePendingUsersBatch(Object.keys(selectedApprovalIds), approvalAppSelections)}
+                              <button className={roles.has('user') ? 'tagButton active' : 'tagButton'} disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, roles.has('admin') ? ['admin', 'user'] : ['user'], entry.is_active, appAccess)} type="button">
+                                Utilisateur
                               </button>
-                              <button className={roles.has('admin') ? 'tagButton active' : 'tagButton'} disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, ['admin', 'user'], entry.is_active, appAccess)} type="button" title={adminActionsDisabled ? 'Activez MFA pour modifier les rôles.' : ''}>
+                              <button className={roles.has('admin') ? 'tagButton active' : 'tagButton'} disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, ['admin', 'user'], entry.is_active, appAccess)} type="button">
                                 Admin
                               </button>
-                              <button className={roles.has('banned') ? 'tagButton danger active' : 'tagButton'} disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, ['banned'], false, appAccess)} type="button" title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}>
+                              <button className={roles.has('banned') ? 'tagButton danger active' : 'tagButton'} disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, ['banned'], false, appAccess)} type="button">
                                 Banni
                               </button>
-                              <button className="ghostButton" disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, entry.assigned_roles, !entry.is_active, appAccess)} type="button" title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}>
+                              <button className="ghostButton" disabled={adminActionsDisabled} onClick={() => updateAdminUser(entry, entry.assigned_roles, !entry.is_active, appAccess)} type="button">
                                 {entry.is_active ? 'Desactiver' : 'Reactiver'}
                               </button>
                               <button
@@ -13577,7 +14197,6 @@ export default function RobinApp() {
                                     risk_profile: nextRisk,
                                   });
                                 }}
-                                title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}
                                 type="button"
                               >
                                 Modifier profil
@@ -13592,7 +14211,6 @@ export default function RobinApp() {
                                   }
                                   updateAdminUser(entry, entry.assigned_roles, entry.is_active, appAccess, { new_password: newPassword });
                                 }}
-                                title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}
                                 type="button"
                               >
                                 Reinitialiser MDP
@@ -13601,7 +14219,6 @@ export default function RobinApp() {
                                 className="ghostButton"
                                 disabled={adminActionsDisabled}
                                 onClick={() => updateAdminUser(entry, entry.assigned_roles, entry.is_active, appAccess, { mfa_enabled: !entry.mfa_enabled })}
-                                title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}
                                 type="button"
                               >
                                 {entry.mfa_enabled ? 'Desactiver MFA' : 'Activer MFA'}
@@ -13610,7 +14227,6 @@ export default function RobinApp() {
                                 className="tagButton danger"
                                 disabled={adminActionsDisabled}
                                 onClick={() => deleteAdminUser(entry)}
-                                title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}
                                 type="button"
                               >
                                 Supprimer
@@ -13631,7 +14247,6 @@ export default function RobinApp() {
                                   disabled={adminActionsDisabled}
                                   key={`user-app-${entry.id}-${appKey}`}
                                   onClick={() => updateAdminUser(entry, entry.assigned_roles, entry.is_active, safeNextApps)}
-                                  title={adminActionsDisabled ? 'Activez MFA pour modifier les comptes.' : ''}
                                   type="button"
                                 >
                                   {APP_LABELS[appKey]}
@@ -13695,7 +14310,7 @@ export default function RobinApp() {
                             <span>{entry.last_login_at ? new Date(entry.last_login_at).toLocaleString('fr-FR') : 'Jamais connecté'}</span>
                           </div>
                           <p>{entry.email}</p>
-                          <p>Statut: {(!entry.is_active && !entry.is_verified) ? 'En attente validation' : entry.is_active ? 'Actif' : 'Inactif'}</p>
+                          <p>Statut: {isUserPendingApproval(entry) ? 'En attente validation' : entry.is_active ? 'Actif' : 'Inactif'}</p>
                         </div>
                       </div>
                     ))}
@@ -13752,7 +14367,7 @@ export default function RobinApp() {
               {adminSection === 'audit' ? (
               <article className="featureCard">
                 <div className="cardHeader">
-                  <h2>5.2 Audit Trail</h2>
+                  <h2>Journal d audit</h2>
                   <span>Actions tracees</span>
                 </div>
                 <div className="adminToolbar">
@@ -13792,7 +14407,7 @@ export default function RobinApp() {
               {adminSection === 'security' ? (
               <article className="featureCard">
                 <div className="cardHeader">
-                  <h2>5.3 Configuration des intégrations</h2>
+                  <h2>Sécurité et intégrations</h2>
                   <span>Activation des services tiers</span>
                 </div>
                 <div className="infoPanel mutedPanel">
