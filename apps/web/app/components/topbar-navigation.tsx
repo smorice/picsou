@@ -11,8 +11,6 @@ type AppView = 'overview' | 'dashboard' | 'portfolios' | 'settings' | 'admin' | 
 type TopbarNavigationProps = {
   animationKey: string;
   currentHeaderSection: HeaderMenuSection;
-  currentHeaderPath: string;
-  currentHeaderHint: string;
   allowedApps: Array<'finance' | 'betting' | 'racing' | 'loto'>;
   hasParisApps: boolean;
   canAccessAdmin: boolean;
@@ -37,8 +35,6 @@ type TopbarNavigationProps = {
 function TopbarNavigationComponent({
   animationKey,
   currentHeaderSection,
-  currentHeaderPath,
-  currentHeaderHint,
   allowedApps,
   hasParisApps,
   canAccessAdmin,
@@ -81,97 +77,60 @@ function TopbarNavigationComponent({
       </div>
 
       {currentHeaderSection === 'home' ? (
-        <>
-          <div className="topbarDepthRow level2">
-            <span className="topbarDepthLabel">Blocs</span>
-            <button className="topbarDepthBtn home active" onClick={() => openOverviewSection()} type="button">Vue globale</button>
-            <button className="topbarDepthBtn home" onClick={() => openOverviewSection('home-overview-portfolios')} type="button">Portefeuilles</button>
-            <button className="topbarDepthBtn home" onClick={() => openOverviewSection('home-overview-stream')} type="button">Flux</button>
-          </div>
-          <div className="topbarDepthRow level3">
-            <span className="topbarDepthLabel">Sauts rapides</span>
-            <button className="topbarDepthBtn home isView" onClick={() => openOverviewSection('home-overview-planned')} type="button">À venir</button>
-            <button className="topbarDepthBtn home isView" onClick={() => openOverviewSection('home-overview-settled')} type="button">Réalisées</button>
-            <button className="topbarDepthBtn home isView" onClick={() => openOverviewSection('home-overview-real')} type="button">Réels</button>
-            <button className="topbarDepthBtn home isView" onClick={() => openOverviewSection('home-overview-virtual')} type="button">Fictifs</button>
-          </div>
-        </>
+        <div className="topbarDepthRow level2">
+          <span className="topbarDepthLabel">Blocs</span>
+          <button className="topbarDepthBtn home active" onClick={() => openOverviewSection()} type="button">Vue globale</button>
+          <button className="topbarDepthBtn home" onClick={() => openOverviewSection('home-overview-portfolios')} type="button">Portefeuilles</button>
+          <button className="topbarDepthBtn home" onClick={() => openOverviewSection('home-overview-stream')} type="button">Flux</button>
+          <button className="topbarDepthBtn home" onClick={() => openOverviewSection('home-overview-planned')} type="button">À venir</button>
+          <button className="topbarDepthBtn home" onClick={() => openOverviewSection('home-overview-settled')} type="button">Réalisées</button>
+        </div>
       ) : null}
 
       {currentHeaderSection === 'finance' && allowedApps.includes('finance') ? (
-        <>
-          <div className="topbarDepthRow level2">
-            <span className="topbarDepthLabel">Marché</span>
-            <button className={`topbarDepthBtn finance${financeSubApp === 'crypto' ? ' active' : ''}`} onClick={() => openFinanceTopbarBranch('crypto')} type="button">₿ Cryptos</button>
-            <button className={`topbarDepthBtn finance${financeSubApp === 'actions' ? ' active' : ''}`} onClick={() => openFinanceTopbarBranch('actions')} type="button">📈 Actions</button>
-          </div>
-          <div className="topbarDepthRow level3">
-            <span className="topbarDepthLabel">Vue</span>
-            <button className={`topbarDepthBtn finance isView${appView === 'dashboard' ? ' active' : ''}`} onClick={() => openFinanceTopbarView('dashboard')} type="button">Cockpit</button>
-            <button className={`topbarDepthBtn finance isView${appView === 'portfolios' ? ' active' : ''}`} onClick={() => openFinanceTopbarView('portfolios')} type="button">Portefeuilles</button>
-            <button className={`topbarDepthBtn finance isView${appView === 'settings' ? ' active' : ''}`} onClick={() => openFinanceTopbarView('settings')} type="button">Options</button>
-          </div>
-        </>
+        <div className="topbarDepthRow level2">
+          <span className="topbarDepthLabel">Parcours</span>
+          <button className={`topbarDepthBtn finance${financeSubApp === 'crypto' ? ' active' : ''}`} onClick={() => openFinanceTopbarBranch('crypto')} type="button">₿ Cryptos</button>
+          <button className={`topbarDepthBtn finance${financeSubApp === 'actions' ? ' active' : ''}`} onClick={() => openFinanceTopbarBranch('actions')} type="button">📈 Actions</button>
+          <button className={`topbarDepthBtn finance isView${appView === 'dashboard' ? ' active' : ''}`} onClick={() => openFinanceTopbarView('dashboard')} type="button">Cockpit</button>
+          <button className={`topbarDepthBtn finance isView${appView === 'portfolios' ? ' active' : ''}`} onClick={() => openFinanceTopbarView('portfolios')} type="button">Portefeuilles</button>
+          <button className={`topbarDepthBtn finance isView${appView === 'settings' ? ' active' : ''}`} onClick={() => openFinanceTopbarView('settings')} type="button">Options</button>
+        </div>
       ) : null}
 
       {currentHeaderSection === 'paris' && hasParisApps ? (
-        <>
-          <div className="topbarDepthRow level2">
-            <span className="topbarDepthLabel">Produit</span>
-            {allowedApps.includes('betting') ? <button className={`topbarDepthBtn paris${topbarParisActiveApp === 'betting' ? ' active' : ''}`} onClick={() => openParisTopbarBranch('betting')} type="button">⚽ Paris sportifs</button> : null}
-            {allowedApps.includes('racing') ? <button className={`topbarDepthBtn paris${topbarParisActiveApp === 'racing' ? ' active' : ''}`} onClick={() => openParisTopbarBranch('racing')} type="button">🏇 Paris hippiques</button> : null}
-            {allowedApps.includes('loto') ? <button className={`topbarDepthBtn paris${topbarParisActiveApp === 'loto' ? ' active' : ''}`} onClick={() => openParisTopbarBranch('loto')} type="button">🎟️ Loto</button> : null}
-          </div>
-          <div className="topbarDepthRow level3">
-            <span className="topbarDepthLabel">Vue</span>
-            <button className={`topbarDepthBtn paris isView${appView === 'dashboard' ? ' active' : ''}`} onClick={() => openParisTopbarView('dashboard')} type="button">Cockpit</button>
-            <button className={`topbarDepthBtn paris isView${((topbarParisActiveApp === 'loto' && appView === 'portfolios') || (topbarParisActiveApp !== 'loto' && appView === 'strategies')) ? ' active' : ''}`} onClick={() => openParisTopbarView(topbarParisActiveApp === 'loto' ? 'portfolios' : 'strategies')} type="button">{topbarParisActiveApp === 'loto' ? 'Portefeuilles' : 'Stratégies'}</button>
-            <button className={`topbarDepthBtn paris isView${appView === 'settings' ? ' active' : ''}`} onClick={() => openParisTopbarView('settings')} type="button">Options</button>
-          </div>
-        </>
+        <div className="topbarDepthRow level2">
+          <span className="topbarDepthLabel">Parcours</span>
+          {allowedApps.includes('betting') ? <button className={`topbarDepthBtn paris${topbarParisActiveApp === 'betting' ? ' active' : ''}`} onClick={() => openParisTopbarBranch('betting')} type="button">⚽ Paris sportifs</button> : null}
+          {allowedApps.includes('racing') ? <button className={`topbarDepthBtn paris${topbarParisActiveApp === 'racing' ? ' active' : ''}`} onClick={() => openParisTopbarBranch('racing')} type="button">🏇 Paris hippiques</button> : null}
+          {allowedApps.includes('loto') ? <button className={`topbarDepthBtn paris${topbarParisActiveApp === 'loto' ? ' active' : ''}`} onClick={() => openParisTopbarBranch('loto')} type="button">🎟️ Loto</button> : null}
+          <button className={`topbarDepthBtn paris isView${appView === 'dashboard' ? ' active' : ''}`} onClick={() => openParisTopbarView('dashboard')} type="button">Cockpit</button>
+          <button className={`topbarDepthBtn paris isView${((topbarParisActiveApp === 'loto' && appView === 'portfolios') || (topbarParisActiveApp !== 'loto' && appView === 'strategies')) ? ' active' : ''}`} onClick={() => openParisTopbarView(topbarParisActiveApp === 'loto' ? 'portfolios' : 'strategies')} type="button">{topbarParisActiveApp === 'loto' ? 'Portefeuilles' : 'Stratégies'}</button>
+          <button className={`topbarDepthBtn paris isView${appView === 'settings' ? ' active' : ''}`} onClick={() => openParisTopbarView('settings')} type="button">Options</button>
+        </div>
       ) : null}
 
       {currentHeaderSection === 'account' ? (
-        <>
-          <div className="topbarDepthRow level2">
-            <span className="topbarDepthLabel">Réglages</span>
-            <button className="topbarDepthBtn account active" onClick={() => openAccountWorkspace('account-info')} type="button">Mes infos</button>
-            <button className="topbarDepthBtn account" onClick={() => openAccountWorkspace('account-overview')} type="button">Mon compte</button>
-            <button className="topbarDepthBtn account" onClick={() => openAccountWorkspace('account-objective')} type="button">Objectifs</button>
-            <button className="topbarDepthBtn account" onClick={() => openAccountWorkspace('account-risk')} type="button">Agent IA</button>
-          </div>
-          <div className="topbarDepthRow level3">
-            <span className="topbarDepthLabel">Sous-sections</span>
-            <button className="topbarDepthBtn account isView" onClick={() => openAccountWorkspace('account-profile')} type="button">En-tête</button>
-            <button className="topbarDepthBtn account isView" onClick={() => openAccountWorkspace('account-info')} type="button">Coordonnées</button>
-            <button className="topbarDepthBtn account isView" onClick={() => openAccountWorkspace('account-overview')} type="button">Accès</button>
-            <button className="topbarDepthBtn account isView" onClick={() => openAccountWorkspace('account-risk')} type="button">Curseurs IA</button>
-          </div>
-        </>
+        <div className="topbarDepthRow level2">
+          <span className="topbarDepthLabel">Réglages</span>
+          <button className="topbarDepthBtn account active" onClick={() => openAccountWorkspace('account-info')} type="button">Mes infos</button>
+          <button className="topbarDepthBtn account" onClick={() => openAccountWorkspace('account-overview')} type="button">Mon compte</button>
+          <button className="topbarDepthBtn account" onClick={() => openAccountWorkspace('account-objective')} type="button">Objectifs</button>
+          <button className="topbarDepthBtn account" onClick={() => openAccountWorkspace('account-risk')} type="button">Agent IA</button>
+        </div>
       ) : null}
 
       {currentHeaderSection === 'admin' && canAccessAdmin ? (
-        <>
-          <div className="topbarDepthRow level2">
-            <span className="topbarDepthLabel">Modules</span>
-            <button className={`topbarDepthBtn admin${adminSection === 'home' ? ' active' : ''}`} onClick={() => { openAdminWorkspace(); onAdminSectionChange('home'); }} type="button">Console</button>
-            <button className={`topbarDepthBtn admin${adminSection === 'approvals' ? ' active' : ''}`} onClick={() => { openAdminWorkspace(); onAdminSectionChange('approvals'); }} type="button">Validations</button>
-            <button className={`topbarDepthBtn admin${adminSection === 'users' ? ' active' : ''}`} onClick={() => { openAdminWorkspace(); onAdminSectionChange('users'); }} type="button">Utilisateurs</button>
-            <button className={`topbarDepthBtn admin${adminSection === 'security' ? ' active' : ''}`} onClick={() => { openAdminWorkspace(); onAdminSectionChange('security'); }} type="button">Sécurité</button>
-          </div>
-          <div className="topbarDepthRow level3">
-            <span className="topbarDepthLabel">Journaux</span>
-            <button className={`topbarDepthBtn admin isView${adminSection === 'audit' ? ' active' : ''}`} onClick={() => { openAdminWorkspace(); onAdminSectionChange('audit'); }} type="button">Audit</button>
-            <button className={`topbarDepthBtn admin isView${adminSection === 'transactions' ? ' active' : ''}`} onClick={() => { openAdminWorkspace(); onAdminSectionChange('transactions'); }} type="button">Transactions</button>
-          </div>
-        </>
+        <div className="topbarDepthRow level2">
+          <span className="topbarDepthLabel">Modules</span>
+          <button className={`topbarDepthBtn admin${adminSection === 'home' ? ' active' : ''}`} onClick={() => { openAdminWorkspace(); onAdminSectionChange('home'); }} type="button">Console</button>
+          <button className={`topbarDepthBtn admin${adminSection === 'approvals' ? ' active' : ''}`} onClick={() => { openAdminWorkspace(); onAdminSectionChange('approvals'); }} type="button">Validations</button>
+          <button className={`topbarDepthBtn admin${adminSection === 'users' ? ' active' : ''}`} onClick={() => { openAdminWorkspace(); onAdminSectionChange('users'); }} type="button">Utilisateurs</button>
+          <button className={`topbarDepthBtn admin${adminSection === 'security' ? ' active' : ''}`} onClick={() => { openAdminWorkspace(); onAdminSectionChange('security'); }} type="button">Sécurité</button>
+          <button className={`topbarDepthBtn admin isView${adminSection === 'audit' ? ' active' : ''}`} onClick={() => { openAdminWorkspace(); onAdminSectionChange('audit'); }} type="button">Audit</button>
+          <button className={`topbarDepthBtn admin isView${adminSection === 'transactions' ? ' active' : ''}`} onClick={() => { openAdminWorkspace(); onAdminSectionChange('transactions'); }} type="button">Transactions</button>
+        </div>
       ) : null}
-
-      <div className="topbarContextSummary">
-        <span className="metaPill">Navigation guidée</span>
-        <strong>{currentHeaderPath}</strong>
-        <small>{currentHeaderHint}</small>
-      </div>
     </div>
   );
 }

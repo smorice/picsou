@@ -20,6 +20,7 @@ type AccountWorkspaceProps = {
     phoneNumber: string;
     address: string;
     country: string;
+    homeTransactionsLimit: string;
     objectiveNetGain: string;
     objectivePeriod: GoalPeriod;
     riskProfile: UserRiskProfile;
@@ -54,6 +55,7 @@ type AccountWorkspaceProps = {
       | 'phoneNumber'
       | 'address'
       | 'country'
+      | 'homeTransactionsLimit'
       | 'objectiveNetGain'
       | 'objectivePeriod'
       | 'riskProfile'
@@ -201,6 +203,10 @@ function AccountWorkspaceComponent({
             <select value={settingsForm.objectivePeriod} onChange={(event) => onSettingsFieldChange('objectivePeriod', event.target.value)}>
               {GOAL_PERIOD_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>
+          </label>
+          <label>
+            Lignes Home (attente/réalisées)
+            <input value={settingsForm.homeTransactionsLimit} onChange={(event) => onSettingsFieldChange('homeTransactionsLimit', event.target.value)} type="number" min={1} max={20} step={1} />
           </label>
           <label>
             Garde-fou pertes

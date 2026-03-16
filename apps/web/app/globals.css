@@ -162,8 +162,10 @@ h1,h2,h3,p { margin:0; }
 
 /* ============================================================ TOPBAR */
 .heroTopbar {
-  display:flex; align-items:center; justify-content:space-between; gap:20px;
-  flex-wrap: wrap;
+  display:grid;
+  grid-template-columns:1fr;
+  align-items:start;
+  gap:10px 18px;
   padding:14px 24px; margin:0 -24px 36px;
   border-bottom:1px solid var(--app-accent-border);
   position:sticky; top:0; z-index:100;
@@ -171,7 +173,7 @@ h1,h2,h3,p { margin:0; }
   backdrop-filter:blur(8px);
   -webkit-backdrop-filter:blur(8px);
 }
-.brandCluster { display:flex; align-items:center; gap:12px; }
+.brandCluster { display:flex; align-items:flex-start; gap:12px; grid-column:1; }
 .brandBadge {
   width:40px; height:40px; border-radius:14px; flex-shrink:0;
   display:grid; place-items:center;
@@ -197,10 +199,10 @@ h1,h2,h3,p { margin:0; }
 .brandCluster p { font-size:.72rem; color:var(--muted); margin-top:1px; max-width:40ch; }
 .persistentBreadcrumbNav {
   position: sticky;
-  top: 118px;
+  top: 90px;
   z-index: 96;
-  margin: -20px 0 18px;
-  padding: 10px 14px;
+  margin: -26px 0 14px;
+  padding: 8px 12px;
   border-radius: 16px;
   border: 1px solid rgba(148,163,184,.16);
   background: rgba(255,255,255,.84);
@@ -356,6 +358,7 @@ h1,h2,h3,p { margin:0; }
   font-size:1rem;
   line-height:1;
   filter:drop-shadow(0 3px 6px rgba(15,23,42,.18));
+  transform:scaleX(-1);
 }
 
 .batteryDelayInfo {
@@ -473,17 +476,50 @@ h1,h2,h3,p { margin:0; }
   margin-right: 6px;
   vertical-align: middle;
 }
-.headerActions { display:flex; align-items:center; gap:8px; }
+.headerActions {
+  display:flex;
+  align-items:center;
+  gap:8px;
+  grid-column:1;
+  justify-self:end;
+}
+.topbarUniverseProgressRow {
+  display: grid;
+  grid-template-columns: 1fr;
+  align-items: flex-start;
+  gap: 12px;
+  grid-column: 1 / -1;
+  width: 100%;
+  min-width: 0;
+  margin-top: 2px;
+}
 .topbarMenuDock {
   width: 100%;
   display: grid;
   gap: 10px;
+  grid-column:auto;
+  justify-self:stretch;
+  max-width:none;
+  min-width: 0;
+}
+
+.topbarProgressDock {
+  width: 100%;
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  min-width: 0;
+}
+
+.topbarProgressDock .trendArrowTrack {
+  width: 100%;
+  min-width: 0;
 }
 
 .topbarNavStack {
   display: grid;
-  gap: 10px;
-  padding: 12px 14px 14px;
+  gap: 8px;
+  padding: 10px 12px;
   border-radius: 22px;
   border: 1px solid var(--app-accent-border);
   background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(248,250,252,.95));
@@ -520,7 +556,7 @@ h1,h2,h3,p { margin:0; }
   position: relative;
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
@@ -606,24 +642,6 @@ h1,h2,h3,p { margin:0; }
 .topbarDepthBtn.admin.active {
   background: #334155;
   box-shadow: 0 8px 18px rgba(51,65,85,.24);
-}
-
-.topbarContextSummary {
-  display: grid;
-  gap: 4px;
-  padding: 10px 12px 0;
-  border-top: 1px dashed rgba(148,163,184,.26);
-  animation: navDepthReveal .46s var(--ease-out) both;
-}
-
-.topbarContextSummary strong {
-  font-size: .84rem;
-  color: var(--text);
-}
-
-.topbarContextSummary small {
-  font-size: .74rem;
-  color: var(--muted);
 }
 
 .topbarParentNav {
@@ -2199,6 +2217,21 @@ small.down { color: var(--danger); font-weight: 700; }
 small.neutral { color: var(--muted); font-weight: 700; }
 
 @media(max-width:1060px){
+  .heroTopbar {
+    grid-template-columns:1fr;
+    gap:10px;
+  }
+  .topbarUniverseProgressRow {
+    grid-template-columns: 1fr;
+  }
+  .headerActions,
+  .topbarMenuDock,
+  .topbarProgressDock {
+    grid-column:auto;
+    justify-self:stretch;
+    max-width:none;
+  }
+  .persistentBreadcrumbNav { top: 106px; }
   .landingCanvas { grid-template-columns:1fr; }
   .authExperienceCard { position:static; }
   .indicatorDeck { grid-template-columns:repeat(2,1fr); }
@@ -2221,8 +2254,21 @@ small.neutral { color: var(--muted); font-weight: 700; }
 }
 @media(max-width:768px){
   .investShell { padding:0 14px 80px; }
-  .heroTopbar { margin:0 -14px 28px; padding:12px 14px; }
-  .persistentBreadcrumbNav { top: 108px; margin-top: -14px; }
+  .heroTopbar {
+    margin:0 -14px 24px;
+    padding:12px 14px;
+    grid-template-columns:1fr;
+    gap:10px;
+  }
+  .headerActions,
+  .topbarUniverseProgressRow,
+  .topbarMenuDock,
+  .topbarProgressDock {
+    grid-column:auto;
+    justify-self:stretch;
+    max-width:none;
+  }
+  .persistentBreadcrumbNav { top: 88px; margin-top: -12px; }
   .trendArrowTrack { width:400px; }
   .topbarKpis .smallPill { font-size:.64rem; }
   .topbarNavStack { padding: 12px; }
@@ -3721,6 +3767,64 @@ small.neutral { color: var(--muted); font-weight: 700; }
 .homeBoardNote,
 .homeBoardResult {
   min-width: 0;
+}
+
+.homeBoardRow.minimal {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.homeBoardRow.minimal .homeBoardSignal {
+  width: 38px;
+  height: 38px;
+  font-size: 1rem;
+  letter-spacing: 0;
+}
+
+.homeBoardTextStack {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
+
+.homeBoardLinePrimary,
+.homeBoardLineSecondary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.homeBoardLinePrimary .homeBoardTitle {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.homeBoardDateLabel {
+  font-size: .7rem;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.homeBoardAmount {
+  margin-left: auto;
+  font-size: .8rem;
+  color: var(--text);
+  font-family: var(--font-mono), monospace;
+}
+
+.homeBoardLineSecondary {
+  font-size: .7rem;
+  color: var(--text-2);
+}
+
+.homeBoardLineSecondary .homeBoardTax {
+  font-family: var(--font-mono), monospace;
 }
 
 .homeBoardNote {

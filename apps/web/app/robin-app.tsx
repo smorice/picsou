@@ -32,8 +32,583 @@ type BankProvider = {
   supports_crypto: boolean;
   supports_cash: boolean;
   status: string;
+  onboarding_hint: string;
+};
+
+type DashboardData = {
+  portfolio_id: string;
+  portfolio_name: string;
+  total_value: string | null;
+  cash_balance: string | null;
+  pnl_realized: string | null;
+  pnl_unrealized: string | null;
+  annualized_return: number | null;
+  rolling_volatility: number | null;
+  max_drawdown: number | null;
+  is_empty: boolean;
+  key_indicators: Array<{ label: string; value: string; trend: string }>;
+  sector_heatmap: Array<{ sector: string; weight: number; pnl: number }>;
+  allocation: Array<{ class: string; weight: number }>;
+  recent_flows: Array<{ date: string; type: string; amount: number }>;
+  bank_connectors: BankProvider[];
+  connected_accounts: Array<{ provider_code: string; provider_name: string; status: string; account_label?: string | null }>;
+  portfolios: Array<{
+    portfolio_id: string;
+    provider_code: string;
+    provider_name: string;
+    label: string;
+    status: string;
+    agent_name: string;
+    current_value?: string | null;
+    last_sync_status?: string | null;
+    history_points?: Array<{ date: string; value: number }>;
+    latest_actions?: Array<{ asset: string; action: string; amount: number; date?: string; fee?: number; trade_id?: string }>;
+  }>;
+  virtual_portfolio: {
+    portfolio_id: string;
+    label: string;
+    budget_initial: string;
+    current_value: string;
+    pnl: string;
+    roi: number;
+    history_points: Array<{ date: string; value: number }>;
+    strategy_mix: Array<{ class: string; weight: number }>;
+    latest_actions: Array<{ asset: string; action: string; amount: number }>;
+    agent_name: string;
+  };
+  suggestions?: Array<{
+    title: string;
+    score: number;
+    justification: string;
+  }>;
+  next_steps: string[];
+};
+
+type TokenResponse = {
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+  mfa_required: boolean;
+  mfa_method?: string | null;
+  mfa_delivery_hint?: string | null;
+  mfa_preview_code?: string | null;
+  user?: UserProfile;
+  detail?: unknown;
+};
+
+type ClientContext = {
+  locale: string;
+  time_zone: string;
+  country: string;
+};
+
+type MfaSetupPayload = {
+  method: 'email' | 'totp' | 'sms' | 'whatsapp' | 'google_chat';
+  secret?: string | null;
+  otpauth_uri?: string | null;
+  delivery_hint?: string | null;
+  preview_code?: string | null;
+  detail?: unknown;
+};
+
+type PasswordResetResponse = {
+  message: string;
+  reset_token?: string | null;
+  detail?: unknown;
+};
+
+type AuditEntry = {
+  id: string;
+  actor_id: string;
+  event_type: string;
+  severity: string;
+  ip_address?: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+
+type OAuthProvider = {
+  provider: string;
+  enabled: boolean;
+};
+
+type IntegrationConnection = {
+  connection_id: string;
+  provider_code: string;
+  provider_name: string;
+  status: string;
+  account_label?: string | null;
+  has_credentials: boolean;
+  supports_read: boolean;
+  supports_trade: boolean;
+  last_sync_status?: string | null;
+  last_sync_error?: string | null;
+  last_sync_at?: string | null;
+  last_snapshot_total_value?: string | null;
+  positions_count: number;
+};
+
+type IntegrationSyncResponse = {
+  provider_code: string;
+  status: string;
+  positions_synced: number;
+  total_value?: string | null;
+  synced_at?: string | null;
+  message: string;
+  detail?: unknown;
+};
+
+type TradeProposalResponse = {
+  proposal_id: string;
+  status: string;
+  approval_required: boolean;
+  detail?: unknown;
+};
+
+type TradeApprovalResponse = {
+  proposal_id: string;
+  status: string;
+  detail?: unknown;
+};
+
+type IntegrationBulkSyncResponse = {
+  synced: number;
+  skipped: number;
+  failed: number;
+  summaries: Array<{ provider_code: string; status: string; message: string }>;
+};
+
+type CommunicationTestResponse = {
+  channel: 'email' | 'sms' | 'whatsapp' | 'google_chat' | 'telegram' | 'push';
+  status: 'ok' | 'error';
+  message: string;
+  detail?: unknown;
+};
+
+type CommunicationTestRequest = {
+  channel: 'email' | 'sms' | 'whatsapp' | 'google_chat' | 'telegram' | 'push';
+  phone_number?: string | null;
+  google_chat_webhook?: string | null;
+  telegram_bot_token?: string | null;
+  telegram_chat_id?: string | null;
+};
+
+type BettingAnalyticsSummary = {
+  roi_pct: number;
+  yield_pct: number;
+  variance: number;
+  max_drawdown_pct: number;
+  bets: number;
+  win_rate_pct: number;
+};
+
+type BettingThemeKey = 'football' | 'tennis' | 'basketball' | 'rugby' | 'other';
+type BettingThemeVisibility = Record<BettingThemeKey, boolean>;
+
+type Portfolio = {
+  id: string;
+  type: 'integration' | 'virtual';
+  provider_code?: string;
+  label: string;
+  current_value: number;
+  budget: number;
+  pnl: number;
+  roi: number;
+  visible: boolean;
+  status: 'active' | 'disabled' | 'pending_user_consent' | 'available';
+  last_sync_at?: string | null;
+  agent_name: string;
+  history: Array<{ date: string; value: number }>;
+  operations: Array<{
+    id: string;
+    date: string;
+    side: 'buy' | 'sell';
+    asset: string;
+    amount: number;
+    tax_state: number | null;
+    tax_intermediary: number | null;
+    intermediary: string;
+  }>;
+  ai_advice: Array<{ kind: 'buy' | 'sell' | 'hold' | 'info'; text: string }>;
+  allocation: Array<{ class: string; weight: number; value: number }>;
+};
+
+type InsightItem = {
+  id: string;
+  title: string;
+  value: string;
+  trend: string;
+  detail: string;
+  section: 'decisions' | 'indicator' | 'coach' | 'source';
+  portfolio_id?: string;
+  portfolio_label?: string;
+};
+
+
+type AppliedDecision = {
+  id: string;
+  title: string;
+  portfolio_label: string;
+  action: 'buy' | 'sell';
+  amount: number;
+  applied_at: string;
+};
+
+type DecisionActionOptions = {
+  silent?: boolean;
+  source?: 'manual' | 'autopilot';
+  targetPortfolioId?: string;
+  side?: 'buy' | 'sell';
+  amount?: number;
+};
+
+type PendingDecisionConfirmation = {
+  insight: InsightItem;
+  approved: boolean;
+  options: DecisionActionOptions;
+};
+
+type Holding = {
+  asset: string;
+  firstBuyDate: string;
+  totalBought: number;
+  totalSold: number;
+  netInvested: number;
+  fees: number;
+  operationCount: number;
+  estimatedCurrentValue: number;
+  unrealizedPnl: number;
+  unrealizedPct: number;
+  estimatedSellFee: number;
+  taxFRIfSold: number;
+  intermediary: string;
+};
+
+type MarketSignal = {
+  id: string;
+  category: 'crypto' | 'actions' | 'etf' | 'obligations';
+  name: string;
+  symbol: string;
+  performance_30d: number;
+  confidence: number;
+  rationale: string;
+  risk: 'faible' | 'modere' | 'eleve';
+  min_investment: number;
+};
+
+type AgentMode = 'manual' | 'supervised' | 'autopilot';
+type AgentDomain = 'crypto' | 'actions' | 'etf' | 'obligations';
+type AgentDomainPolicy = 'prefer' | 'allow' | 'reject';
+type GoalPeriod = '7d' | '1m' | '3m' | '1y';
+
+type FinanceVirtualSimulation = {
+  currentValue: number;
+  history: Array<{ date: string; value: number }>;
+  operations: Portfolio['operations'];
+};
+
+function normalizeFinanceVirtualRuntime(raw: unknown): FinanceVirtualSimulation | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const source = raw as Record<string, unknown>;
+  const currentValue = Number(source.currentValue);
+  const historySource = Array.isArray(source.history) ? source.history : [];
+  const operationsSource = Array.isArray(source.operations) ? source.operations : [];
+  const history = historySource
+    .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object')
+    .map((entry) => ({
+      date: typeof entry.date === 'string' && entry.date.trim() ? entry.date : new Date().toISOString(),
+      value: Number.isFinite(Number(entry.value)) ? Number(entry.value) : (Number.isFinite(currentValue) ? currentValue : 100),
+    }))
+    .slice(-180);
+  const operations = operationsSource
+    .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object')
+    .map((entry) => ({
+      id: typeof entry.id === 'string' && entry.id.trim() ? entry.id : `virtual-op-restored-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      date: typeof entry.date === 'string' && entry.date.trim() ? entry.date : new Date().toISOString(),
+      side: String(entry.side ?? '').toLowerCase() === 'sell' ? 'sell' as const : 'buy' as const,
+      asset: typeof entry.asset === 'string' && entry.asset.trim() ? entry.asset : 'CW8',
+      amount: Number.isFinite(Number(entry.amount)) ? Math.max(0, Number(entry.amount)) : 0,
+      tax_state: Number.isFinite(Number(entry.tax_state)) ? Number(entry.tax_state) : null,
+      tax_intermediary: Number.isFinite(Number(entry.tax_intermediary)) ? Number(entry.tax_intermediary) : null,
+      intermediary: typeof entry.intermediary === 'string' && entry.intermediary.trim() ? entry.intermediary : 'Robin IA (virtuel)',
+    }))
+    .slice(0, 240);
+  return {
+    currentValue: Number.isFinite(currentValue) ? currentValue : (history[history.length - 1]?.value ?? 100),
+    history: history.length > 0 ? history : [{ date: new Date().toISOString(), value: Number.isFinite(currentValue) ? currentValue : 100 }],
+    operations,
+  };
+}
+
+type BetSport = 'football' | 'tennis' | 'basketball' | 'rugby' | 'other';
+
+type BetRecord = {
+  id: string;
+  date: string;
+  sport: BetSport;
+  event: string;
+  market: string;
+  bookmaker: string;
+  odds: number;
+  stake: number;
+  result: 'won' | 'lost' | 'pending' | 'void';
+  profit: number;
+  strategyId: string;
+};
+
+type BettingStrategy = {
+  id: string;
+  name: string;
+  type: 'value_betting' | 'arbitrage' | 'statistical' | 'predictive' | 'personal';
+  description: string;
+  isVirtual: boolean;
+  bankroll: number;
+  roi: number;
+  winRate: number;
+  variance: number;
+  enabled: boolean;
+  betsTotal: number;
+  betsWon: number;
+  ai_enabled: boolean;
+  mode: 'manual' | 'supervised' | 'autonomous';
+  max_stake: number;
+  max_bets_per_day: number;
+  risk_profile?: 'low' | 'medium' | 'high';
+  history: Array<{ date: string; value: number }>;
+  recentBets: BetRecord[];
+};
+
+type BettingStrategySettings = {
+  enabled: boolean;
+  ai_enabled: boolean;
+  mode: BettingStrategy['mode'];
+  max_stake: number;
+  max_bets_per_day: number;
+  risk_profile?: BettingStrategy['risk_profile'];
+};
+
+type BettingStrategyRuntime = {
+  bankroll: number;
+  roi: number;
+  winRate: number;
+  variance: number;
+  betsTotal: number;
+  betsWon: number;
+  risk_profile?: BettingStrategy['risk_profile'];
+  history: Array<{ date: string; value: number }>;
+  recentBets: BetRecord[];
+};
+
+type TipsterSignal = {
+  id: string;
+  sport: BetSport;
+  event: string;
+  market: string;
+  odds: number;
+  value_pct: number;
+  confidence: number;
+  rationale: string;
+  risk: 'faible' | 'modere' | 'eleve';
+  bookmaker: string;
+  deadline: string;
+  potentialGain: number;
+  status: 'pending' | 'approved' | 'rejected';
+};
+
+type LotteryGame = 'loto' | 'euromillions';
+
+type LotteryDrawRecord = {
+  date: string;
+  numbers: number[];
+  stars: number[];
+};
+
+type LotteryPrediction = {
+  id: string;
+  game: LotteryGame;
+  numbers: number[];
+  stars: number[];
+  confidenceIndex: number;
+  rationale: string;
+};
+
+type LotteryBacktestHit = {
+  drawDate: string;
+  matchedNumbers: number;
+  matchedStars: number;
+  estimatedPrize: number;
+  rankLabel: string;
+};
+
+type LotteryBacktestSummary = {
+  analyzedDraws: number;
+  ticketCost: number;
+  totalCost: number;
+  totalEstimatedWinnings: number;
+  netResult: number;
+  winningDraws: number;
+  hits: LotteryBacktestHit[];
+};
+
+type LotteryUpcomingDraw = {
+  game: LotteryGame;
+  drawDate: string;
+  closeAt: string;
+  jackpotLabel: string;
+};
+
+type LotteryVirtualTicket = {
+  id: string;
+  game: LotteryGame;
+  drawDate: string;
+  gridLabel: string;
+  subscriptionLabel: string | null;
+  numbers: number[];
+  stars: number[];
+  stake: number;
+  status: 'pending' | 'won' | 'lost';
+  payout: number;
+  profit: number;
+  matchedNumbers: number;
+  matchedStars: number;
+  rankLabel: string | null;
+  createdAt: string;
+  settledAt: string | null;
+};
+
+type LotteryVirtualPortfolio = {
+  enabled: boolean;
+  ai_enabled: boolean;
+  mode: BettingStrategy['mode'];
+  initial_balance: number;
+  bankroll: number;
+  max_grids_per_draw: number;
+  tickets: LotteryVirtualTicket[];
+};
+
+type LotteryExecutionRequest = {
+  id: string;
+  game: LotteryGame;
+  drawDate: string;
+  gridLabel: string;
+  subscriptionLabel: string | null;
+  numbers: number[];
+  stars: number[];
+  targetPortfolioId: string;
+  targetPortfolioLabel: string;
+  executionMode: 'simulation' | 'real';
+  status: 'confirmed';
+  createdAt: string;
+};
+
+type AssistantTip = {
+  id: string;
+  title: string;
+  detail: string;
+  insight?: InsightItem;
+  value?: string;
+  trend?: string;
+};
+
+type HomePortfolioRow = {
+  id: string;
+  appKey: 'finance' | 'betting' | 'racing' | 'loto';
+  kind: 'real' | 'virtual';
+  source: 'portfolio' | 'strategy' | 'loto';
+  targetId: string;
+  label: string;
+  subtitle: string;
+  history: Array<{ date: string; value: number }>;
+  valueLabel: string;
+  statusLabel: string;
+  statusTone: 'ok' | 'idle' | 'warn';
+  trendLabel: string;
+  trendTone: 'up' | 'down' | 'neutral';
+  aiEnabled: boolean;
+  autonomousActive: boolean;
+};
+
+type HomeRecommendationRow = {
+  id: string;
+  appKey: 'finance' | 'betting' | 'racing' | 'loto';
+  badge: string;
+  title: string;
+  detail: string;
+  confidenceLevel: 1 | 2 | 3;
+  insight?: InsightItem;
+  game?: LotteryGame;
+};
+
+type HomeTransactionRow = {
+  id: string;
+  appKey: 'finance' | 'betting' | 'racing' | 'loto';
+  targetId: string;
+  lane: 'upcoming' | 'closed';
+  title: string;
+  portfolioLabel: string;
+  date: string;
+  timestamp: number;
+  amount: number | null;
+  note: string;
+  gainLoss: number | null;
+  taxes: number | null;
+  moodImpact: number;
+};
+
+type CockpitUpcomingRow = {
+  id: string;
+  date: string;
+  timestamp: number;
+  title: string;
+  portfolioLabel: string;
+  amountLabel: string;
+  detail: string;
+  isLive?: boolean;
+  liveKind?: 'betting' | 'racing';
+  liveLabel?: string;
+};
+
+type CockpitRecentRow = {
+  id: string;
+  date: string;
+  timestamp: number;
+  title: string;
+  portfolioLabel: string;
+  pnlAmount: number;
+  pnlPct: number | null;
+  fees: number;
+  taxesFr: number;
+  detail: string;
+};
+
+const APP_LABELS: Record<'finance' | 'betting' | 'racing' | 'loto', string> = {
+  finance: 'Finance',
+  betting: 'Paris sportifs',
+  racing: 'Paris hippiques',
+  loto: 'Loto',
+};
+
+const HOME_MOOD_THRESHOLDS = {
+  sensitive: 20,
+  balanced: 40,
+  conservative: 80,
+} as const;
 
 const HOME_MOOD_PROFILE: keyof typeof HOME_MOOD_THRESHOLDS = 'sensitive';
+const LIVE_CLOCK_TICK_MS = 15_000;
+
+const BETTING_EVENT_LIVE_WINDOWS_MS: Record<BetSport, number> = {
+  football: 2 * 60 * 60 * 1000 + 20 * 60 * 1000,
+  tennis: 3 * 60 * 60 * 1000 + 30 * 60 * 1000,
+  basketball: 2 * 60 * 60 * 1000 + 45 * 60 * 1000,
+  rugby: 2 * 60 * 60 * 1000 + 25 * 60 * 1000,
+  other: 2 * 60 * 60 * 1000,
+};
+
+const RACING_EVENT_LIVE_WINDOW_MS = 35 * 60 * 1000;
+const LOTTERY_DRAW_LIVE_WINDOW_MS = 18 * 60 * 1000;
 
 function normalizeFinanceVirtualPortfolioLabel(rawLabel: string | null | undefined): string {
   const label = String(rawLabel ?? '').trim();
@@ -60,7 +635,6 @@ function isWindowElapsed(startAt: string, durationMs: number, nowTs: number): bo
   return Number.isFinite(startTs) && (startTs + durationMs) <= nowTs;
 }
 
-// Section label used in the top-level tier-1 nav
 const PARIS_SECTION_APPS = ['betting', 'racing', 'loto'] as const;
 type ParisApp = typeof PARIS_SECTION_APPS[number];
 type HeaderMenuSection = 'home' | 'finance' | 'paris' | 'account' | 'admin';
@@ -1541,7 +2115,36 @@ function splitFullNameParts(fullName: string | null | undefined) {
   };
 }
 
-function defaultSettingsFromUser(user: UserProfile | null) {
+type SettingsFormState = {
+  fullName: string;
+  firstName: string;
+  lastName: string;
+  phoneNumber: string;
+  address: string;
+  currency: string;
+  theme: string;
+  dashboardDensity: string;
+  onboardingStyle: string;
+  country: string;
+  notifyEmail: boolean;
+  notifySms: boolean;
+  notifyWhatsapp: boolean;
+  notifyPush: boolean;
+  weeklyDigest: boolean;
+  marketAlerts: boolean;
+  communicationFrequency: string;
+  autoRefreshSeconds: string;
+  homeTransactionsLimit: string;
+  objectiveNetGain: string;
+  objectivePeriod: GoalPeriod;
+  riskProfile: UserRiskProfile;
+  realTradeMfaRequired: boolean;
+  maxLossType: 'amount' | 'percent';
+  maxLossValue: string;
+  maxLossDays: string;
+};
+
+function defaultSettingsFromUser(user: UserProfile | null): SettingsFormState {
   const rawGoal = user?.personal_settings.net_goal_after_tax;
   const goalConfig = rawGoal && typeof rawGoal === 'object' ? rawGoal as Record<string, unknown> : {};
   const rawLossGuard = user?.personal_settings.loss_guard;
@@ -1570,6 +2173,7 @@ function defaultSettingsFromUser(user: UserProfile | null) {
     marketAlerts: readBooleanSetting(user?.personal_settings.market_alerts, true),
     communicationFrequency: String(user?.personal_settings.communication_frequency ?? 'important_only'),
     autoRefreshSeconds: String(user?.personal_settings.auto_refresh_seconds ?? '30'),
+    homeTransactionsLimit: String(Math.max(1, Math.min(20, Number(personalSettings.home_transactions_limit) || 5))),
     objectiveNetGain: String(toPositiveNumber(goalConfig.target_eur, 250)),
     objectivePeriod: normalizeGoalPeriod(goalConfig.period),
     riskProfile: normalizeUserRiskProfile(user?.personal_settings.risk_profile),
@@ -3142,6 +3746,7 @@ export default function RobinApp() {
       market_alerts: settingsForm.marketAlerts,
       communication_frequency: settingsForm.communicationFrequency,
       auto_refresh_seconds: Number.parseInt(settingsForm.autoRefreshSeconds, 10) || 30,
+      home_transactions_limit: Math.max(1, Math.min(20, Number.parseInt(settingsForm.homeTransactionsLimit, 10) || 5)),
       net_goal_after_tax: {
         target_eur: toPositiveNumber(settingsForm.objectiveNetGain, 0),
         period: normalizeGoalPeriod(settingsForm.objectivePeriod),
@@ -4525,12 +5130,12 @@ export default function RobinApp() {
           ? 'up'
           : 'neutral';
   const goalMoodLabel = loading
-    ? 'Humeur site: calcul en cours'
+    ? '⛅ Radar météo en chauffe'
     : goalMoodTone === 'up'
-      ? 'Humeur site: offensive'
+      ? '☀️ Grand soleil: les gains bronzent'
       : goalMoodTone === 'down'
-        ? 'Humeur site: sous pression'
-        : 'Humeur site: en observation';
+        ? '🌧️ Averse de volatilité: sortez le parapluie'
+        : '🌤️ Ciel variable: cap maintenu';
   const trendArrowSpeed = goalTrajectoryTone === 'up' ? 1.9 : goalTrajectoryTone === 'down' ? 3.2 : 2.5;
   const trendArrowScale = goalTrajectoryTone === 'up' ? 1.08 : goalTrajectoryTone === 'down' ? 0.88 : 0.96;
   const progressMenuKeys = useMemo(() => {
@@ -5070,24 +5675,6 @@ export default function RobinApp() {
         : activeApp === 'finance'
           ? 'finance'
           : 'paris';
-  const currentHeaderPath = currentHeaderSection === 'home'
-    ? 'Home / Vue globale / Flux et portefeuilles'
-    : currentHeaderSection === 'finance'
-      ? `Finance / ${financeSubApp === 'crypto' ? 'Cryptos' : 'Actions'} / ${appView === 'portfolios' ? 'Portefeuilles' : appView === 'settings' ? 'Options' : 'Cockpit'}`
-      : currentHeaderSection === 'paris'
-        ? `Paris en ligne / ${topbarParisActiveApp === 'betting' ? 'Paris sportifs' : topbarParisActiveApp === 'racing' ? 'Paris hippiques' : 'Loto'} / ${appView === 'settings' ? 'Options' : topbarParisActiveApp === 'loto' && appView === 'portfolios' ? 'Portefeuilles' : appView === 'strategies' ? 'Stratégies' : 'Cockpit'}`
-        : currentHeaderSection === 'account'
-          ? 'Mon compte / Réglages / Gouvernance personnelle'
-          : 'Admin / Console / Supervision plateforme';
-  const currentHeaderHint = currentHeaderSection === 'home'
-    ? 'Niveau 1: univers, niveau 2: blocs Home, niveau 3: raccourcis d’atterrissage.'
-    : currentHeaderSection === 'finance'
-      ? 'Niveau 1: univers, niveau 2: marché, niveau 3: vue de travail.'
-      : currentHeaderSection === 'paris'
-        ? 'Niveau 1: univers, niveau 2: produit, niveau 3: cockpit, portefeuille ou options.'
-        : currentHeaderSection === 'account'
-          ? 'Niveau 1: univers, niveau 2: réglage principal, niveau 3: sous-section détaillée.'
-          : 'Niveau 1: univers, niveau 2: module admin, niveau 3: journal ou sécurité.';
   const topbarNavAnimationKey = `${currentHeaderSection}:${financeSubApp}:${topbarParisActiveApp}:${appView}`;
   const breadcrumbItems = useMemo(() => {
     if (currentHeaderSection === 'home') {
@@ -5390,6 +5977,7 @@ export default function RobinApp() {
           portfolioLabel: portfolio.label,
           date: operation.date,
           timestamp: ts,
+          amount: operation.amount,
           note: `${operation.amount.toFixed(2)} € · ${operation.intermediary}`,
           gainLoss: null,
           taxes: null,
@@ -5411,6 +5999,7 @@ export default function RobinApp() {
           portfolioLabel: strategy.name,
           date: eventDate,
           timestamp: Number.isFinite(ts) ? ts : nowTs + 9_999_999,
+          amount: bet.stake,
           note: `${bet.market} · Mise ${bet.stake.toFixed(2)} €`,
           gainLoss: null,
           taxes: null,
@@ -5432,6 +6021,7 @@ export default function RobinApp() {
           portfolioLabel: strategy.name,
           date: eventDate,
           timestamp: Number.isFinite(ts) ? ts : nowTs + 9_999_999,
+          amount: bet.stake,
           note: `${bet.market} · Mise ${bet.stake.toFixed(2)} €`,
           gainLoss: null,
           taxes: null,
@@ -5449,6 +6039,7 @@ export default function RobinApp() {
         portfolioLabel: 'Portefeuille fictif Loto',
         date: ticket.drawDate,
         timestamp: Number.isFinite(ts) ? ts : nowTs + 9_999_999,
+        amount: ticket.stake,
         note: `${ticket.subscriptionLabel ?? 'Ponctuel'} · Mise ${ticket.stake.toFixed(2)} €`,
         gainLoss: null,
         taxes: null,
@@ -5466,6 +6057,7 @@ export default function RobinApp() {
         portfolioLabel: request.targetPortfolioLabel,
         date: request.drawDate,
         timestamp: Number.isFinite(ts) ? ts : nowTs + 9_999_999,
+        amount: null,
         note: `${request.executionMode === 'real' ? 'Execution reelle' : 'Simulation'} · ${request.subscriptionLabel ?? 'Ponctuel'}`,
         gainLoss: null,
         taxes: null,
@@ -5483,6 +6075,7 @@ export default function RobinApp() {
         portfolioLabel: insight.portfolio_label ?? 'Portefeuille finance',
         date: new Date(ts).toISOString(),
         timestamp: ts,
+        amount: null,
         note: insight.detail,
         gainLoss: null,
         taxes: null,
@@ -5501,6 +6094,7 @@ export default function RobinApp() {
           portfolioLabel: activeBettingVirtualStrategy.name,
           date: signal.deadline,
           timestamp: Number.isFinite(ts) ? ts : nowTs + 9_999_999,
+          amount: null,
           note: `${signal.market} · IA ${activeBettingVirtualStrategy.mode}`,
           gainLoss: null,
           taxes: null,
@@ -5520,6 +6114,7 @@ export default function RobinApp() {
           portfolioLabel: activeRacingVirtualStrategy.name,
           date: signal.deadline,
           timestamp: Number.isFinite(ts) ? ts : nowTs + 9_999_999,
+          amount: null,
           note: `${signal.market} · IA ${activeRacingVirtualStrategy.mode}`,
           gainLoss: null,
           taxes: null,
@@ -5551,6 +6146,7 @@ export default function RobinApp() {
         portfolioLabel: portfolio.label,
         date: operation.date,
         timestamp: Number.isFinite(ts) ? ts : 0,
+        amount: operation.amount,
         note: `${operation.intermediary}`,
         gainLoss: operation.side === 'sell' ? operation.amount : -operation.amount,
         taxes,
@@ -5570,6 +6166,7 @@ export default function RobinApp() {
           portfolioLabel: strategy.name,
           date: bet.date,
           timestamp: Number.isFinite(ts) ? ts : 0,
+          amount: bet.stake,
           note: `${bet.market} · ${bet.result}`,
           gainLoss: bet.profit,
           taxes: 0,
@@ -5589,6 +6186,7 @@ export default function RobinApp() {
           portfolioLabel: strategy.name,
           date: bet.date,
           timestamp: Number.isFinite(ts) ? ts : 0,
+          amount: bet.stake,
           note: `${bet.market} · ${bet.result}`,
           gainLoss: bet.profit,
           taxes: 0,
@@ -5607,6 +6205,7 @@ export default function RobinApp() {
         portfolioLabel: 'Portefeuille fictif Loto',
         date: resolvedAt,
         timestamp: Number.isFinite(ts) ? ts : 0,
+        amount: ticket.stake,
         note: ticket.rankLabel ?? (ticket.status === 'won' ? 'Gagnant' : 'Perdant'),
         gainLoss: ticket.profit,
         taxes: 0,
@@ -5616,9 +6215,13 @@ export default function RobinApp() {
     return [...financeClosed, ...bettingClosed, ...racingClosed, ...lotoClosed]
       .sort((a, b) => b.timestamp - a.timestamp);
   }, [allPortfolios, bettingStrategies, racingStrategies, lotterySettledTickets]);
+  const homeTransactionsRowLimit = useMemo(
+    () => Math.max(1, Math.min(20, Number.parseInt(settingsForm.homeTransactionsLimit, 10) || 5)),
+    [settingsForm.homeTransactionsLimit],
+  );
   const homeClosedTransactions = useMemo(
-    () => homeClosedTransactionsAll.slice(0, 8),
-    [homeClosedTransactionsAll],
+    () => homeClosedTransactionsAll.slice(0, homeTransactionsRowLimit),
+    [homeClosedTransactionsAll, homeTransactionsRowLimit],
   );
   const homeMood = useMemo(() => {
     const threshold = HOME_MOOD_THRESHOLDS[HOME_MOOD_PROFILE];
@@ -5648,8 +6251,8 @@ export default function RobinApp() {
     const horizonTs = nowTs + 48 * 60 * 60 * 1000;
     return homeUpcomingTransactionsAll
       .filter((row) => row.timestamp >= nowTs && row.timestamp <= horizonTs)
-      .slice(0, 12);
-  }, [homeUpcomingTransactionsAll]);
+      .slice(0, homeTransactionsRowLimit);
+  }, [homeUpcomingTransactionsAll, homeTransactionsRowLimit]);
   const homePortfolioActivity = useMemo(() => {
     const nowTs = Date.now();
     const rolling7dStart = nowTs - (7 * 24 * 60 * 60 * 1000);
@@ -6217,6 +6820,7 @@ export default function RobinApp() {
       | 'phoneNumber'
       | 'address'
       | 'country'
+      | 'homeTransactionsLimit'
       | 'objectiveNetGain'
       | 'objectivePeriod'
       | 'riskProfile'
@@ -6304,14 +6908,12 @@ export default function RobinApp() {
       return;
     }
     if (row.appKey === 'racing') {
-      setRacingStrategies((prev) => prev.map((strategy) => strategy.id === row.targetId
-        ? {
-          ...strategy,
-          ai_enabled: enabled,
-          enabled: enabled ? true : strategy.enabled,
-          mode: enabled && strategy.mode === 'manual' ? 'supervised' : strategy.mode,
-        }
-        : strategy));
+      const strategy = racingStrategies.find((entry) => entry.id === row.targetId);
+      updateRacingStrategy(row.targetId, {
+        ai_enabled: enabled,
+        enabled: enabled ? true : strategy?.enabled,
+        mode: enabled && strategy?.mode === 'manual' ? 'supervised' : strategy?.mode,
+      });
       return;
     }
     if (row.targetId === 'loto-virtual') {
@@ -6890,6 +7492,36 @@ export default function RobinApp() {
         phone_number: settingsForm.phoneNumber || null,
         client_context: clientContext,
         personal_settings: buildPersonalSettingsPayload({}, portfolioVisibility, resolvedDecisionKeys, virtualAppsEnabled, nextStrategies),
+      }),
+    }).catch(() => {
+      // Keep local state even if persistence fails.
+    });
+  }
+
+  function updateRacingStrategy(strategyId: string, patch: Partial<BettingStrategy>) {
+    let nextStrategies: BettingStrategy[] = racingStrategies;
+    setRacingStrategies((prev) => {
+      nextStrategies = prev.map((strategy) => strategy.id === strategyId ? { ...strategy, ...patch } : strategy);
+      return nextStrategies;
+    });
+    setSelectedRacingStrategy((prev) => prev && prev.id === strategyId ? { ...prev, ...patch } : prev);
+
+    if (!accessToken) {
+      return;
+    }
+
+    void fetch(apiUrl('/auth/me/settings'), {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeader(accessToken),
+      },
+      credentials: 'include',
+      body: JSON.stringify({
+        full_name: settingsForm.fullName,
+        phone_number: settingsForm.phoneNumber || null,
+        client_context: clientContext,
+        personal_settings: buildPersonalSettingsPayload({}, portfolioVisibility, resolvedDecisionKeys, virtualAppsEnabled, bettingStrategies, nextStrategies),
       }),
     }).catch(() => {
       // Keep local state even if persistence fails.
@@ -8227,81 +8859,6 @@ export default function RobinApp() {
               <span className="robinWord">ROBIN</span>
               {user ? ` • ${APP_LABELS[activeApp]}` : ''}
             </strong>
-            {user ? (
-              <>
-                <div
-                  className={`trendArrowTrack ${batteryTone} ${topbarProgressRatio >= 0.99 ? 'achieved' : ''}`}
-                  aria-hidden="true"
-                  style={{
-                    ['--trend-speed' as string]: `${trendArrowSpeed}s`,
-                    ['--trend-scale' as string]: `${trendArrowScale}`,
-                    ['--goal-progress-pct' as string]: `${topbarProgressPct}%`,
-                    ['--goal-elapsed-pct' as string]: `${topbarDelayConsumedPct}%`,
-                  } as Record<string, string>}
-                >
-                  <div className="batteryHeader">
-                    <span className="batteryEyebrow">Progression nette</span>
-                    <strong>{topbarProgressLabel}</strong>
-                    <span className={`metaPill ${goalMoodTone}`}>{goalMoodLabel}</span>
-                  </div>
-                  <div className="batteryShell">
-                    <div className="batteryChargingFlow" />
-                    <div className="batteryLevel" />
-                    <div className="batteryNeedle" />
-                    <div className="batteryPercent">{uiNavigationProgressPct}% navigation</div>
-                  </div>
-                  <div className="batteryTimeline">
-                    <div className="batteryTimelineRail">
-                      <div className="batteryTimelineProgress" />
-                      <div className="batteryTimelineMascot" aria-hidden="true">🏃</div>
-                    </div>
-                    <div
-                      className={`batteryDelayInfo ${loading ? 'loading' : topbarDelayConsumedPct >= 100 ? 'done' : topbarDelayConsumedPct >= 75 ? 'warn' : 'ok'}`}
-                    >
-                      Fenêtre active en direct
-                    </div>
-                  </div>
-                </div>
-                <div className="topbarKpis">
-                  <button
-                    className={`smallPill selectedPortfolioPill topbarTrendPill ${evolution24h.tone}`}
-                    onClick={() => {
-                      setSelectedInsight({
-                        id: 'topbar-real-24h',
-                        title: 'Valeur réelle active',
-                        value: `${topbarRealValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`,
-                        trend: `${evolution24h.tone === 'up' ? '↑' : evolution24h.tone === 'down' ? '↓' : '→'} Variation 24h ${evolution24h.value}`,
-                        detail: 'Somme des portefeuilles réels actifs avec indicateur de variation consolidée sur 24h.',
-                        section: 'indicator',
-                      });
-                      window.scrollTo({ top: 120, behavior: 'smooth' });
-                    }}
-                    type="button"
-                  >
-                    <span className="topbarTrendTitle"><span className="topbarObjectiveDot" aria-hidden="true" />Réels {topbarRealValue.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €</span>
-                    <span className={`topbarTrendValue ${evolution24h.tone}`}>{topbarRealTrendLabel}</span>
-                  </button>
-                  <button
-                    className={`smallPill selectedPortfolioPill topbarTrendPill ${topbarVirtualTrendTone}`}
-                    onClick={() => {
-                      setSelectedInsight({
-                        id: 'topbar-virtual-live',
-                        title: 'Valeur portefeuilles fictifs actifs',
-                        value: `${topbarVirtualValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`,
-                        trend: `${topbarVirtualTrendTone === 'up' ? '↑' : topbarVirtualTrendTone === 'down' ? '↓' : '→'} ${topbarVirtualTrendLabel}`,
-                        detail: 'Somme des portefeuilles fictifs actifs: Finance, Paris en ligne, Hippiques et Loto.',
-                        section: 'indicator',
-                      });
-                      window.scrollTo({ top: 120, behavior: 'smooth' });
-                    }}
-                    type="button"
-                  >
-                    <span className="topbarTrendTitle"><span className="topbarObjectiveDot" aria-hidden="true" />Fictifs {topbarVirtualValue.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €</span>
-                    <span className={`topbarTrendValue ${topbarVirtualTrendTone}`}>{topbarVirtualTrendLabel}</span>
-                  </button>
-                </div>
-              </>
-            ) : null}
           </div>
         </div>
         {user ? (
@@ -8324,32 +8881,105 @@ export default function RobinApp() {
           </div>
         ) : null}
         {user ? (
-          <div className="topbarMenuDock">
-            <TopbarNavigation
-              activeApp={activeApp}
-              adminSection={adminSection}
-              allowedApps={allowedApps}
-              animationKey={topbarNavAnimationKey}
-              appView={appView}
-              canAccessAdmin={canAccessAdmin}
-              currentHeaderHint={currentHeaderHint}
-              currentHeaderPath={currentHeaderPath}
-              currentHeaderSection={currentHeaderSection}
-              financeSubApp={financeSubApp}
-              hasParisApps={hasParisApps}
-              onAdminSectionChange={setAdminSection}
-              openAccountWorkspace={openAccountWorkspace}
-              openAdminWorkspace={openAdminWorkspace}
-              openFinanceParentMenu={openFinanceParentMenu}
-              openFinanceTopbarBranch={openFinanceTopbarBranch}
-              openFinanceTopbarView={openFinanceTopbarView}
-              openHomeParentMenu={openHomeParentMenu}
-              openOverviewSection={openOverviewSection}
-              openParisParentMenu={openParisParentMenu}
-              openParisTopbarBranch={openParisTopbarBranch}
-              openParisTopbarView={openParisTopbarView}
-              topbarParisActiveApp={topbarParisActiveApp}
-            />
+          <div className="topbarUniverseProgressRow">
+            <div className="topbarMenuDock">
+              <TopbarNavigation
+                activeApp={activeApp}
+                adminSection={adminSection}
+                allowedApps={allowedApps}
+                animationKey={topbarNavAnimationKey}
+                appView={appView}
+                canAccessAdmin={canAccessAdmin}
+                currentHeaderSection={currentHeaderSection}
+                financeSubApp={financeSubApp}
+                hasParisApps={hasParisApps}
+                onAdminSectionChange={setAdminSection}
+                openAccountWorkspace={openAccountWorkspace}
+                openAdminWorkspace={openAdminWorkspace}
+                openFinanceParentMenu={openFinanceParentMenu}
+                openFinanceTopbarBranch={openFinanceTopbarBranch}
+                openFinanceTopbarView={openFinanceTopbarView}
+                openHomeParentMenu={openHomeParentMenu}
+                openOverviewSection={openOverviewSection}
+                openParisParentMenu={openParisParentMenu}
+                openParisTopbarBranch={openParisTopbarBranch}
+                openParisTopbarView={openParisTopbarView}
+                topbarParisActiveApp={topbarParisActiveApp}
+              />
+            </div>
+            <div className="topbarProgressDock">
+              <div
+                className={`trendArrowTrack ${batteryTone} ${topbarProgressRatio >= 0.99 ? 'achieved' : ''}`}
+                aria-hidden="true"
+                style={{
+                  ['--trend-speed' as string]: `${trendArrowSpeed}s`,
+                  ['--trend-scale' as string]: `${trendArrowScale}`,
+                  ['--goal-progress-pct' as string]: `${topbarProgressPct}%`,
+                  ['--goal-elapsed-pct' as string]: `${topbarDelayConsumedPct}%`,
+                } as Record<string, string>}
+              >
+                <div className="batteryHeader">
+                  <span className="batteryEyebrow">Progression nette</span>
+                  <strong>{topbarProgressLabel}</strong>
+                  <span className={`metaPill ${goalMoodTone}`}>{goalMoodLabel}</span>
+                </div>
+                <div className="batteryShell">
+                  <div className="batteryChargingFlow" />
+                  <div className="batteryLevel" />
+                  <div className="batteryNeedle" />
+                  <div className="batteryPercent">{uiNavigationProgressPct}% navigation</div>
+                </div>
+                <div className="batteryTimeline">
+                  <div className="batteryTimelineRail">
+                    <div className="batteryTimelineProgress" />
+                    <div className="batteryTimelineMascot" aria-hidden="true">🏃</div>
+                  </div>
+                  <div
+                    className={`batteryDelayInfo ${loading ? 'loading' : topbarDelayConsumedPct >= 100 ? 'done' : topbarDelayConsumedPct >= 75 ? 'warn' : 'ok'}`}
+                  >
+                    Fenêtre active en direct
+                  </div>
+                </div>
+              </div>
+              <div className="topbarKpis">
+                <button
+                  className={`smallPill selectedPortfolioPill topbarTrendPill ${evolution24h.tone}`}
+                  onClick={() => {
+                    setSelectedInsight({
+                      id: 'topbar-real-24h',
+                      title: 'Valeur réelle active',
+                      value: `${topbarRealValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`,
+                      trend: `${evolution24h.tone === 'up' ? '↑' : evolution24h.tone === 'down' ? '↓' : '→'} Variation 24h ${evolution24h.value}`,
+                      detail: 'Somme des portefeuilles réels actifs avec indicateur de variation consolidée sur 24h.',
+                      section: 'indicator',
+                    });
+                    window.scrollTo({ top: 120, behavior: 'smooth' });
+                  }}
+                  type="button"
+                >
+                  <span className="topbarTrendTitle"><span className="topbarObjectiveDot" aria-hidden="true" />Réels {topbarRealValue.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €</span>
+                  <span className={`topbarTrendValue ${evolution24h.tone}`}>{topbarRealTrendLabel}</span>
+                </button>
+                <button
+                  className={`smallPill selectedPortfolioPill topbarTrendPill ${topbarVirtualTrendTone}`}
+                  onClick={() => {
+                    setSelectedInsight({
+                      id: 'topbar-virtual-live',
+                      title: 'Valeur portefeuilles fictifs actifs',
+                      value: `${topbarVirtualValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`,
+                      trend: `${topbarVirtualTrendTone === 'up' ? '↑' : topbarVirtualTrendTone === 'down' ? '↓' : '→'} ${topbarVirtualTrendLabel}`,
+                      detail: 'Somme des portefeuilles fictifs actifs: Finance, Paris en ligne, Hippiques et Loto.',
+                      section: 'indicator',
+                    });
+                    window.scrollTo({ top: 120, behavior: 'smooth' });
+                  }}
+                  type="button"
+                >
+                  <span className="topbarTrendTitle"><span className="topbarObjectiveDot" aria-hidden="true" />Fictifs {topbarVirtualValue.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €</span>
+                  <span className={`topbarTrendValue ${topbarVirtualTrendTone}`}>{topbarVirtualTrendLabel}</span>
+                </button>
+              </div>
+            </div>
           </div>
         ) : null}
       </header>
@@ -8505,750 +9135,6 @@ export default function RobinApp() {
               totalLossAmount={getGlobalPortfolioLossOnPeriod(getAgentConfig(GLOBAL_AGENT_CONFIG_KEY).period_days)}
               user={user}
             />
-          ) : null}
-
-          {false ? (
-            <section className="workspaceGrid settingsGrid rightDockLayout accountLayoutGrid">
-              <article className="featureCard settingsIntroCard">
-                <div className="cardHeader">
-                  <h2>Mon compte</h2>
-                  <span>Mes infos, mes alertes, mes objectifs et mes garde-fous</span>
-                </div>
-                <div className="accountHeroStats">
-                  <span className="metaPill">Compte {user.mfa_enabled ? 'protege' : 'a renforcer'}</span>
-                  <span className="metaPill">Applications: {allowedApps.length}</span>
-                  <span className="metaPill">Risque: {settingsForm.riskProfile === 'low' ? 'Prudent' : settingsForm.riskProfile === 'high' ? 'Dynamique' : 'Equilibre'}</span>
-                </div>
-                <p style={{ fontSize: '.85rem', color: 'var(--muted)', margin: 0 }}>
-                  Vue personnelle recentrée sur l essentiel: identité, joignabilité, préférences IA et objectif sur période définie.
-                </p>
-              </article>
-
-              <article className="featureCard settingsCard accountQuickControlCard">
-                <div className="cardHeader">
-                  <h2>Pilotage rapide</h2>
-                  <span>Boutons et toggles globaux</span>
-                </div>
-                <div className="accountQuickControlGrid">
-                  <button className="secondaryButton" onClick={() => { setActiveApp('finance'); setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Intégrations</button>
-                  <button className="ghostButton" onClick={() => scrollToSection('account-profile')} type="button">Mes infos</button>
-                  <button className="ghostButton" onClick={() => scrollToSection('account-risk')} type="button">Agent IA</button>
-                  <button className="ghostButton" onClick={() => scrollToSection('account-objective')} type="button">Objectif</button>
-                  <button className="ghostButton" onClick={() => scrollToSection('account-communication')} type="button">Communication</button>
-                  <button className="ghostButton" onClick={() => setCommunicationTestResult(null)} type="button">Réinitialiser tests</button>
-                  <button className="ghostButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">Enregistrer tout</button>
-                </div>
-                <div className="accountToggleStrip">
-                  <label className="checkRow" style={{ margin: 0 }}>
-                    <input type="checkbox" checked={settingsForm.notifyEmail} onChange={(e) => setSettingsForm((s) => ({ ...s, notifyEmail: e.target.checked }))} />
-                    <span>Email</span>
-                  </label>
-                  <label className="checkRow" style={{ margin: 0 }}>
-                    <input type="checkbox" checked={settingsForm.notifyWhatsapp} onChange={(e) => setSettingsForm((s) => ({ ...s, notifyWhatsapp: e.target.checked }))} />
-                    <span>WhatsApp</span>
-                  </label>
-                  <label className="checkRow" style={{ margin: 0 }}>
-                    <input type="checkbox" checked={settingsForm.notifyPush} onChange={(e) => setSettingsForm((s) => ({ ...s, notifyPush: e.target.checked }))} />
-                    <span>Push</span>
-                  </label>
-                </div>
-              </article>
-
-              <article className="featureCard settingsCard" id="account-health">
-                <div className="cardHeader">
-                  <h2>Sante du compte</h2>
-                  <span>Verification rapide</span>
-                </div>
-                <div className="accountHealthGrid">
-                  <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
-                    <strong>Authentification</strong>
-                    <p>MFA: {user.mfa_enabled ? 'active' : 'inactive'} · Methode preferee: {String(user.personal_settings.preferred_mfa_method ?? 'email')}.</p>
-                  </div>
-                  <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
-                    <strong>Canaux actifs</strong>
-                    <p>
-                      {[
-                        settingsForm.notifyEmail ? 'Email' : null,
-                        settingsForm.notifyWhatsapp ? 'WhatsApp' : null,
-                        settingsForm.notifySms ? 'SMS' : null,
-                        settingsForm.notifyPush ? 'Push' : null,
-                        commGoogleChat.enabled ? 'Google Chat' : null,
-                        commTelegram.enabled ? 'Telegram' : null,
-                      ].filter(Boolean).join(' · ') || 'Aucun canal actif'}
-                    </p>
-                  </div>
-                  <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
-                    <strong>Contact principal</strong>
-                    <p>{user.email} · {settingsForm.phoneNumber?.trim() ? settingsForm.phoneNumber : 'Telephone non renseigne'}</p>
-                  </div>
-                </div>
-              </article>
-
-              <article className="featureCard settingsCard" id="account-profile">
-                <div className="cardHeader">
-                  <h2>Mes infos & connexion</h2>
-                  <span>Identité, contact et sécurité</span>
-                </div>
-                <form className="authForm" onSubmit={saveSettings}>
-                  <label>
-                    Nom affiché
-                    <input value={settingsForm.fullName} onChange={(event) => setSettingsForm((state) => ({ ...state, fullName: event.target.value }))} type="text" required />
-                  </label>
-                  <label>
-                    Email principal
-                    <input type="email" value={user.email} disabled />
-                  </label>
-                  <label>
-                    Numéro de téléphone
-                    <input value={settingsForm.phoneNumber} onChange={(event) => setSettingsForm((state) => ({ ...state, phoneNumber: event.target.value }))} type="tel" placeholder="+33 6 12 34 56 78" />
-                  </label>
-                  <label>
-                    Date de naissance
-                    <input
-                      type="date"
-                      value={String(user.birth_date ?? user.personal_settings.birth_date ?? '').slice(0, 10)}
-                      disabled
-                    />
-                  </label>
-                  <label>
-                    Pays de référence
-                    <input value={settingsForm.country} onChange={(event) => setSettingsForm((state) => ({ ...state, country: event.target.value }))} type="text" placeholder={clientContext.country || 'France'} />
-                  </label>
-                  <div className="infoPanel mutedPanel" style={{ marginTop: 4 }}>
-                    <strong>Accès du compte</strong>
-                    <p>MFA: {user.mfa_enabled ? 'activé' : 'non activé'} · Méthode privilégiée: {String(user.personal_settings.preferred_mfa_method ?? 'email')}.</p>
-                    <p>Applications autorisées: {allowedApps.map((app) => APP_LABELS[app]).join(' · ')}</p>
-                    <div className="providerActions fullWidth" style={{ marginTop: 6 }}>
-                      <button className="secondaryButton" onClick={() => { setAppView('account'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Configurer MFA</button>
-                      <button className="ghostButton" onClick={() => { setActiveApp('finance'); setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Intégrations & communication</button>
-                    </div>
-                  </div>
-                  <button className="primaryButton" disabled={submitting} type="submit">
-                    {submitting ? 'Enregistrement...' : 'Sauvegarder mes informations'}
-                  </button>
-                </form>
-              </article>
-
-              <article className="featureCard settingsCard" id="account-risk">
-                <div className="cardHeader">
-                  <h2>Agents IA globaux</h2>
-                  <span>Réglages uniques appliqués à tous les portefeuilles</span>
-                </div>
-                <div style={{ display: 'grid', gap: 10 }}>
-                  <p className="helperText" style={{ margin: 0 }}>
-                    Tous les plafonds d exposition, d investissement, de pertes et de volume de transactions sont pilotés ici pour l ensemble des portefeuilles.
-                  </p>
-                  <label className="checkRow" style={{ margin: 0 }}>
-                    <input
-                      type="checkbox"
-                      checked={getAgentConfig(GLOBAL_AGENT_CONFIG_KEY).enabled}
-                      onChange={(event) => {
-                        const cfg = getAgentConfig(GLOBAL_AGENT_CONFIG_KEY);
-                        void updateAgentConfig(GLOBAL_AGENT_CONFIG_KEY, {
-                          enabled: event.target.checked,
-                          mode: event.target.checked ? (cfg.mode === 'manual' ? 'supervised' : cfg.mode) : 'manual',
-                        });
-                      }}
-                    />
-                    <span>Activer l IA globale sur tous les portefeuilles compatibles</span>
-                  </label>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    <button
-                      className={`smallPill ${settingsForm.riskProfile === 'low' ? 'selectedPortfolioPill selected' : ''}`}
-                      onClick={() => {
-                        setSettingsForm((state) => ({ ...state, riskProfile: 'low' }));
-                        applyRiskProfileAgentPreset('low');
-                      }}
-                      type="button"
-                    >
-                      Prudent
-                    </button>
-                    <button
-                      className={`smallPill ${settingsForm.riskProfile === 'medium' ? 'selectedPortfolioPill selected' : ''}`}
-                      onClick={() => {
-                        setSettingsForm((state) => ({ ...state, riskProfile: 'medium' }));
-                        applyRiskProfileAgentPreset('medium');
-                      }}
-                      type="button"
-                    >
-                      Équilibré
-                    </button>
-                    <button
-                      className={`smallPill ${settingsForm.riskProfile === 'high' ? 'selectedPortfolioPill selected' : ''}`}
-                      onClick={() => {
-                        setSettingsForm((state) => ({ ...state, riskProfile: 'high' }));
-                        applyRiskProfileAgentPreset('high');
-                      }}
-                      type="button"
-                    >
-                      Dynamique
-                    </button>
-                  </div>
-                  <div className="aiModeSelector">
-                    <button
-                      className={`aiModeOption ${getAgentConfig(GLOBAL_AGENT_CONFIG_KEY).mode === 'manual' ? 'active manual' : ''}`}
-                      disabled={!getAgentConfig(GLOBAL_AGENT_CONFIG_KEY).enabled}
-                      onClick={() => void updateAgentConfig(GLOBAL_AGENT_CONFIG_KEY, { mode: 'manual' })}
-                      type="button"
-                    >
-                      <span>🖐</span>
-                      <strong>Manuel</strong>
-                      <small>Aucune exécution sans action</small>
-                    </button>
-                    <button
-                      className={`aiModeOption ${getAgentConfig(GLOBAL_AGENT_CONFIG_KEY).mode === 'supervised' ? 'active supervised' : ''}`}
-                      disabled={!getAgentConfig(GLOBAL_AGENT_CONFIG_KEY).enabled}
-                      onClick={() => void updateAgentConfig(GLOBAL_AGENT_CONFIG_KEY, { mode: 'supervised' })}
-                      type="button"
-                    >
-                      <span>👁</span>
-                      <strong>Supervisé</strong>
-                      <small>L IA propose, vous validez</small>
-                    </button>
-                    <button
-                      className={`aiModeOption ${getAgentConfig(GLOBAL_AGENT_CONFIG_KEY).mode === 'autopilot' ? 'active autopilot' : ''}`}
-                      disabled={!getAgentConfig(GLOBAL_AGENT_CONFIG_KEY).enabled}
-                      onClick={() => void updateAgentConfig(GLOBAL_AGENT_CONFIG_KEY, { mode: 'autopilot' })}
-                      type="button"
-                    >
-                      <span>🤖</span>
-                      <strong>Autopilot</strong>
-                      <small>Exécution dans vos plafonds</small>
-                    </button>
-                  </div>
-                  <div className="accountAgentPolicyGrid">
-                    <label>
-                      Montant max par ordre (€)
-                      <input
-                        value={String(getAgentConfig(GLOBAL_AGENT_CONFIG_KEY).max_amount)}
-                        onChange={(event) => void updateAgentConfig(GLOBAL_AGENT_CONFIG_KEY, { max_amount: Math.max(MIN_MONETARY_LIMIT, Number(event.target.value) || MIN_MONETARY_LIMIT) })}
-                        type="number"
-                        min={MIN_MONETARY_LIMIT}
-                        step="10"
-                      />
-                    </label>
-                    <label>
-                      Transactions max sur la période
-                      <input
-                        value={String(getAgentConfig(GLOBAL_AGENT_CONFIG_KEY).max_transactions_per_period)}
-                        onChange={(event) => void updateAgentConfig(GLOBAL_AGENT_CONFIG_KEY, { max_transactions_per_period: Math.max(1, Number(event.target.value) || 1) })}
-                        type="number"
-                        min={1}
-                        step="1"
-                      />
-                    </label>
-                    <label>
-                      Période de contrôle (jours)
-                      <input
-                        value={String(getAgentConfig(GLOBAL_AGENT_CONFIG_KEY).period_days)}
-                        onChange={(event) => void updateAgentConfig(GLOBAL_AGENT_CONFIG_KEY, { period_days: Math.max(1, Math.min(365, Number(event.target.value) || 1)) })}
-                        type="number"
-                        min={1}
-                        max={365}
-                        step="1"
-                      />
-                    </label>
-                    <label>
-                      Plafond d investissement période (€)
-                      <input
-                        value={String(getAgentConfig(GLOBAL_AGENT_CONFIG_KEY).max_investment_amount)}
-                        onChange={(event) => void updateAgentConfig(GLOBAL_AGENT_CONFIG_KEY, { max_investment_amount: Math.max(MIN_MONETARY_LIMIT, Number(event.target.value) || MIN_MONETARY_LIMIT) })}
-                        type="number"
-                        min={MIN_MONETARY_LIMIT}
-                        step="10"
-                      />
-                    </label>
-                    <label>
-                      Plafond de pertes période (€)
-                      <input
-                        value={String(getAgentConfig(GLOBAL_AGENT_CONFIG_KEY).max_loss_amount)}
-                        onChange={(event) => void updateAgentConfig(GLOBAL_AGENT_CONFIG_KEY, { max_loss_amount: Math.max(MIN_MONETARY_LIMIT, Number(event.target.value) || MIN_MONETARY_LIMIT) })}
-                        type="number"
-                        min={MIN_MONETARY_LIMIT}
-                        step="10"
-                      />
-                    </label>
-                  </div>
-                  <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
-                    <strong>Profil actuel: {settingsForm.riskProfile === 'low' ? 'Prudent' : settingsForm.riskProfile === 'high' ? 'Dynamique' : 'Équilibré'}</strong>
-                    <p>
-                      Preset du profil: {RISK_PROFILE_DEFAULT_QUOTAS[settingsForm.riskProfile].max_amount} € par ordre ·
-                      {` `}{RISK_PROFILE_DEFAULT_QUOTAS[settingsForm.riskProfile].max_transactions_per_period} transaction(s) sur {RISK_PROFILE_DEFAULT_QUOTAS[settingsForm.riskProfile].period_days} jours ·
-                      {` `}investissement {RISK_PROFILE_DEFAULT_QUOTAS[settingsForm.riskProfile].max_investment_amount} € · perte {RISK_PROFILE_DEFAULT_QUOTAS[settingsForm.riskProfile].max_loss_amount} €.
-                    </p>
-                    <p>
-                      Consommation actuelle: {getGlobalAiManagedOperations(getAgentConfig(GLOBAL_AGENT_CONFIG_KEY).period_days).length}/{getAgentConfig(GLOBAL_AGENT_CONFIG_KEY).max_transactions_per_period} transaction(s) ·
-                      {` `}{getGlobalAiManagedOperations(getAgentConfig(GLOBAL_AGENT_CONFIG_KEY).period_days).reduce((sum, operation) => sum + operation.amount, 0).toFixed(2)} € investis ·
-                      {` `}{getGlobalPortfolioLossOnPeriod(getAgentConfig(GLOBAL_AGENT_CONFIG_KEY).period_days).toFixed(2)} € de perte glissante.
-                    </p>
-                  </div>
-                  <button className="primaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
-                    {submitting ? 'Sauvegarde...' : 'Enregistrer la politique IA globale'}
-                  </button>
-                </div>
-              </article>
-
-              <article className="featureCard settingsCard" id="account-communication">
-                <div className="cardHeader">
-                  <h2>Canaux de communication</h2>
-                  <span>Préférences de suivi</span>
-                </div>
-                <div style={{ display: 'grid', gap: 12 }}>
-                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                    <label className="checkRow" style={{ margin: 0, padding: '6px 10px' }}>
-                      <input type="checkbox" checked={settingsForm.notifyEmail} onChange={(e) => setSettingsForm((s) => ({ ...s, notifyEmail: e.target.checked }))} />
-                      <span style={{ fontSize: '.78rem' }}>Email</span>
-                    </label>
-                    <label className="checkRow" style={{ margin: 0, padding: '6px 10px' }}>
-                      <input type="checkbox" checked={settingsForm.notifyWhatsapp} onChange={(e) => setSettingsForm((s) => ({ ...s, notifyWhatsapp: e.target.checked }))} />
-                      <span style={{ fontSize: '.78rem' }}>WhatsApp</span>
-                    </label>
-                    <label className="checkRow" style={{ margin: 0, padding: '6px 10px' }}>
-                      <input type="checkbox" checked={settingsForm.notifySms} onChange={(e) => setSettingsForm((s) => ({ ...s, notifySms: e.target.checked }))} />
-                      <span style={{ fontSize: '.78rem' }}>SMS</span>
-                    </label>
-                    <label className="checkRow" style={{ margin: 0, padding: '6px 10px' }}>
-                      <input type="checkbox" checked={settingsForm.notifyPush} onChange={(e) => setSettingsForm((s) => ({ ...s, notifyPush: e.target.checked }))} />
-                      <span style={{ fontSize: '.78rem' }}>Push</span>
-                    </label>
-                  </div>
-                  <label>
-                    Fréquence de communication
-                    <select value={settingsForm.communicationFrequency} onChange={(event) => setSettingsForm((state) => ({ ...state, communicationFrequency: event.target.value }))}>
-                      <option value="important_only">Important uniquement</option>
-                      <option value="daily">Digest quotidien</option>
-                      <option value="weekly">Digest hebdo</option>
-                    </select>
-                  </label>
-                  <button className="primaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
-                    {submitting ? 'Sauvegarde...' : 'Enregistrer la communication'}
-                  </button>
-                </div>
-              </article>
-
-              <article className="featureCard settingsCard" id="account-objective">
-                <div className="cardHeader">
-                  <h2>Objectif personnel</h2>
-                  <span>Montant visé, période et perte possible estimée</span>
-                </div>
-                <div style={{ display: 'grid', gap: 12 }}>
-                  <label>
-                    Objectif IA net (après taxes) en €
-                    <input value={settingsForm.objectiveNetGain} onChange={(event) => setSettingsForm((state) => ({ ...state, objectiveNetGain: event.target.value }))} type="number" min={0} step="10" />
-                  </label>
-                  <label>
-                    Période de l objectif
-                    <select value={settingsForm.objectivePeriod} onChange={(event) => setSettingsForm((state) => ({ ...state, objectivePeriod: normalizeGoalPeriod(event.target.value) }))}>
-                      <option value="7d">7 jours</option>
-                      <option value="1m">1 mois</option>
-                      <option value="3m">3 mois</option>
-                      <option value="1y">1 an</option>
-                    </select>
-                  </label>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                    <label>
-                      Type de perte maximale
-                      <select value={settingsForm.maxLossType} onChange={(event) => setSettingsForm((state) => ({ ...state, maxLossType: event.target.value === 'amount' ? 'amount' : 'percent' }))}>
-                        <option value="percent">Pourcentage (%)</option>
-                        <option value="amount">Montant (€)</option>
-                      </select>
-                    </label>
-                    <label>
-                      Perte maximale autorisée
-                      <input value={settingsForm.maxLossValue} onChange={(event) => setSettingsForm((state) => ({ ...state, maxLossValue: event.target.value }))} type="number" min={0} step={settingsForm.maxLossType === 'amount' ? '10' : '1'} />
-                    </label>
-                  </div>
-                  <label>
-                    Horizon de contrôle de perte (jours)
-                    <input value={settingsForm.maxLossDays} onChange={(event) => setSettingsForm((state) => ({ ...state, maxLossDays: event.target.value }))} type="number" min={1} max={365} step={1} />
-                  </label>
-                  <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
-                    <strong>Évaluation de perte possible</strong>
-                    <p style={{ marginBottom: 4 }}>
-                      Profil {settingsForm.riskProfile === 'low' ? 'prudent' : settingsForm.riskProfile === 'high' ? 'dynamique' : 'équilibré'}:
-                      {` `}perte potentielle estimée jusqu à <strong>{objectiveEstimatedLoss.toFixed(2)} €</strong>
-                      {goalTargetNet > 0 ? ` sur l objectif de ${goalTargetNet.toFixed(2)} € (${goalPeriodLabel}).` : '.'}
-                    </p>
-                    <p style={{ margin: 0, fontSize: '.75rem', color: 'var(--muted)' }}>
-                      Estimation basée sur le profil de risque ({riskLossProfilePct}%) et votre garde-fou de perte configuré.
-                    </p>
-                  </div>
-                  <p className="helperText">La jauge du bandeau compare votre gain net réel sur la période à la cible définie. Elle peut passer en négatif si la période est perdante.</p>
-                  <button className="primaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
-                    {submitting ? 'Sauvegarde...' : 'Enregistrer le bloc objectif'}
-                  </button>
-                </div>
-              </article>
-
-              <article className="featureCard settingsCard" id="account-platform">
-                <div className="cardHeader">
-                  <h2>Préférences plateforme complètes</h2>
-                  <span>Tous les champs de configuration de compte</span>
-                </div>
-                <div style={{ display: 'grid', gap: 12 }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: 10 }}>
-                    <label>
-                      Devise
-                      <input value={settingsForm.currency} onChange={(event) => setSettingsForm((state) => ({ ...state, currency: event.target.value.toUpperCase() }))} type="text" maxLength={5} />
-                    </label>
-                    <label>
-                      Thème
-                      <select value={settingsForm.theme} onChange={(event) => setSettingsForm((state) => ({ ...state, theme: event.target.value }))}>
-                        <option value="family">Family office</option>
-                        <option value="classic">Classique</option>
-                        <option value="modern">Moderne</option>
-                      </select>
-                    </label>
-                    <label>
-                      Densité dashboard
-                      <select value={settingsForm.dashboardDensity} onChange={(event) => setSettingsForm((state) => ({ ...state, dashboardDensity: event.target.value }))}>
-                        <option value="comfortable">Confort</option>
-                        <option value="compact">Compact</option>
-                      </select>
-                    </label>
-                    <label>
-                      Auto-refresh (secondes)
-                      <select value={settingsForm.autoRefreshSeconds} onChange={(event) => setSettingsForm((state) => ({ ...state, autoRefreshSeconds: event.target.value }))}>
-                        <option value="15">15s</option>
-                        <option value="30">30s</option>
-                        <option value="60">60s</option>
-                        <option value="120">120s</option>
-                      </select>
-                    </label>
-                  </div>
-                  <label>
-                    Style d accompagnement
-                    <select value={settingsForm.onboardingStyle} onChange={(event) => setSettingsForm((state) => ({ ...state, onboardingStyle: event.target.value }))}>
-                      <option value="coach">Coach IA</option>
-                      <option value="direct">Direct</option>
-                    </select>
-                  </label>
-                  <button className="primaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
-                    {submitting ? 'Sauvegarde...' : 'Enregistrer les préférences plateforme'}
-                  </button>
-                </div>
-              </article>
-
-              <article className="featureCard settingsCard" id="account-tests">
-                <div className="cardHeader">
-                  <h2>Centre de test communication</h2>
-                  <span>Verifier chaque canal avec un message test</span>
-                </div>
-                <div style={{ display: 'grid', gap: 12 }}>
-                  <p className="helperText" style={{ margin: 0 }}>
-                    Lancez un test pour confirmer que chaque moyen de communication fonctionne bien pour vous.
-                    Robin IA enverra un message de verification avec une touche rigolote en cas de succes.
-                  </p>
-                  <div className="commTestGrid">
-                    <button className="secondaryButton" onClick={() => runCommunicationTest('email')} type="button">Tester Email</button>
-                    <button className="secondaryButton" onClick={() => runCommunicationTest('whatsapp')} type="button">Tester WhatsApp</button>
-                    <button className="secondaryButton" onClick={() => runCommunicationTest('sms')} type="button">Tester SMS</button>
-                    <button className="secondaryButton" onClick={() => runCommunicationTest('push')} type="button">Tester Push</button>
-                    <button className="secondaryButton" onClick={() => runCommunicationTest('google_chat')} type="button">Tester Google Chat</button>
-                    <button className="secondaryButton" onClick={() => runCommunicationTest('telegram')} type="button">Tester Telegram</button>
-                  </div>
-                  {communicationTestResult ? (
-                    <div className="infoPanel" style={{ margin: 0, background: 'var(--indigo-soft)', borderColor: 'var(--indigo-border)' }}>
-                      <strong style={{ color: 'var(--indigo)' }}>Resultat du test</strong>
-                      <p style={{ color: 'var(--text-2)' }}>{communicationTestResult}</p>
-                    </div>
-                  ) : null}
-                </div>
-              </article>
-
-              <article className="featureCard settingsCard" id="account-advanced-comms">
-                <div className="cardHeader">
-                  <h2>Moyens de communication avancés</h2>
-                  <span>Google Chat et Telegram</span>
-                </div>
-                <div style={{ display: 'grid', gap: 12 }}>
-                  <div className="inlineServicePanel">
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-                      <div><strong style={{ fontSize: '.9rem' }}>💼 Google Chat</strong><p style={{ fontSize: '.78rem', color: 'var(--muted)', marginTop: 2 }}>Webhook vers un espace Google Chat</p></div>
-                      <label className="checkRow" style={{ margin: 0, padding: '6px 10px', width: 'max-content' }}>
-                        <input type="checkbox" checked={commGoogleChat.enabled} onChange={(e) => setCommGoogleChat((s) => ({ ...s, enabled: e.target.checked }))} />
-                        <span style={{ fontSize: '.78rem' }}>Activé</span>
-                      </label>
-                    </div>
-                    {commGoogleChat.enabled ? (
-                      <>
-                        <label>URL Webhook<input type="url" value={commGoogleChat.webhook} onChange={(e) => setCommGoogleChat((s) => ({ ...s, webhook: e.target.value }))} placeholder="https://chat.googleapis.com/v1/spaces/..." /></label>
-                        <button className="ghostButton" onClick={() => runCommunicationTest('google_chat')} style={{ width: 'fit-content' }} type="button">Tester Google Chat</button>
-                      </>
-                    ) : null}
-                  </div>
-                  <div className="inlineServicePanel">
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-                      <div><strong style={{ fontSize: '.9rem' }}>✈️ Telegram</strong><p style={{ fontSize: '.78rem', color: 'var(--muted)', marginTop: 2 }}>Bot Telegram personnalisé</p></div>
-                      <label className="checkRow" style={{ margin: 0, padding: '6px 10px', width: 'max-content' }}>
-                        <input type="checkbox" checked={commTelegram.enabled} onChange={(e) => setCommTelegram((s) => ({ ...s, enabled: e.target.checked }))} />
-                        <span style={{ fontSize: '.78rem' }}>Activé</span>
-                      </label>
-                    </div>
-                    {commTelegram.enabled ? (
-                      <>
-                        <label>Bot Token<input type="text" value={commTelegram.botToken} onChange={(e) => setCommTelegram((s) => ({ ...s, botToken: e.target.value }))} placeholder="123456:ABC-DEF..." /></label>
-                        <label>Chat ID<input type="text" value={commTelegram.chatId} onChange={(e) => setCommTelegram((s) => ({ ...s, chatId: e.target.value }))} placeholder="-1001234567890" /></label>
-                        <button className="ghostButton" onClick={() => runCommunicationTest('telegram')} style={{ width: 'fit-content' }} type="button">Tester Telegram</button>
-                      </>
-                    ) : null}
-                  </div>
-                  <button className="primaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
-                    {submitting ? 'Sauvegarde...' : 'Enregistrer les canaux avancés'}
-                  </button>
-                </div>
-              </article>
-
-              <article className="featureCard settingsCard">
-                <div className="cardHeader">
-                  <h2>Transactions réelles tierces</h2>
-                  <span>MFA obligatoire avant exécution</span>
-                </div>
-                <div style={{ display: 'grid', gap: 12 }}>
-                  <label className="checkRow" style={{ margin: 0 }}>
-                    <input
-                      type="checkbox"
-                      checked={settingsForm.realTradeMfaRequired}
-                      onChange={(event) => setSettingsForm((state) => ({ ...state, realTradeMfaRequired: event.target.checked }))}
-                    />
-                    <span>Exiger MFA pour toute transaction réelle sur un portefeuille tiers (intégration)</span>
-                  </label>
-                  <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
-                    <strong>Etat actuel</strong>
-                    <p>
-                      Protection MFA transaction réelle: {settingsForm.realTradeMfaRequired ? 'activée' : 'désactivée'} · MFA compte: {user.mfa_enabled ? 'activé' : 'inactif'}.
-                    </p>
-                  </div>
-                  <button className="primaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
-                    {submitting ? 'Sauvegarde...' : 'Enregistrer la politique MFA transaction réelle'}
-                  </button>
-                </div>
-              </article>
-
-              <article className="featureCard settingsCard">
-                <div className="cardHeader">
-                  <h2>Paris en ligne — thèmes visibles</h2>
-                  <span>Contrôle des recommandations affichées</span>
-                </div>
-                <div style={{ display: 'grid', gap: 12 }}>
-                  <p className="helperText" style={{ margin: 0 }}>Choisissez les thèmes que Robin affiche dans vos meilleures recommandations Paris en ligne.</p>
-                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                    {(Object.keys(BETTING_THEME_LABELS) as BettingThemeKey[]).map((theme) => (
-                      <label className="checkRow" key={`theme-visible-${theme}`} style={{ margin: 0, padding: '6px 10px' }}>
-                        <input
-                          type="checkbox"
-                          checked={bettingThemeVisibility[theme]}
-                          onChange={(event) => setBettingThemeVisibility((state) => ({ ...state, [theme]: event.target.checked }))}
-                        />
-                        <span style={{ fontSize: '.78rem' }}>{BETTING_THEME_LABELS[theme]}</span>
-                      </label>
-                    ))}
-                  </div>
-                  <button className="primaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
-                    {submitting ? 'Sauvegarde...' : 'Sauvegarder les thèmes Paris en ligne'}
-                  </button>
-                </div>
-              </article>
-
-              <article className="featureCard settingsCard">
-                <div className="cardHeader">
-                  <h2>Réinitialiser le mot de passe</h2>
-                  <span>Demande de code puis validation</span>
-                </div>
-                <div style={{ display: 'grid', gap: 12 }}>
-                  <form className="authForm" onSubmit={handlePasswordResetRequest}>
-                    <label>
-                      Email du compte
-                      <input
-                        value={resetRequestEmail}
-                        onChange={(event) => setResetRequestEmail(event.target.value)}
-                        type="email"
-                        placeholder={user.email}
-                        required
-                      />
-                    </label>
-                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                      <button className="secondaryButton" disabled={submitting} type="submit">
-                        {submitting ? 'Envoi...' : 'Demander un code'}
-                      </button>
-                      <button className="ghostButton" disabled={submitting} onClick={() => setResetRequestEmail(user.email)} type="button">
-                        Utiliser mon email
-                      </button>
-                    </div>
-                  </form>
-                  <form className="authForm" onSubmit={handlePasswordResetConfirm}>
-                    <label>
-                      Code de réinitialisation
-                      <input value={resetToken} onChange={(event) => setResetToken(event.target.value)} type="text" required />
-                    </label>
-                    <label>
-                      Nouveau mot de passe
-                      <input value={resetNewPassword} onChange={(event) => setResetNewPassword(event.target.value)} type="password" required />
-                    </label>
-                    <button className="primaryButton" disabled={submitting} type="submit">
-                      {submitting ? 'Validation...' : 'Valider le nouveau mot de passe'}
-                    </button>
-                  </form>
-                  {resetMessage ? <p className="helperText" style={{ margin: 0 }}>{resetMessage}</p> : null}
-                </div>
-              </article>
-
-              <article className="featureCard settingsCard">
-                <div className="cardHeader">
-                  <h2>Vue globale des portefeuilles</h2>
-                    <span>Tous vos portefeuilles (réels et virtuels)</span>
-                </div>
-                {allPortfolios.length === 0 ? (
-                  <p className="helperText">Aucun portefeuille disponible pour le moment.</p>
-                ) : (
-                  <div style={{ display: 'grid', gap: 8 }}>
-                    {allPortfolios.map((portfolio) => (
-                      (() => {
-                        const isVirtualFinance = portfolio.type === 'virtual';
-                        const cfg = isVirtualFinance ? getAgentConfig(portfolio.id) : null;
-                        const iaModeLabel = !cfg || !cfg.enabled
-                          ? 'IA inactive'
-                          : cfg.mode === 'autopilot'
-                            ? 'IA autopilot active'
-                            : cfg.mode === 'supervised'
-                              ? 'IA supervisee'
-                              : 'IA manuelle';
-                        const portfolioStatus = isVirtualFinance
-                          ? (virtualAppsEnabled.finance
-                            ? `${portfolio.status === 'active' ? 'Actif' : 'Inactif'} · ${iaModeLabel}`
-                            : 'Inactif (application Finance desactivee)')
-                          : `${portfolio.status === 'active' ? 'Actif' : 'Inactif'}`;
-                        return (
-                          <button
-                            className={`compactRow compactRowButton portfolioDetailRow ${portfolio.type === 'virtual' ? 'portfolioRowVirtual' : 'portfolioRowReal'}`}
-                            key={`account-portfolio-${portfolio.id}`}
-                            onClick={() => openFinancePortfolioDetail(portfolio)}
-                            style={{ alignItems: 'center' }}
-                            type="button"
-                          >
-                            <div>
-                              <strong style={{ fontSize: '.9rem' }}>{portfolio.label}</strong>
-                              <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>
-                                {portfolio.agent_name} · {portfolioStatus}
-                              </p>
-                            </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <span className={portfolio.type === 'virtual' ? 'portfolioTypeBadge virtual' : 'portfolioTypeBadge real'}>
-                                {portfolio.type === 'virtual' ? 'Virtuel' : 'Réel'}
-                              </span>
-                              <span className="metaPill">{portfolio.current_value.toFixed(2)} €</span>
-                              <span className="metaPill">Voir détail</span>
-                              <span className="rowChevron" aria-hidden="true">›</span>
-                            </div>
-                          </button>
-                        );
-                      })()
-                    ))}
-                  </div>
-                )}
-              </article>
-
-              <article className="featureCard settingsCard">
-                <div className="cardHeader">
-                  <h2>Recycler les portefeuilles fictifs</h2>
-                  <span>Remise à zéro des simulations</span>
-                </div>
-                <div style={{ display: 'grid', gap: 10 }}>
-                  <p className="helperText" style={{ margin: 0 }}>
-                    Cette action recycle les simulations Finance, Paris sportifs, Hippiques et Loto: opérations, tickets et performances remis à zéro.
-                  </p>
-                  <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
-                    <strong>Conservation</strong>
-                    <p>Vos intégrations réelles et vos identifiants de communication ne sont pas supprimés.</p>
-                  </div>
-                  <button className="tagButton danger" disabled={submitting} onClick={() => void recycleAllVirtualPortfolios()} type="button">
-                    {submitting ? 'Recyclage...' : 'Recycler tous les portefeuilles fictifs'}
-                  </button>
-                </div>
-              </article>
-
-              <article className="featureCard settingsCard">
-                <div className="cardHeader">
-                  <h2>Historique de mes actions</h2>
-                  <span>Activité récente de votre compte</span>
-                </div>
-                {loadingMyActivity ? (
-                  <p className="helperText">Chargement de l historique...</p>
-                ) : myActivityTrail.length === 0 ? (
-                  <p className="helperText">Aucune action enregistrée pour le moment.</p>
-                ) : (
-                  <table className="txLogTable">
-                    <thead>
-                      <tr>
-                        <th>Date</th>
-                        <th>Action</th>
-                        <th>Sévérité</th>
-                        <th>Détails</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {myActivityTrail.slice(0, 20).map((entry) => (
-                        <tr key={entry.id}>
-                          <td>{formatDateTimeFr(entry.created_at)}</td>
-                          <td>{entry.event_type}</td>
-                          <td>{entry.severity}</td>
-                          <td style={{ maxWidth: '360px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{JSON.stringify(entry.payload)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </article>
-
-              {canAccessAdmin ? (
-                <article className="featureCard settingsCard">
-                  <div className="cardHeader">
-                    <h2>Audit trail du site</h2>
-                    <span>Vue rapide administrateur</span>
-                  </div>
-                  <div className="accountHealthGrid" style={{ marginBottom: 12 }}>
-                    <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
-                      <strong>Evenements traces</strong>
-                      <p>{siteAuditSummary.total} entree(s) chargee(s)</p>
-                    </div>
-                    <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
-                      <strong>Warnings</strong>
-                      <p>{siteAuditSummary.warnings} evenement(s) a surveiller</p>
-                    </div>
-                    <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
-                      <strong>Authentification</strong>
-                      <p>{siteAuditSummary.authEvents} evenement(s) auth traces</p>
-                    </div>
-                    <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
-                      <strong>Administration</strong>
-                      <p>{siteAuditSummary.adminEvents} action(s) admin</p>
-                    </div>
-                  </div>
-                  {recentSiteAudit.length === 0 ? (
-                    <p className="helperText">Aucun evenement d audit disponible.</p>
-                  ) : (
-                    <div className="auditTimeline compactAuditTimeline">
-                      {recentSiteAudit.map((entry) => (
-                        <div className={`auditEntry ${entry.severity === 'warning' ? 'warning' : ''}`} key={`account-audit-${entry.id}`}>
-                          <div className="auditDot" />
-                          <div style={{ minWidth: 0 }}>
-                            <div className="compactRow noBorder" style={{ marginBottom: 2 }}>
-                              <strong>{entry.event_type}</strong>
-                              <span>{new Date(entry.created_at).toLocaleString('fr-FR')}</span>
-                            </div>
-                            <p>Acteur: {entry.actor_id}{entry.ip_address ? ` · IP ${entry.ip_address}` : ''}</p>
-                            <p>Payload: {JSON.stringify(entry.payload)}</p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <div className="providerActions fullWidth" style={{ marginTop: 10 }}>
-                    <button className="secondaryButton" onClick={() => { setAppView('admin'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Ouvrir l audit trail complet</button>
-                  </div>
-                </article>
-              ) : null}
-            </section>
           ) : null}
 
           {isFinanceCryptoActive && !portfolioDetailOpen && appView === 'dashboard' ? (
@@ -9745,7 +9631,7 @@ export default function RobinApp() {
                               <span className="portfolioTypeBadge real">Réel</span>
                               <span className="metaPill">{portfolio.agent_name}</span>
                             </div>
-                            <strong>{portfolio.label}</strong>
+                            <strong>₿ {portfolio.label}</strong>
                             <p>{portfolio.last_sync_at ? `Synchronisé le ${formatDateTimeFr(portfolio.last_sync_at)}` : 'Synchronisation requise'}</p>
                             <div className="cockpitPortfolioMiniValue">{portfolio.current_value.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €</div>
                             <div className={`cockpitPortfolioMiniTrend ${evolution.tone}`}>Tendance 7j · {evolution.value}</div>
@@ -9774,7 +9660,7 @@ export default function RobinApp() {
                               <span className="portfolioTypeBadge virtual">Fictif</span>
                               <span className="metaPill">{portfolio.agent_name}</span>
                             </div>
-                            <strong>{portfolio.label}</strong>
+                            <strong>₿ {portfolio.label}</strong>
                             <p>Simulation locale · {portfolio.status === 'active' ? 'active' : 'inactive'}</p>
                             <div className="cockpitPortfolioMiniValue">{portfolio.current_value.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €</div>
                             <div className={`cockpitPortfolioMiniTrend ${evolution.tone}`}>Tendance 7j · {evolution.value}</div>
@@ -9827,8 +9713,8 @@ export default function RobinApp() {
                   <h1>Vue d ensemble de votre patrimoine.</h1>
                   <p className="bodyText">Tous vos portefeuilles consolidés, les alertes prioritaires et les actions recommandées par votre agent IA. Cliquez sur les portefeuilles ci-dessus pour filtrer l affichage.</p>
                   <div className="profileMeta">
-                    <span className="metaPill">Profil: {user.role}</span>
-                    <span className="metaPill">Theme: {String(user.personal_settings.theme ?? 'family')}</span>
+                    <span className="metaPill">Profil: {user?.role ?? 'utilisateur'}</span>
+                    <span className="metaPill">Theme: {String(user?.personal_settings?.theme ?? 'family')}</span>
                     {autopilotRunning ? <span className="metaPill" style={{ color: 'var(--warn)', borderColor: 'var(--warn-border)' }}>⚡ Pilote auto actif</span> : null}
                   </div>
                 </div>
@@ -10091,7 +9977,7 @@ export default function RobinApp() {
                               <span className="agentBadge">{p.agent_name}</span>
                               <span className="metaPill">{p.type === 'virtual' ? '⚗️ Virtuel' : 'Intégration'}</span>
                             </div>
-                            <strong className="pCardLabel">{p.label}</strong>
+                            <strong className="pCardLabel">₿ {p.label}</strong>
                             <div className="pCardValue">{p.current_value > 0 ? `${p.current_value.toFixed(2)} €` : '–'}</div>
                             <div className={`pCardPnl${p.pnl >= 0 ? ' up' : ' down'}`}>{p.pnl !== 0 ? `${p.pnl >= 0 ? '+' : ''}${p.pnl.toFixed(2)} € · ROI ${p.roi >= 0 ? '+' : ''}${p.roi.toFixed(1)}%` : 'Synchronisez pour le ROI'}</div>
                             <div className="pCardSparkline"><Sparkline data={p.history.slice(-30)} color={p.pnl >= 0 ? 'var(--ok)' : 'var(--danger)'} /></div>
@@ -10693,7 +10579,7 @@ export default function RobinApp() {
                   </label>
                   <label>
                     Email principal
-                    <input type="email" value={user.email} disabled />
+                    <input type="email" value={user?.email ?? ''} disabled />
                   </label>
                   <label>
                     Numero de telephone
@@ -11207,19 +11093,19 @@ export default function RobinApp() {
                 <div className="cardHeader">
                   <h2>Securite et MFA</h2>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span className={user.mfa_enabled ? 'statusBadge ok' : 'statusBadge warn'}>
-                      <span className={user.mfa_enabled ? 'statusDot ok' : 'statusDot warn'} />
-                      {user.mfa_enabled ? 'Protege' : 'Non active'}
+                    <span className={user?.mfa_enabled ? 'statusBadge ok' : 'statusBadge warn'}>
+                      <span className={user?.mfa_enabled ? 'statusDot ok' : 'statusDot warn'} />
+                      {user?.mfa_enabled ? 'Protege' : 'Non active'}
                     </span>
                     <button className="ghostButton" onClick={() => toggleSettingsTile('security')} type="button">{settingsTileCollapsed.security ? 'Expand' : 'Réduire'}</button>
                   </div>
                 </div>
                 {!settingsTileCollapsed.security ? (
                   <>
-                    {user.mfa_enabled && !mfaSecret ? (
+                    {user?.mfa_enabled && !mfaSecret ? (
                       <div className="infoPanel">
                         <strong>MFA active ✓</strong>
-                        <p>Votre compte est protege par une authentification a deux facteurs. Mode actif: {String(user.personal_settings.preferred_mfa_method ?? 'email')}.</p>
+                        <p>Votre compte est protege par une authentification a deux facteurs. Mode actif: {String(user?.personal_settings?.preferred_mfa_method ?? 'email')}.</p>
                         <div className="providerActions fullWidth" style={{ marginTop: '10px' }}>
                           <button className="secondaryButton" disabled={submitting} onClick={() => void startMfaSetup('email')} type="button">
                             {submitting && mfaSetupMethod === 'email' ? 'Envoi...' : 'Reconfigurer par email'}
@@ -11312,7 +11198,7 @@ export default function RobinApp() {
                                 required
                               />
                               <button className="primaryButton" disabled={submitting} type="submit">
-                                {submitting ? 'Verification...' : (user.mfa_enabled ? 'Valider le nouveau QR MFA' : 'Activer MFA maintenant')}
+                                {submitting ? 'Verification...' : (user?.mfa_enabled ? 'Valider le nouveau QR MFA' : 'Activer MFA maintenant')}
                               </button>
                             </form>
                           </div>
@@ -11562,7 +11448,7 @@ export default function RobinApp() {
                     return (
                       <button key={`pea-portfolio-${portfolio.id}`} className={`compactRow compactRowButton portfolioDetailRow ${portfolio.type === 'virtual' ? 'portfolioRowVirtual' : 'portfolioRowReal'}`} onClick={() => openFinancePortfolioDetail(portfolio)} style={{ alignItems: 'center' }} type="button">
                         <div>
-                          <strong style={{ fontSize: '.9rem' }}>{portfolio.label}</strong>
+                          <strong style={{ fontSize: '.9rem' }}>📈 {portfolio.label}</strong>
                           <p style={{ margin: 0, fontSize: '.76rem', color: 'var(--muted)' }}>
                             {portfolio.type === 'virtual' ? 'Simulation PEA' : 'Compte titre/PEA connecté'} · {portfolio.agent_name}
                           </p>
@@ -11804,7 +11690,7 @@ export default function RobinApp() {
                               <span className="portfolioTypeBadge real">Réel</span>
                               <span className="metaPill">{strategy.mode === 'autonomous' ? 'Autopilot' : strategy.mode === 'supervised' ? 'Supervisé' : 'Manuel'}</span>
                             </div>
-                            <strong>{strategy.name}</strong>
+                            <strong>⚽ {strategy.name}</strong>
                             <p>{strategy.description}</p>
                             <div className="cockpitPortfolioMiniValue">{strategy.bankroll.toFixed(2)} €</div>
                             <div className={`cockpitPortfolioMiniTrend ${evolution.tone}`}>Tendance 7j · {evolution.value}</div>
@@ -11833,7 +11719,7 @@ export default function RobinApp() {
                               <span className="portfolioTypeBadge virtual">Fictif</span>
                               <span className="metaPill">{strategy.mode === 'autonomous' ? 'Autopilot' : strategy.mode === 'supervised' ? 'Supervisé' : 'Manuel'}</span>
                             </div>
-                            <strong>{strategy.name}</strong>
+                            <strong>⚽ {strategy.name}</strong>
                             <p>{strategy.description}</p>
                             <div className="cockpitPortfolioMiniValue">{strategy.bankroll.toFixed(2)} €</div>
                             <div className={`cockpitPortfolioMiniTrend ${evolution.tone}`}>Tendance 7j · {evolution.value}</div>
@@ -11925,7 +11811,7 @@ export default function RobinApp() {
                       >
                         <div className="bettingPortfolioCardHeader">
                           <div>
-                            <strong>{strategy.name}</strong>
+                            <strong>⚽ {strategy.name}</strong>
                             <p>{strategy.isVirtual ? 'Portefeuille fictif' : 'Portefeuille actif'} · {strategy.mode === 'autonomous' ? 'Autopilot' : strategy.mode === 'supervised' ? 'Supervisé' : 'Manuel'}</p>
                           </div>
                           <span className="metaPill">{strategy.bankroll.toFixed(0)} €</span>
@@ -12499,7 +12385,7 @@ export default function RobinApp() {
                     <div className="portfolioCardHeader">
                       <div>
                         <p className="sectionTag" style={{ marginBottom: 2 }}>{strategy.isVirtual ? 'Portefeuille virtuel' : typeLabels[strategy.type]}</p>
-                        <h2 style={{ margin: 0, fontSize: '1.05rem' }}>{strategy.name}</h2>
+                        <h2 style={{ margin: 0, fontSize: '1.05rem' }}>⚽ {strategy.name}</h2>
                         <p style={{ margin: '3px 0 0', fontSize: '.78rem', color: 'var(--muted)' }}>{strategy.description}</p>
                       </div>
                       <span className={`aiModeBadge ${modeBadge.cls}`}>{strategy.enabled ? modeBadge.label : '⏸ Inactif'}</span>
@@ -12791,7 +12677,7 @@ export default function RobinApp() {
                               <span className="portfolioTypeBadge real">Réel</span>
                               <span className="metaPill">{strategy.mode === 'autonomous' ? 'Autopilot' : strategy.mode === 'supervised' ? 'Supervisé' : 'Manuel'}</span>
                             </div>
-                            <strong>{strategy.name}</strong>
+                            <strong>🏇 {strategy.name}</strong>
                             <p>{strategy.description}</p>
                             <div className="cockpitPortfolioMiniValue">{strategy.bankroll.toFixed(2)} €</div>
                             <div className={`cockpitPortfolioMiniTrend ${evolution.tone}`}>Tendance 7j · {evolution.value}</div>
@@ -12820,7 +12706,7 @@ export default function RobinApp() {
                               <span className="portfolioTypeBadge virtual">Fictif</span>
                               <span className="metaPill">{strategy.mode === 'autonomous' ? 'Autopilot' : strategy.mode === 'supervised' ? 'Supervisé' : 'Manuel'}</span>
                             </div>
-                            <strong>{strategy.name}</strong>
+                            <strong>🏇 {strategy.name}</strong>
                             <p>{strategy.description}</p>
                             <div className="cockpitPortfolioMiniValue">{strategy.bankroll.toFixed(2)} €</div>
                             <div className={`cockpitPortfolioMiniTrend ${evolution.tone}`}>Tendance 7j · {evolution.value}</div>
@@ -13240,7 +13126,7 @@ export default function RobinApp() {
                     <div className="portfolioCardHeader">
                       <div>
                         <p className="sectionTag" style={{ marginBottom: 2 }}>{strategy.isVirtual ? 'Portefeuille virtuel' : 'Paris hippiques'}</p>
-                        <h2 style={{ margin: 0, fontSize: '1.05rem' }}>{strategy.name}</h2>
+                        <h2 style={{ margin: 0, fontSize: '1.05rem' }}>🏇 {strategy.name}</h2>
                         <p style={{ margin: '3px 0 0', fontSize: '.78rem', color: 'var(--muted)' }}>{strategy.description}</p>
                       </div>
                       <span className={`aiModeBadge ${modeBadge.cls}`}>{strategy.enabled ? modeBadge.label : '⏸ Inactif'}</span>
@@ -13594,7 +13480,7 @@ export default function RobinApp() {
                   <div style={{ display: 'grid', gap: 8 }}>
                     <div className="infoPanel mutedPanel" style={{ margin: 0, display: 'grid', gap: 6 }}>
                       <div className="compactRow" style={{ margin: 0 }}>
-                        <strong>Portefeuille fictif Loto</strong>
+                        <strong>🎟️ Portefeuille fictif Loto</strong>
                         <span className={virtualAppsEnabled.loto ? 'statusBadge ok' : 'statusBadge warn'}>{virtualAppsEnabled.loto ? 'Actif' : 'Inactif'}</span>
                       </div>
                       <p style={{ margin: 0, fontSize: '.8rem', color: 'var(--muted)' }}>
@@ -13618,7 +13504,7 @@ export default function RobinApp() {
                           return (
                             <div key={`cockpit-loto-state-${portfolio.id}`} className="infoPanel mutedPanel" style={{ margin: 0, display: 'grid', gap: 6 }}>
                               <div className="compactRow" style={{ margin: 0 }}>
-                                <strong>{portfolio.label}</strong>
+                                <strong>🎟️ {portfolio.label}</strong>
                                 <span className={portfolio.status === 'active' ? 'statusBadge ok' : 'statusBadge idle'}>{portfolio.status === 'active' ? 'Connecté' : 'Disponible'}</span>
                               </div>
                               <p style={{ margin: 0, fontSize: '.8rem', color: 'var(--muted)' }}>
@@ -13843,7 +13729,7 @@ export default function RobinApp() {
               {lotoPortfolioMenuSelection === 'loto-virtual' ? (
                 <article className="featureCard">
                   <div className="cardHeader">
-                    <h2>Portefeuille fictif Loto</h2>
+                    <h2>🎟️ Portefeuille fictif Loto</h2>
                     <span>{virtualAppsEnabled.loto ? 'Actif' : 'Inactif'} · Solde {lotteryVirtualPortfolio.bankroll.toFixed(2)} €</span>
                   </div>
                   {!virtualAppsEnabled.loto ? (
@@ -13936,7 +13822,7 @@ export default function RobinApp() {
               ) : selectedLotoIntegrationPortfolio ? (
                 <article className="featureCard">
                   <div className="cardHeader">
-                    <h2>Portefeuille intégration · {selectedLotoIntegrationPortfolio.label}</h2>
+                    <h2>🎟️ Portefeuille intégration · {selectedLotoIntegrationPortfolio.label}</h2>
                     <span>{selectedLotoIntegrationPortfolio.providerName} · créé automatiquement depuis Options</span>
                   </div>
                   {(() => {
@@ -14144,7 +14030,7 @@ export default function RobinApp() {
                       return (
                         <article key={`loto-settings-integration-${portfolio.id}`} className="infoPanel mutedPanel" style={{ margin: 0, display: 'grid', gap: 10 }}>
                           <div className="compactRow" style={{ margin: 0 }}>
-                            <strong>{portfolio.label}</strong>
+                            <strong>🎟️ {portfolio.label}</strong>
                             <span className="metaPill">{portfolio.providerName}</span>
                           </div>
                           <label className="checkRow" style={{ margin: 0 }}>
@@ -14402,7 +14288,7 @@ export default function RobinApp() {
                   <span>{adminSection === 'approvals' ? 'Validation admin avant première connexion' : 'Roles, applications autorisées et activation des comptes'}</span>
                 </div>
                 {adminFeedback ? <p className="helperText">{adminFeedback}</p> : null}
-                {!user.mfa_enabled ? (
+                {!user?.mfa_enabled ? (
                   <div className="infoPanel">
                     <strong>MFA recommandée</strong>
                     <p>Activez MFA dans Configuration pour renforcer la sécurité de l’administration. Les actions admin restent disponibles, mais une session MFA reste recommandée pour les comptes sensibles.</p>
@@ -14772,7 +14658,7 @@ export default function RobinApp() {
                       );
                     })
                     )}
-                    </div>
+                      </div>
                 </>
               </article>
               ) : null}
@@ -14907,8 +14793,6 @@ export default function RobinApp() {
               ) : null}
             </section>
           ) : null}
-        </section>
-      )}
     </main>
   );
 }

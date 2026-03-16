@@ -9,13 +9,17 @@ type StatusTone = 'ok' | 'idle' | 'warn';
 type HomeTransactionRowLike = {
   id: string;
   appKey: HomeAppKey;
+  targetId: string;
+  lane: 'upcoming' | 'closed';
   title: string;
   portfolioLabel: string;
   date: string;
-  timestamp?: number;
+  timestamp: number;
+  amount: number | null;
   note: string;
   gainLoss: number | null;
-  taxes?: number;
+  taxes: number | null;
+  moodImpact: number;
 };
 
 type HomePortfolioPlanLike = {
@@ -38,10 +42,14 @@ type HomePortfolioActivityLike = {
 
 type HomePortfolioRowLike = {
   id: string;
+  appKey: HomeAppKey;
+  kind: 'real' | 'virtual';
+  source: 'portfolio' | 'strategy' | 'loto';
+  targetId: string;
   label: string;
   subtitle: string;
   valueLabel: string;
-  history: Array<{ value: number }>;
+  history: Array<{ date: string; value: number }>;
   statusLabel: string;
   statusTone: StatusTone;
   trendLabel: string;
@@ -88,6 +96,38 @@ const BOARD_SIGNAL_LABELS: Record<HomeAppKey, string> = {
   loto: 'FDJ',
 };
 
+const HOME_APP_ICONS: Record<HomeAppKey, string> = {
+  finance: '🏦',
+  betting: '⚽',
+  racing: '🏇',
+  loto: '🎟️',
+};
+
+function homeTransactionIcon(row: HomeTransactionRowLike) {
+  if (row.appKey === 'finance') {
+    const normalized = row.title.toLowerCase();
+    if (normalized.includes('achat') || normalized.includes('vente')) {
+      return normalized.includes('btc') || normalized.includes('eth') || normalized.includes('sol') || normalized.includes('crypto') ? '₿' : '📈';
+    }
+  }
+  return HOME_APP_ICONS[row.appKey];
+}
+
+function formatAmountEuro(value: number | null) {
+  if (value === null || Number.isNaN(value)) {
+    return 'n/d';
+  }
+  return `${value.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
+}
+
+function homePortfolioIcon(row: HomePortfolioRowLike) {
+  if (row.appKey === 'finance') {
+    const subtitle = `${row.subtitle} ${row.label}`.toLowerCase();
+    return subtitle.includes('action') || subtitle.includes('pea') ? '📈' : '₿';
+  }
+  return HOME_APP_ICONS[row.appKey];
+}
+
 function formatBoardTime(value: string) {
   const ts = Date.parse(value);
   if (!Number.isFinite(ts)) {
@@ -122,24 +162,19 @@ const PlannedTransactionRow = memo(function PlannedTransactionRow({ row, appLabe
   formatDateTimeFr: (value: string) => string;
   onOpenTransaction: (row: HomeTransactionRowLike) => void;
 }) {
-  const liveState = getBoardLiveState(row);
   return (
-    <button className={`homeBoardRow departures ${row.appKey}${liveState.isLive ? ' live' : liveState.isSoon ? ' soon' : ''}`} onClick={() => onOpenTransaction(row)} type="button">
-      <span className={`homeBoardSignal ${row.appKey}`}>{BOARD_SIGNAL_LABELS[row.appKey]}</span>
-      <span className="homeBoardSchedule">
-        <strong>{formatBoardTime(row.date)}</strong>
-        <small>{formatBoardDate(row.date)}</small>
+    <button className={`homeBoardRow minimal departures ${row.appKey}`} onClick={() => onOpenTransaction(row)} type="button">
+      <span className={`homeBoardSignal ${row.appKey}`}>{homeTransactionIcon(row)}</span>
+      <span className="homeBoardTextStack">
+        <span className="homeBoardLinePrimary">
+          <strong className="homeBoardTitle">{row.title}</strong>
+          <strong className="homeBoardAmount">{formatAmountEuro(row.amount)}</strong>
+        </span>
+        <span className="homeBoardLineSecondary">
+          <span>{appLabels[row.appKey]}</span>
+          <span>Prévue {formatDateTimeFr(row.date)}</span>
+        </span>
       </span>
-      <span className={`homeBoardStatus ${liveState.isLive ? 'live' : liveState.isSoon ? 'soon' : ''}`}>{liveState.isLive ? 'LIVE' : liveState.isSoon ? 'À QUAI' : 'PRÉVU'}</span>
-      <span className="homeBoardRoute">
-        <strong className="homeBoardTitle">{row.title}</strong>
-        <small>{row.portfolioLabel}</small>
-      </span>
-      <span className="homeBoardMeta">
-        <span className="homeBoardLane">{appLabels[row.appKey]}</span>
-        <span className="homeBoardForecast">Prévision {formatDateTimeFr(row.date)}</span>
-      </span>
-      <span className="homeBoardNote">{row.note}</span>
     </button>
   );
 });
@@ -152,24 +187,18 @@ const SettledTransactionRow = memo(function SettledTransactionRow({ row, formatD
   onOpenTransaction: (row: HomeTransactionRowLike) => void;
 }) {
   return (
-    <button className={`homeBoardRow settled ${row.appKey}`} onClick={() => onOpenTransaction(row)} type="button">
-      <span className={`homeBoardSignal ${row.appKey}`}>{BOARD_SIGNAL_LABELS[row.appKey]}</span>
-      <span className="homeBoardSchedule">
-        <strong>{formatBoardTime(row.date)}</strong>
-        <small>{formatBoardDate(row.date)}</small>
-      </span>
-      <span className="homeBoardStatus done">TERMINÉ</span>
-      <span className="homeBoardRoute">
-        <strong className="homeBoardTitle">{row.title}</strong>
-        <small>{row.portfolioLabel}</small>
-      </span>
-      <span className="homeBoardMeta">
-        <span className="homeBoardLane">{row.note}</span>
-        <span className="homeBoardForecast">Clôturé {formatDateTimeFr(row.date)}</span>
-      </span>
-      <span className="homeBoardResult">
-        <span className={`homeBoardPnl ${numericChangeTone(row.gainLoss)}`}>{formatSignedEuro(row.gainLoss, '0.00 €')}</span>
-        <span className="homeBoardTax">Frais+Impôts {(row.taxes ?? 0).toFixed(2)} €</span>
+    <button className={`homeBoardRow minimal settled ${row.appKey}`} onClick={() => onOpenTransaction(row)} type="button">
+      <span className={`homeBoardSignal ${row.appKey}`}>{homeTransactionIcon(row)}</span>
+      <span className="homeBoardTextStack">
+        <span className="homeBoardLinePrimary">
+          <span className="homeBoardDateLabel">{formatBoardDate(row.date)} · {formatBoardTime(row.date)}</span>
+          <strong className="homeBoardTitle">{row.title}</strong>
+          <strong className="homeBoardAmount">{formatAmountEuro(row.amount)}</strong>
+        </span>
+        <span className="homeBoardLineSecondary">
+          <span className={`homeBoardPnl ${numericChangeTone(row.gainLoss)}`}>Gains/Pertes {formatSignedEuro(row.gainLoss, '0.00 €')}</span>
+          <span className="homeBoardTax">Taxe & impôts {(row.taxes ?? 0).toFixed(2)} €</span>
+        </span>
       </span>
     </button>
   );
@@ -198,8 +227,8 @@ const PortfolioCard = memo(function PortfolioCard({
     <article className={`homePortfolioCard ${variant}`} onClick={() => onOpenPortfolio(row)} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpenPortfolio(row); } }}>
       <div className="homePortfolioTop">
         <div>
-          <strong>{row.label}</strong>
-          <p>{row.subtitle}</p>
+          <strong>{homePortfolioIcon(row)} {row.label}</strong>
+          <p>{HOME_APP_ICONS[row.appKey]} {row.subtitle}</p>
         </div>
         <div className="homePortfolioBadges">
           <button className={`homePortfolioBadgeButton portfolioTypeBadge ${variant}`} onClick={(event) => { event.stopPropagation(); onOpenPortfolio(row); }} type="button">{variant === 'real' ? 'Cumulé' : 'Simulation'}</button>
@@ -277,7 +306,7 @@ function HomeOverviewComponent({
       <section className="homeBoardGrid" id="home-overview-stream" style={{ gridColumn: '1 / -1' }}>
         <article className="featureCard homeBoardPanel planned" id="home-overview-planned">
           <div className="cardHeader">
-            <h2>Départs prévus</h2>
+            <h2>Transactions à venir</h2>
             <span>{homeUpcomingTransactions48h.length} circulation(s) · horizon 48h</span>
           </div>
           {homeUpcomingTransactions48h.length === 0 ? <p className="helperText" style={{ margin: 0 }}>Aucune transaction planifiée dans les 48 prochaines heures.</p> : <div className="homeBoardList">{homeUpcomingTransactions48h.map((row) => <PlannedTransactionRow appLabels={appLabels} formatDateTimeFr={formatDateTimeFr} key={row.id} onOpenTransaction={onOpenTransaction} row={row} />)}</div>}
@@ -285,7 +314,7 @@ function HomeOverviewComponent({
 
         <article className="featureCard homeBoardPanel settled" id="home-overview-settled">
           <div className="cardHeader">
-            <h2>Arrivées récentes</h2>
+            <h2>Transactions terminées</h2>
             <span>{homeClosedTransactions.length} circulation(s)</span>
           </div>
           {homeClosedTransactions.length === 0 ? <p className="helperText" style={{ margin: 0 }}>Aucune transaction réalisée récente.</p> : <div className="homeBoardList compact">{homeClosedTransactions.map((row) => <SettledTransactionRow formatDateTimeFr={formatDateTimeFr} formatSignedEuro={formatSignedEuro} key={row.id} numericChangeTone={numericChangeTone} onOpenTransaction={onOpenTransaction} row={row} />)}</div>}
