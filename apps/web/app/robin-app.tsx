@@ -1787,7 +1787,7 @@ function buildAllPortfolios(
       vpPnl > 0
         ? { kind: 'hold', text: `Performance actuelle : +${vpPnl.toFixed(2)} € (+${(vp.roi >= 0 ? '+' : '')}${(vp.roi).toFixed(1)}%). L IA surperforme.` }
         : vpPnl < 0
-          ? { kind: 'sell', text: `Sous-performance virtuelle : ${vpPnl.toFixed(2)} €. L IA ajuste sa stratégie sans impact réel.` }
+          ? { kind: 'sell', text: `Sous-performance virtuelle : ${vpPnl.toFixed(2)} €. L IA ajuste son portefeuille sans impact réel.` }
           : { kind: 'info', text: 'Aucune activité virtuelle pour l instant. Activez l IA pour simuler des transactions Bitcoin.' },
     ],
     allocation: vp.strategy_mix.length > 0
@@ -4441,6 +4441,10 @@ export default function RobinApp() {
       }
     } finally {
       clearSession();
+      // Reload page to show login screen
+      setTimeout(() => {
+        window.location.reload();
+      }, 100);
     }
   }
 
@@ -4996,15 +5000,34 @@ export default function RobinApp() {
   function scrollToSection(sectionId: string) {
     const section = document.getElementById(sectionId);
     if (!section) {
+      console.warn(`Section not found: ${sectionId}`);
       return;
     }
-    section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Measure sticky header
+    const header = document.querySelector('.heroTopbar') as HTMLElement | null;
+    const headerH = header ? header.offsetHeight : 100;
+    // Add extra offset for safety
+    const extraOffset = 12;
+    const totalOffset = headerH + extraOffset;
+    const scrollTop = section.getBoundingClientRect().top + window.scrollY - totalOffset;
+    window.scrollTo({ top: Math.max(0, scrollTop), behavior: 'smooth' });
   }
 
-  function scrollToSectionSoon(sectionId: string) {
+  function scrollToSectionSoon(sectionId: string, attempts = 10) {
+    const tryScroll = (remaining: number) => {
+      const section = document.getElementById(sectionId);
+      if (section) {
+        scrollToSection(sectionId);
+        return;
+      }
+      if (remaining <= 0) {
+        return;
+      }
+      window.requestAnimationFrame(() => tryScroll(remaining - 1));
+    };
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
-        scrollToSection(sectionId);
+        tryScroll(attempts);
       });
     });
   }
@@ -5022,11 +5045,7 @@ export default function RobinApp() {
   function openAccountWorkspace(sectionId?: string) {
     clearViewSelections();
     setAppView('account');
-    if (sectionId) {
-      scrollToSectionSoon(sectionId);
-      return;
-    }
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    scrollToSectionSoon(sectionId ?? 'account-profile');
   }
 
   function openAdminWorkspace() {
@@ -5191,12 +5210,25 @@ export default function RobinApp() {
     + (virtualAppsEnabled.betting ? (historyValueDelta(topbarBettingVirtualStrategy?.history ?? [], 7) ?? 0) : 0)
     + (virtualAppsEnabled.racing ? (historyValueDelta(topbarRacingVirtualStrategy?.history ?? [], 7) ?? 0) : 0)
     + topbarLotteryVirtualTrend;
+  const topbarVirtualTrendBase = topbarVirtualValue - topbarVirtualTrendAmount;
+  const topbarVirtualTrendPct = topbarVirtualTrendBase > 0
+    ? (topbarVirtualTrendAmount / topbarVirtualTrendBase) * 100
+    : null;
   const topbarVirtualTrendTone = numericChangeTone(topbarVirtualTrendAmount);
   const topbarProgressLabel = loading
     ? `Chargement ${topbarProgressPct}%`
     : `${goalProgress >= 0 ? '+' : ''}${Math.round(goalProgress * 100)}% vs cible`;
   const topbarRealTrendLabel = `24h ${evolution24h.value}`;
-  const topbarVirtualTrendLabel = `Tendance ${formatSignedEuro(topbarVirtualTrendAmount, 'n/d')}`;
+  const topbarVirtualTrendLabel = topbarVirtualTrendPct !== null
+    ? `Tendance ${formatSignedEuro(topbarVirtualTrendAmount, 'n/d')} (${topbarVirtualTrendPct >= 0 ? '+' : ''}${topbarVirtualTrendPct.toFixed(1)}%)`
+    : `Tendance ${formatSignedEuro(topbarVirtualTrendAmount, 'n/d')}`;
+  const objectiveDeadlineLabel = goalBaseTs !== null
+    ? new Date(goalBaseTs + goalWindowMs).toLocaleDateString('fr-FR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    })
+    : 'n/d';
   const portfolioEvolutionRows = visiblePortfolios.map((portfolio) => ({
     id: portfolio.id,
     label: portfolio.label,
@@ -5694,7 +5726,7 @@ export default function RobinApp() {
       return [
         { key: 'paris', label: 'Paris en ligne', onClick: openParisParentMenu },
         { key: `paris-${topbarParisActiveApp}`, label: topbarParisActiveApp === 'betting' ? 'Paris sportifs' : topbarParisActiveApp === 'racing' ? 'Paris hippiques' : 'Loto', onClick: () => openParisTopbarBranch(topbarParisActiveApp) },
-        { key: `paris-view-${appView}`, label: appView === 'settings' ? 'Options' : topbarParisActiveApp === 'loto' && appView === 'portfolios' ? 'Portefeuilles' : appView === 'strategies' ? 'Stratégies' : 'Cockpit', active: true },
+        { key: `paris-view-${appView}`, label: appView === 'settings' ? 'Options' : topbarParisActiveApp === 'loto' && appView === 'portfolios' ? 'Portefeuilles' : appView === 'strategies' ? 'Portefeuilles' : 'Cockpit', active: true },
       ];
     }
     if (currentHeaderSection === 'account') {
@@ -5834,7 +5866,7 @@ export default function RobinApp() {
         source: 'strategy',
         targetId: strategy.id,
         label: strategy.name,
-        subtitle: `Paris sportifs · ${strategy.isVirtual ? 'simulation' : 'strategie reelle'}`,
+        subtitle: `Paris sportifs · ${strategy.isVirtual ? 'simulation' : 'portefeuille reel'}`,
         history: strategy.history,
         valueLabel: `${strategy.bankroll.toFixed(0)} €`,
         statusLabel: strategy.enabled ? 'Actif' : 'Inactif',
@@ -5854,7 +5886,7 @@ export default function RobinApp() {
         source: 'strategy',
         targetId: strategy.id,
         label: strategy.name,
-        subtitle: `Paris hippiques · ${strategy.isVirtual ? 'simulation' : 'strategie reelle'}`,
+        subtitle: `Paris hippiques · ${strategy.isVirtual ? 'simulation' : 'portefeuille reel'}`,
         history: strategy.history,
         valueLabel: `${strategy.bankroll.toFixed(0)} €`,
         statusLabel: strategy.enabled ? 'Actif' : 'Inactif',
@@ -8437,7 +8469,16 @@ export default function RobinApp() {
       });
     }, 1200);
     return () => window.clearTimeout(timer);
-  }, [racingStrategies, accessToken, user, settingsForm.fullName, settingsForm.phoneNumber]);
+  }, [
+    racingStrategies,
+    accessToken,
+    user,
+    settingsForm.fullName,
+    settingsForm.phoneNumber,
+    virtualAppsEnabled,
+    lotteryVirtualPortfolio,
+    portfolioActivation,
+  ]);
 
   useEffect(() => {
     setBettingStrategies((prev) => prev.map((strategy) => {
@@ -8874,40 +8915,77 @@ export default function RobinApp() {
                 <span>Admin connecte: {user.full_name}</span>
               </div>
             ) : null}
-            <div className="smallPill">{user.full_name}</div>
-            <button className="ghostButton" onClick={handleLogout} type="button">
-              Se deconnecter
-            </button>
+            <button className={appView === 'account' ? 'appSwitchBtn account active' : 'appSwitchBtn account'} onClick={() => openAccountWorkspace('account-overview')} type="button">👤 Mon compte</button>
+            <button className="appSwitchBtn" onClick={handleLogout} type="button">↪ Se deconnecter</button>
           </div>
         ) : null}
-        {user ? (
-          <div className="topbarUniverseProgressRow">
-            <div className="topbarMenuDock">
-              <TopbarNavigation
-                activeApp={activeApp}
-                adminSection={adminSection}
-                allowedApps={allowedApps}
-                animationKey={topbarNavAnimationKey}
-                appView={appView}
-                canAccessAdmin={canAccessAdmin}
-                currentHeaderSection={currentHeaderSection}
-                financeSubApp={financeSubApp}
-                hasParisApps={hasParisApps}
-                onAdminSectionChange={setAdminSection}
-                openAccountWorkspace={openAccountWorkspace}
-                openAdminWorkspace={openAdminWorkspace}
-                openFinanceParentMenu={openFinanceParentMenu}
-                openFinanceTopbarBranch={openFinanceTopbarBranch}
-                openFinanceTopbarView={openFinanceTopbarView}
-                openHomeParentMenu={openHomeParentMenu}
-                openOverviewSection={openOverviewSection}
-                openParisParentMenu={openParisParentMenu}
-                openParisTopbarBranch={openParisTopbarBranch}
-                openParisTopbarView={openParisTopbarView}
-                topbarParisActiveApp={topbarParisActiveApp}
-              />
+        <div className="topbarUniverseProgressRow">
+          <div className="topbarMenuDock">
+            <div className="topbarKpis topbarKpisLeft">
+              <button
+                className={`smallPill selectedPortfolioPill topbarTrendPill topbarTrendPillReal ${evolution24h.tone}`}
+                onClick={() => {
+                  setSelectedInsight({
+                    id: 'topbar-real-24h',
+                    title: 'Valeur réelle active',
+                    value: `${topbarRealValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`,
+                    trend: `${evolution24h.tone === 'up' ? '↑' : evolution24h.tone === 'down' ? '↓' : '→'} Variation 24h ${evolution24h.value}`,
+                    detail: 'Somme des portefeuilles réels actifs avec indicateur de variation consolidée sur 24h.',
+                    section: 'indicator',
+                  });
+                  window.scrollTo({ top: 120, behavior: 'smooth' });
+                }}
+                type="button"
+              >
+                <span className="topbarTrendTitle"><span className="topbarObjectiveDot" aria-hidden="true" />Réels {topbarRealValue.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €</span>
+                <span className={`topbarTrendValue ${evolution24h.tone}`}>{topbarRealTrendLabel}</span>
+              </button>
+              <button
+                className={`smallPill selectedPortfolioPill topbarTrendPill topbarTrendPillVirtual ${topbarVirtualTrendTone}`}
+                onClick={() => {
+                  setSelectedInsight({
+                    id: 'topbar-virtual-live',
+                    title: 'Valeur portefeuilles fictifs actifs',
+                    value: `${topbarVirtualValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`,
+                    trend: `${topbarVirtualTrendTone === 'up' ? '↑' : topbarVirtualTrendTone === 'down' ? '↓' : '→'} ${topbarVirtualTrendLabel}`,
+                    detail: 'Somme des portefeuilles fictifs actifs: Finance, Paris en ligne, Hippiques et Loto.',
+                    section: 'indicator',
+                  });
+                  window.scrollTo({ top: 120, behavior: 'smooth' });
+                }}
+                type="button"
+              >
+                <span className="topbarTrendTitle"><span className="topbarObjectiveDot" aria-hidden="true" />Fictifs {topbarVirtualValue.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €</span>
+                <span className={`topbarTrendValue ${topbarVirtualTrendTone}`}>{topbarVirtualTrendLabel}</span>
+              </button>
             </div>
-            <div className="topbarProgressDock">
+            <TopbarNavigation
+              activeApp={activeApp}
+              adminSection={adminSection}
+              allowedApps={allowedApps}
+              animationKey={topbarNavAnimationKey}
+              appView={appView}
+              canAccessAdmin={canAccessAdmin}
+              currentHeaderSection={currentHeaderSection}
+              financeSubApp={financeSubApp}
+              hasParisApps={hasParisApps}
+              onLogout={handleLogout}
+              onAdminSectionChange={setAdminSection}
+              openAccountWorkspace={openAccountWorkspace}
+              openAdminWorkspace={openAdminWorkspace}
+              openFinanceParentMenu={openFinanceParentMenu}
+              openFinanceTopbarBranch={openFinanceTopbarBranch}
+              openFinanceTopbarView={openFinanceTopbarView}
+              openHomeParentMenu={openHomeParentMenu}
+              openOverviewSection={openOverviewSection}
+              openParisParentMenu={openParisParentMenu}
+              openParisTopbarBranch={openParisTopbarBranch}
+              openParisTopbarView={openParisTopbarView}
+              topbarParisActiveApp={topbarParisActiveApp}
+            />
+          </div>
+          {appView !== 'account' ? (
+          <div className="topbarProgressDock">
               <div
                 className={`trendArrowTrack ${batteryTone} ${topbarProgressRatio >= 0.99 ? 'achieved' : ''}`}
                 aria-hidden="true"
@@ -8933,6 +9011,7 @@ export default function RobinApp() {
                   <div className="batteryTimelineRail">
                     <div className="batteryTimelineProgress" />
                     <div className="batteryTimelineMascot" aria-hidden="true">🏃</div>
+                    <div className="batteryTimelineFinishDate">Arrivee: {objectiveDeadlineLabel}</div>
                   </div>
                   <div
                     className={`batteryDelayInfo ${loading ? 'loading' : topbarDelayConsumedPct >= 100 ? 'done' : topbarDelayConsumedPct >= 75 ? 'warn' : 'ok'}`}
@@ -8941,47 +9020,9 @@ export default function RobinApp() {
                   </div>
                 </div>
               </div>
-              <div className="topbarKpis">
-                <button
-                  className={`smallPill selectedPortfolioPill topbarTrendPill ${evolution24h.tone}`}
-                  onClick={() => {
-                    setSelectedInsight({
-                      id: 'topbar-real-24h',
-                      title: 'Valeur réelle active',
-                      value: `${topbarRealValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`,
-                      trend: `${evolution24h.tone === 'up' ? '↑' : evolution24h.tone === 'down' ? '↓' : '→'} Variation 24h ${evolution24h.value}`,
-                      detail: 'Somme des portefeuilles réels actifs avec indicateur de variation consolidée sur 24h.',
-                      section: 'indicator',
-                    });
-                    window.scrollTo({ top: 120, behavior: 'smooth' });
-                  }}
-                  type="button"
-                >
-                  <span className="topbarTrendTitle"><span className="topbarObjectiveDot" aria-hidden="true" />Réels {topbarRealValue.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €</span>
-                  <span className={`topbarTrendValue ${evolution24h.tone}`}>{topbarRealTrendLabel}</span>
-                </button>
-                <button
-                  className={`smallPill selectedPortfolioPill topbarTrendPill ${topbarVirtualTrendTone}`}
-                  onClick={() => {
-                    setSelectedInsight({
-                      id: 'topbar-virtual-live',
-                      title: 'Valeur portefeuilles fictifs actifs',
-                      value: `${topbarVirtualValue.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`,
-                      trend: `${topbarVirtualTrendTone === 'up' ? '↑' : topbarVirtualTrendTone === 'down' ? '↓' : '→'} ${topbarVirtualTrendLabel}`,
-                      detail: 'Somme des portefeuilles fictifs actifs: Finance, Paris en ligne, Hippiques et Loto.',
-                      section: 'indicator',
-                    });
-                    window.scrollTo({ top: 120, behavior: 'smooth' });
-                  }}
-                  type="button"
-                >
-                  <span className="topbarTrendTitle"><span className="topbarObjectiveDot" aria-hidden="true" />Fictifs {topbarVirtualValue.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €</span>
-                  <span className={`topbarTrendValue ${topbarVirtualTrendTone}`}>{topbarVirtualTrendLabel}</span>
-                </button>
-              </div>
-            </div>
           </div>
-        ) : null}
+          ) : null}
+        </div>
       </header>
 
       {user ? <AppBreadcrumbs items={breadcrumbItems} /> : null}
@@ -9123,6 +9164,8 @@ export default function RobinApp() {
               globalAgentConfig={getAgentConfig(GLOBAL_AGENT_CONFIG_KEY)}
               goalPeriodLabel={goalPeriodLabel}
               goalTargetNet={goalTargetNet}
+              loadingMyActivity={loadingMyActivity}
+              myActivityTrail={myActivityTrail}
               objectiveEstimatedLoss={objectiveEstimatedLoss}
               onApplyRiskProfilePreset={applyRiskProfileAgentPreset}
               onDeleteAccountRequest={() => setError('Suppression libre-service non disponible pour le moment. Faites-en la demande à un administrateur depuis le support.')}
@@ -9177,7 +9220,7 @@ export default function RobinApp() {
                   <span style={{ fontSize: '1.5rem' }}>⚗️</span>
                   <div>
                     <strong>Bac à sable virtuel — 100 € simulés</strong>
-                    <p style={{ margin: '4px 0 0', fontSize: '.82rem' }}>Ce portefeuille est un espace d entraînement sans argent réel. Robin IA teste ici ses stratégies avant de vous les proposer sur vos vrais portefeuilles. Utilisez-le pour évaluer ses performances et vous familiariser avec l application.</p>
+                    <p style={{ margin: '4px 0 0', fontSize: '.82rem' }}>Ce portefeuille est un espace d entraînement sans argent réel. Robin IA teste ici ses allocations de portefeuille avant de vous les proposer sur vos vrais portefeuilles. Utilisez-le pour évaluer ses performances et vous familiariser avec l application.</p>
                     <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                       <span className="metaPill">Budget initial : {selectedPortfolio.budget.toFixed(0)} €</span>
                       <span className="metaPill">Valeur actuelle : {selectedPortfolio.current_value.toFixed(2)} €</span>
@@ -10785,7 +10828,7 @@ export default function RobinApp() {
                   <div style={{ display: 'grid', gap: 12 }}>
                     <div className="infoPanel" style={{ background: 'rgba(250,200,40,.08)', border: '1px solid rgba(250,200,40,.3)', borderRadius: 8, padding: '10px 14px' }}>
                       <strong>Actif par défaut — aucune intégration requise</strong>
-                      <p style={{ margin: '4px 0 0', fontSize: '.8rem' }}>Robin IA dispose d'un portefeuille bac à sable de <strong>100 €</strong> pour tester ses stratégies sans risque. Il est toujours disponible, même sans connecteur bancaire.</p>
+                      <p style={{ margin: '4px 0 0', fontSize: '.8rem' }}>Robin IA dispose d'un portefeuille bac à sable de <strong>100 €</strong> pour tester ses allocations de portefeuille sans risque. Il est toujours disponible, même sans connecteur bancaire.</p>
                     </div>
                     {(() => {
                       const vp = allPortfolios.find((p) => p.type === 'virtual');
@@ -11570,12 +11613,12 @@ export default function RobinApp() {
                       <div className="heroKpiItem">
                         <span>Bankroll totale</span>
                         <strong>{totalBankroll.toLocaleString('fr-FR')} €</strong>
-                        <small style={{ color: 'var(--ok)' }}>{activeStrategies} stratégie(s) active(s)</small>
+                        <small style={{ color: 'var(--ok)' }}>{activeStrategies} portefeuille(s) actif(s)</small>
                       </div>
                       <div className="heroKpiItem">
                         <span>ROI moyen</span>
                         <strong className={roiToShow >= 0 ? 'up' : ''}>{roiToShow >= 0 ? '+' : ''}{roiToShow.toFixed(1)} %</strong>
-                        <small>{bettingAnalytics ? 'backend analytics' : 'sur toutes les stratégies'}</small>
+                        <small>{bettingAnalytics ? 'backend analytics' : 'sur tous les portefeuilles'}</small>
                       </div>
                       <div className="heroKpiItem">
                         <span>Win Rate global</span>
@@ -11794,7 +11837,7 @@ export default function RobinApp() {
                   <article className="featureCard" style={{ gridColumn: '1 / -1' }}>
                     <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
                       <strong>Aucun portefeuille de paris actif</strong>
-                      <p>Activez une stratégie ou le portefeuille fictif pour alimenter ce cockpit.</p>
+                      <p>Activez un portefeuille ou le portefeuille fictif pour alimenter ce cockpit.</p>
                     </div>
                   </article>
                 ) : (
@@ -11984,10 +12027,10 @@ export default function RobinApp() {
                 <article className="featureCard dynamicChartCard">
                   <div className="cardHeader">
                     <h2>Répartition bankroll</h2>
-                    <span>{bettingBankrollDistribution.length} stratégie(s)</span>
+                    <span>{bettingBankrollDistribution.length} portefeuille(s)</span>
                   </div>
                   {bettingBankrollDistribution.length === 0 ? (
-                    <p className="helperText">Aucune stratégie active actuellement.</p>
+                    <p className="helperText">Aucun portefeuille actif actuellement.</p>
                   ) : (
                     <>
                       <div className="stackedBarTrack betting">
@@ -12011,7 +12054,7 @@ export default function RobinApp() {
                 <article className="featureCard dynamicChartCard">
                   <div className="cardHeader">
                     <h2>Forme 7 jours</h2>
-                    <span>Évolution des stratégies</span>
+                    <span>Évolution des portefeuilles</span>
                   </div>
                   <div className="barRowsGrid">
                     {bettingRoiMomentum.map((row) => (
@@ -12029,7 +12072,7 @@ export default function RobinApp() {
                 <article className="featureCard dynamicChartCard">
                   <div className="cardHeader">
                     <h2>Cadence des paris 7 jours</h2>
-                    <span>Toutes stratégies confondues</span>
+                    <span>Tous portefeuilles confondus</span>
                   </div>
                   <div className="activityColumns">
                     {bettingActivity7d.map((row) => (
@@ -12135,7 +12178,7 @@ export default function RobinApp() {
                   </div>
                 ) : (
                   <table className="txLogTable">
-                    <thead><tr><th>Date & heure</th><th>Stratégie</th><th>Sport</th><th>Événement</th><th>Marché</th><th>Cote</th><th>Mise</th><th>Statut</th></tr></thead>
+                    <thead><tr><th>Date & heure</th><th>Portefeuille</th><th>Sport</th><th>Événement</th><th>Marché</th><th>Cote</th><th>Mise</th><th>Statut</th></tr></thead>
                     <tbody>
                       {activeBettingBets.slice(0, 15).map((bet) => (
                         <tr key={bet.id}>
@@ -12156,7 +12199,7 @@ export default function RobinApp() {
 
               {/* === Recent bets table === */}
               <article id="betting-recent-detail" className={`featureCard ${bettingDetailFocus === 'recent' ? 'bettingDetailCardFocused' : ''}`} style={{ gridColumn: '1 / -1' }}>
-                <div className="cardHeader"><h2>Paris récents</h2><span>Historique consolidé de toutes les stratégies</span></div>
+                <div className="cardHeader"><h2>Paris récents</h2><span>Historique consolidé de tous les portefeuilles</span></div>
                 <table className="txLogTable">
                   <thead><tr><th>Date du pari</th><th>Clôture / résultat</th><th>Sport</th><th>Événement</th><th>Marché</th><th>Cote</th><th>Mise</th><th>Résultat</th><th>Profit</th></tr></thead>
                   <tbody>
@@ -12216,7 +12259,7 @@ export default function RobinApp() {
 
               {/* Tipster AI mode selector — same pattern as Robin Finance */}
               <article className="featureCard">
-                <div className="cardHeader"><h2>Mode de pilotage</h2><span>Comment Tipster IA intervient sur cette stratégie</span></div>
+                <div className="cardHeader"><h2>Mode de pilotage</h2><span>Comment Tipster IA intervient sur ce portefeuille</span></div>
                 <div className="compactRow" style={{ marginBottom: 10 }}>
                   <span style={{ fontSize: '.82rem' }}>Mode actif</span>
                   <span className={`metaPill ${selectedStrategy.mode === 'autonomous' ? 'up' : selectedStrategy.mode === 'supervised' ? '' : 'neutral'}`}>
@@ -12341,7 +12384,7 @@ export default function RobinApp() {
 
               {/* Paris récents de la stratégie */}
               <article className="featureCard">
-                <div className="cardHeader"><h2>Paris de la stratégie</h2><span>Historique {selectedStrategy.name}</span></div>
+                <div className="cardHeader"><h2>Paris du portefeuille</h2><span>Historique {selectedStrategy.name}</span></div>
                 {selectedStrategy.recentBets.length === 0 ? (
                   <div className="emptyState"><span className="emptyStateIcon">📋</span><p className="emptyStateTitle">Aucun pari enregistré</p><p className="emptyStateText">Les paris validés via Tipster IA ou placés manuellement apparaîtront ici.</p></div>
                 ) : (
@@ -12372,9 +12415,9 @@ export default function RobinApp() {
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
                 <div>
                   <p className="sectionTag" style={{ marginBottom: 4 }}>Paris en ligne</p>
-                  <h1 style={{ fontSize: '1.5rem', margin: 0 }}>Portefeuilles &amp; stratégies</h1>
+                  <h1 style={{ fontSize: '1.5rem', margin: 0 }}>Portefeuilles</h1>
                 </div>
-                <button className="primaryButton" onClick={() => setBettingAlert('Création de stratégie — fonctionnalité bientôt disponible.')} type="button">+ Nouvelle stratégie</button>
+                <button className="primaryButton" onClick={() => setBettingAlert('Création de portefeuille — fonctionnalité bientôt disponible.')} type="button">+ Nouveau portefeuille</button>
               </div>
 
               {bettingStrategies.map((strategy) => {
@@ -12589,8 +12632,8 @@ export default function RobinApp() {
                   const activeStrategies = racingStrategies.filter((strategy) => strategy.enabled).length;
                   return (
                     <>
-                      <div className="heroKpiItem"><span>Bankroll totale</span><strong>{totalBankroll.toLocaleString('fr-FR')} €</strong><small style={{ color: 'var(--ok)' }}>{activeStrategies} stratégie(s) active(s)</small></div>
-                      <div className="heroKpiItem"><span>ROI moyen</span><strong className={avgRoi >= 0 ? 'up' : ''}>{avgRoi >= 0 ? '+' : ''}{avgRoi.toFixed(1)} %</strong><small>sur toutes les stratégies</small></div>
+                      <div className="heroKpiItem"><span>Bankroll totale</span><strong>{totalBankroll.toLocaleString('fr-FR')} €</strong><small style={{ color: 'var(--ok)' }}>{activeStrategies} portefeuille(s) actif(s)</small></div>
+                      <div className="heroKpiItem"><span>ROI moyen</span><strong className={avgRoi >= 0 ? 'up' : ''}>{avgRoi >= 0 ? '+' : ''}{avgRoi.toFixed(1)} %</strong><small>sur tous les portefeuilles</small></div>
                       <div className="heroKpiItem"><span>Win Rate global</span><strong>{globalWinRate.toFixed(0)} %</strong><small>{totalWon} / {totalBets} paris</small></div>
                       <div className="heroKpiItem"><span>Signaux IA</span><strong>{racingPendingSignalsDisplay.length}</strong><small>en attente</small></div>
                     </>
@@ -12729,10 +12772,6 @@ export default function RobinApp() {
                         type="checkbox"
                         checked={virtualAppsEnabled.racing}
                         onChange={(event) => {
-                          if (event.target.checked && !activeRacingVirtualStrategy.ai_enabled) {
-                            setBettingAlert('Activez d abord l agent IA hippique pour pouvoir activer le portefeuille fictif.');
-                            return;
-                          }
                           void updateVirtualAppPreference('racing', event.target.checked);
                         }}
                       />
@@ -12866,7 +12905,7 @@ export default function RobinApp() {
               </article>
 
               <article className="featureCard">
-                <div className="cardHeader"><h2>Synthèse portefeuilles hippiques</h2><span>{racingStrategies.length} stratégie(s)</span></div>
+                <div className="cardHeader"><h2>Synthèse portefeuilles hippiques</h2><span>{racingStrategies.length} portefeuille(s)</span></div>
                 <div style={{ display: 'grid', gap: 10 }}>
                   {racingStrategies.map((strategy) => (
                     <div key={strategy.id} className="compactRow" style={{ alignItems: 'center' }}>
@@ -13116,7 +13155,7 @@ export default function RobinApp() {
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
                 <div>
                   <p className="sectionTag" style={{ marginBottom: 4 }}>Paris hippiques</p>
-                  <h1 style={{ fontSize: '1.5rem', margin: 0 }}>Portefeuilles &amp; stratégies</h1>
+                  <h1 style={{ fontSize: '1.5rem', margin: 0 }}>Portefeuilles</h1>
                 </div>
               </div>
               {racingStrategies.map((strategy) => {

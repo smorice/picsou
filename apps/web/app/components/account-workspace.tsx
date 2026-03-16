@@ -43,6 +43,13 @@ type AccountWorkspaceProps = {
   aiManagedCount: number;
   aiManagedAmount: number;
   totalLossAmount: number;
+  myActivityTrail: Array<{
+    id: string;
+    event_type: string;
+    severity: string;
+    created_at: string;
+  }>;
+  loadingMyActivity: boolean;
   goalTargetNet: number;
   goalPeriodLabel: string;
   objectiveEstimatedLoss: number;
@@ -87,6 +94,8 @@ function AccountWorkspaceComponent({
   aiManagedCount,
   aiManagedAmount,
   totalLossAmount,
+  myActivityTrail,
+  loadingMyActivity,
   goalTargetNet,
   goalPeriodLabel,
   objectiveEstimatedLoss,
@@ -186,6 +195,30 @@ function AccountWorkspaceComponent({
             <button className="ghostButton danger" onClick={onDeleteAccountRequest} type="button">Demander la suppression</button>
           </div>
         </div>
+      </article>
+
+      <article className="featureCard accountWorkspaceCard" id="account-history">
+        <div className="cardHeader">
+          <h2>Mon historique</h2>
+          <span>Dernières activités du compte</span>
+        </div>
+        {loadingMyActivity ? (
+          <p className="helperText">Chargement de l historique...</p>
+        ) : myActivityTrail.length === 0 ? (
+          <p className="helperText">Aucun événement disponible pour le moment.</p>
+        ) : (
+          <div className="auditTimeline">
+            {myActivityTrail.slice(0, 12).map((entry) => (
+              <div className="auditEntry" key={`account-history-${entry.id}`}>
+                <div className="auditDot" />
+                <div>
+                  <strong>{entry.event_type.replaceAll('_', ' ')}</strong>
+                  <span>{new Date(entry.created_at).toLocaleString('fr-FR')} · {entry.severity}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </article>
 
       <article className="featureCard accountWorkspaceCard" id="account-objective">
