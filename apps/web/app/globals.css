@@ -182,12 +182,23 @@ h1,h2,h3,p { margin:0; }
   min-height: 46px;
 }
 
-.brandCluster { 
-  display: flex; 
-  align-items: flex-start; 
-  gap: 12px;
+.brandRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
   flex: 0 0 auto;
   order: 1;
+}
+.brandCluster { 
+  display: flex; 
+  align-items: center; 
+  gap: 12px;
+  flex: 0 0 auto;
+}
+.appSwitchBtn.logoutBtn {
+  font-size: .78rem;
+  padding: 6px 12px;
+  opacity: 0.85;
 }
 .brandBadge {
   width:40px; height:40px; border-radius:14px; flex-shrink:0;

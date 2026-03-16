@@ -8954,32 +8954,37 @@ export default function RobinApp() {
         <span>🎟️ LOTO</span>
       </div>
       <header className="heroTopbar">
-        <div className="brandCluster">
-          <div className="brandBadge" aria-hidden="true">
-            <svg width="30" height="30" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <rect x="4" y="4" width="92" height="92" rx="30" fill="#fff5e9" stroke="#7a3412" strokeWidth="4"/>
-              <path d="M18 45 L36 18 L42 46 Z" fill="#f97316" stroke="#9a3412" strokeWidth="3" strokeLinejoin="round"/>
-              <path d="M82 45 L64 18 L58 46 Z" fill="#f97316" stroke="#9a3412" strokeWidth="3" strokeLinejoin="round"/>
-              <path d="M20 52 C20 34 34 24 50 24 C66 24 80 34 80 52 C80 72 66 84 50 84 C34 84 20 72 20 52 Z" fill="#fb923c"/>
-              <ellipse cx="50" cy="67" rx="22" ry="13" fill="#fff7ed"/>
-              <circle cx="40" cy="52" r="8" fill="#fff"/>
-              <circle cx="60" cy="52" r="8" fill="#fff"/>
-              <circle cx="41" cy="53" r="3.5" fill="#111827"/>
-              <circle cx="59" cy="53" r="3.5" fill="#111827"/>
-              <path d="M34 43 Q39 39 44 43" stroke="#7a3412" strokeWidth="3" strokeLinecap="round"/>
-              <path d="M56 43 Q61 39 66 43" stroke="#7a3412" strokeWidth="3" strokeLinecap="round"/>
-              <path d="M50 58 L56 65 L50 68 L44 65 Z" fill="#7a3412"/>
-              <path d="M44 71 Q50 76 56 71" stroke="#7a3412" strokeWidth="3" strokeLinecap="round"/>
-              <circle cx="71" cy="30" r="7" fill="#86efac" stroke="#166534" strokeWidth="2"/>
-              <path d="M68.5 30 L70.5 32.5 L74 27.5" stroke="#166534" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
+        <div className="brandRow">
+          <div className="brandCluster">
+            <div className="brandBadge" aria-hidden="true">
+              <svg width="30" height="30" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="4" y="4" width="92" height="92" rx="30" fill="#fff5e9" stroke="#7a3412" strokeWidth="4"/>
+                <path d="M18 45 L36 18 L42 46 Z" fill="#f97316" stroke="#9a3412" strokeWidth="3" strokeLinejoin="round"/>
+                <path d="M82 45 L64 18 L58 46 Z" fill="#f97316" stroke="#9a3412" strokeWidth="3" strokeLinejoin="round"/>
+                <path d="M20 52 C20 34 34 24 50 24 C66 24 80 34 80 52 C80 72 66 84 50 84 C34 84 20 72 20 52 Z" fill="#fb923c"/>
+                <ellipse cx="50" cy="67" rx="22" ry="13" fill="#fff7ed"/>
+                <circle cx="40" cy="52" r="8" fill="#fff"/>
+                <circle cx="60" cy="52" r="8" fill="#fff"/>
+                <circle cx="41" cy="53" r="3.5" fill="#111827"/>
+                <circle cx="59" cy="53" r="3.5" fill="#111827"/>
+                <path d="M34 43 Q39 39 44 43" stroke="#7a3412" strokeWidth="3" strokeLinecap="round"/>
+                <path d="M56 43 Q61 39 66 43" stroke="#7a3412" strokeWidth="3" strokeLinecap="round"/>
+                <path d="M50 58 L56 65 L50 68 L44 65 Z" fill="#7a3412"/>
+                <path d="M44 71 Q50 76 56 71" stroke="#7a3412" strokeWidth="3" strokeLinecap="round"/>
+                <circle cx="71" cy="30" r="7" fill="#86efac" stroke="#166534" strokeWidth="2"/>
+                <path d="M68.5 30 L70.5 32.5 L74 27.5" stroke="#166534" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </div>
+            <div className="brandInfo">
+              <strong>
+                <span className="robinWord">ROBIN</span>
+                {user ? ` • ${APP_LABELS[activeApp]}` : ''}
+              </strong>
+            </div>
           </div>
-          <div className="brandInfo">
-            <strong>
-              <span className="robinWord">ROBIN</span>
-              {user ? ` • ${APP_LABELS[activeApp]}` : ''}
-            </strong>
-          </div>
+          {user ? (
+            <button className="appSwitchBtn logoutBtn" onClick={handleLogout} type="button">↪ Se déconnecter</button>
+          ) : null}
         </div>
         {user ? (
           <div className="headerActions">
@@ -8995,7 +9000,6 @@ export default function RobinApp() {
               </div>
             ) : null}
             <button className={appView === 'account' ? 'appSwitchBtn account active' : 'appSwitchBtn account'} onClick={() => openAccountWorkspace('account-overview')} type="button">👤 Mon compte</button>
-            <button className="appSwitchBtn" onClick={handleLogout} type="button">↪ Se deconnecter</button>
           </div>
         ) : null}
         <div className="topbarUniverseProgressRow">
