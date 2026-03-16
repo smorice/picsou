@@ -520,6 +520,7 @@ type HomePortfolioRow = {
   targetId: string;
   label: string;
   subtitle: string;
+  history: Array<{ date: string; value: number }>;
   valueLabel: string;
   statusLabel: string;
   statusTone: 'ok' | 'idle' | 'warn';
@@ -542,6 +543,7 @@ type HomeRecommendationRow = {
 type HomeTransactionRow = {
   id: string;
   appKey: 'finance' | 'betting' | 'racing' | 'loto';
+  targetId: string;
   lane: 'upcoming' | 'closed';
   title: string;
   portfolioLabel: string;
@@ -2542,7 +2544,7 @@ export default function RobinApp() {
   const [adminUserSearch, setAdminUserSearch] = useState('');
   const [adminRoleFilter, setAdminRoleFilter] = useState<'all' | 'admin' | 'user' | 'banned'>('all');
   const [adminStatusFilter, setAdminStatusFilter] = useState<'all' | 'active' | 'inactive' | 'pending'>('all');
-  const [adminSection, setAdminSection] = useState<'approvals' | 'users' | 'audit' | 'transactions' | 'security'>('approvals');
+  const [adminSection, setAdminSection] = useState<'home' | 'approvals' | 'users' | 'audit' | 'transactions' | 'security'>('home');
   const [approvalsSearch, setApprovalsSearch] = useState('');
   const [approvalsSort, setApprovalsSort] = useState<'newest' | 'oldest' | 'name'>('newest');
   const [selectedApprovalIds, setSelectedApprovalIds] = useState<Record<string, true>>({});
@@ -4761,6 +4763,7 @@ export default function RobinApp() {
   );
   const lotoIntegrationPortfolios = useMemo(
     () => integrationConnections
+      .filter((connection) => connection.provider_code !== 'coinbase')
       .filter((connection) => connection.status === 'active' || connection.status === 'available')
       .map((connection, index) => ({
         id: `loto-integration-${connection.provider_code}-${index}`,
@@ -4810,7 +4813,8 @@ export default function RobinApp() {
     : null;
   const grossGainPeriod = goalNowPoint && goalBasePoint ? (goalNowPoint.value - goalBasePoint.value) : 0;
   const estimatedNetGainPeriod = grossGainPeriod > 0 ? grossGainPeriod * (1 - ESTIMATED_TAX_RATE) : grossGainPeriod;
-  const goalProgress = goalTargetNet > 0 ? Math.max(0, Math.min(1, estimatedNetGainPeriod / goalTargetNet)) : 0;
+  const goalProgressRaw = goalTargetNet > 0 ? (estimatedNetGainPeriod / goalTargetNet) : 0;
+  const goalProgress = goalTargetNet > 0 ? Math.max(-1.2, Math.min(1.2, goalProgressRaw)) : 0;
   const goalReached = goalTargetNet > 0 && estimatedNetGainPeriod >= goalTargetNet;
   const riskLossProfilePct = settingsForm.riskProfile === 'low' ? 8 : settingsForm.riskProfile === 'high' ? 45 : 25;
   const configuredLossGuardValue = toPositiveNumber(settingsForm.maxLossValue, settingsForm.maxLossType === 'amount' ? 1000 : 30);
@@ -4825,15 +4829,31 @@ export default function RobinApp() {
   const elapsedRatio = (goalWindowMs > 0 && goalNowTs !== null && goalBaseTs !== null)
     ? Math.max(0, Math.min(1, (goalNowTs - goalBaseTs) / goalWindowMs))
     : 0;
-  const goalTrajectoryGap = goalProgress - elapsedRatio;
+  const goalTrajectoryGap = goalProgressRaw - elapsedRatio;
   const goalTrajectoryTone = goalReached
     ? 'up'
     : goalTargetNet > 0
-      ? goalTrajectoryGap >= -0.03 ? 'up' : 'down'
+      ? goalTrajectoryGap >= -0.03 && estimatedNetGainPeriod >= 0 ? 'up' : 'down'
       : 'neutral';
   const goalProgressText = goalTargetNet > 0
     ? `${estimatedNetGainPeriod >= 0 ? '+' : ''}${estimatedNetGainPeriod.toFixed(0)}€ / ${goalTargetNet.toFixed(0)}€`
     : 'Objectif non défini';
+  const goalMoodTone = loading
+    ? 'neutral'
+    : goalReached
+      ? 'up'
+      : estimatedNetGainPeriod < 0
+        ? 'down'
+        : goalProgressRaw >= 0.2
+          ? 'up'
+          : 'neutral';
+  const goalMoodLabel = loading
+    ? 'Humeur site: calcul en cours'
+    : goalMoodTone === 'up'
+      ? 'Humeur site: offensive'
+      : goalMoodTone === 'down'
+        ? 'Humeur site: sous pression'
+        : 'Humeur site: en observation';
   const trendArrowSpeed = goalTrajectoryTone === 'up' ? 1.9 : goalTrajectoryTone === 'down' ? 3.2 : 2.5;
   const trendArrowScale = goalTrajectoryTone === 'up' ? 1.08 : goalTrajectoryTone === 'down' ? 0.88 : 0.96;
   const progressMenuKeys = useMemo(() => {
@@ -4851,14 +4871,22 @@ export default function RobinApp() {
   const uiNavigationProgress = progressMenuKeys.length > 0 ? Math.max(0, Math.min(1, visitedProgressCount / progressMenuKeys.length)) : 0;
   const uiNavigationProgressPct = Math.round(uiNavigationProgress * 100);
   const objectiveProgressPct = Math.round(Math.max(0, Math.min(1, goalProgress)) * 100);
+  const objectiveNegativePct = Math.round(Math.max(0, Math.min(1, -goalProgress)) * 100);
   const objectiveTimeConsumedPct = Math.round(Math.max(0, Math.min(1, elapsedRatio)) * 100);
   const topbarProgressPct = loading ? loadingProgressPct : objectiveProgressPct;
   const topbarProgressRatio = Math.max(0, Math.min(1, topbarProgressPct / 100));
+  const topbarNegativeRatio = Math.max(0, Math.min(1, objectiveNegativePct / 100));
   const topbarDelayConsumedPct = loading ? 0 : objectiveTimeConsumedPct;
   const topbarElapsedDays = (!loading && goalNowTs !== null && goalBaseTs !== null)
     ? Math.max(0, Math.round((goalNowTs - goalBaseTs) / (24 * 60 * 60 * 1000)))
     : null;
-  const batteryTone = topbarProgressRatio >= 0.92 ? 'up' : topbarProgressRatio <= 0.34 ? 'down' : 'neutral';
+  const batteryTone = loading
+    ? 'neutral'
+    : goalMoodTone === 'down'
+      ? 'down'
+      : topbarProgressRatio >= 0.34
+        ? 'up'
+        : 'neutral';
   const topbarRealValue = realVisiblePortfolios.reduce((sum, portfolio) => sum + portfolio.current_value, 0);
   const topbarFinanceVirtualPortfolio = allPortfolios.find((portfolio) => portfolio.type === 'virtual') ?? null;
   const topbarBettingVirtualStrategy = bettingStrategies.find((strategy) => strategy.isVirtual && strategy.enabled) ?? null;
@@ -4888,13 +4916,13 @@ export default function RobinApp() {
   const topbarVirtualTrendTone = numericChangeTone(topbarVirtualTrendAmount);
   const topbarProgressLabel = loading
     ? `Chargement ${topbarProgressPct}%`
-    : `${topbarProgressPct}% atteint`;
+    : `${goalProgress >= 0 ? '+' : ''}${Math.round(goalProgress * 100)}% vs cible`;
   const topbarObjectiveLabel = loading
     ? 'Objectif: calcul en cours'
-    : `Objectif: ${goalProgressText}`;
+    : `Objectif: ${goalProgressText} · ${goalPeriodLabel}`;
   const topbarDelayLabel = loading
     ? 'Jours consommés: calcul en cours'
-    : `Jours consommés: ${topbarElapsedDays ?? 0} / ${goalPeriodDays} jours`;
+    : `Temps consommé: ${topbarElapsedDays ?? 0} / ${goalPeriodDays} jours`;
   const topbarRealTrendLabel = `24h ${evolution24h.value}`;
   const topbarVirtualTrendLabel = `Tendance ${formatSignedEuro(topbarVirtualTrendAmount, 'n/d')}`;
   const portfolioEvolutionRows = visiblePortfolios.map((portfolio) => ({
@@ -5390,6 +5418,22 @@ export default function RobinApp() {
     () => activeBettingBets.reduce((sum, bet) => sum + bet.stake, 0),
     [activeBettingBets]
   );
+  const settledBettingBets = useMemo(
+    () => bettingStrategies
+      .flatMap((strategy) => strategy.recentBets
+        .filter((bet) => bet.result !== 'pending')
+        .map((bet) => ({ ...bet, strategyName: strategy.name })))
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
+    [bettingStrategies]
+  );
+  const settledBettingProfit = useMemo(
+    () => settledBettingBets.reduce((sum, bet) => sum + bet.profit, 0),
+    [settledBettingBets],
+  );
+  const activeBettingStrategies = useMemo(
+    () => bettingStrategies.filter((strategy) => strategy.enabled),
+    [bettingStrategies],
+  );
   const recentBettingBets = useMemo(
     () => bettingStrategies
       .flatMap((strategy) => strategy.recentBets.map((bet) => ({ ...bet, strategyName: strategy.name })))
@@ -5441,7 +5485,13 @@ export default function RobinApp() {
     [lotteryExecutionRequests],
   );
   const homePortfolioRows = useMemo<HomePortfolioRow[]>(() => {
-    const financeRows = allPortfolios.map<HomePortfolioRow>((portfolio) => {
+    const financeRows = allPortfolios
+      .filter((portfolio) => portfolio.type === 'virtual'
+        || portfolio.status === 'active'
+        || portfolio.current_value > 0
+        || portfolio.operations.length > 0
+        || portfolio.history.length > 1)
+      .map<HomePortfolioRow>((portfolio) => {
       const evolution = formatPortfolioEvolution(portfolio.history, 7);
       const cfg = getAgentConfig(portfolio.id);
       return {
@@ -5452,6 +5502,7 @@ export default function RobinApp() {
         targetId: portfolio.id,
         label: portfolio.label,
         subtitle: `Finance · ${portfolio.type === 'virtual' ? 'portefeuille fictif' : 'portefeuille reel'}`,
+        history: portfolio.history,
         valueLabel: `${portfolio.current_value.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €`,
         statusLabel: statusLabel(portfolio.status),
         statusTone: portfolio.status === 'active' ? 'ok' : portfolio.status === 'pending_user_consent' ? 'warn' : 'idle',
@@ -5470,6 +5521,7 @@ export default function RobinApp() {
         targetId: strategy.id,
         label: strategy.name,
         subtitle: `Paris sportifs · ${strategy.isVirtual ? 'simulation' : 'strategie reelle'}`,
+        history: strategy.history,
         valueLabel: `${strategy.bankroll.toFixed(0)} €`,
         statusLabel: strategy.enabled ? 'Actif' : 'Inactif',
         statusTone: strategy.enabled ? 'ok' : 'idle',
@@ -5488,6 +5540,7 @@ export default function RobinApp() {
         targetId: strategy.id,
         label: strategy.name,
         subtitle: `Paris hippiques · ${strategy.isVirtual ? 'simulation' : 'strategie reelle'}`,
+        history: strategy.history,
         valueLabel: `${strategy.bankroll.toFixed(0)} €`,
         statusLabel: strategy.enabled ? 'Actif' : 'Inactif',
         statusTone: strategy.enabled ? 'ok' : 'idle',
@@ -5505,6 +5558,7 @@ export default function RobinApp() {
         targetId: 'loto-virtual',
         label: 'Portefeuille fictif Loto',
         subtitle: 'Loto / EuroMillions · simulation',
+        history: [{ date: new Date().toISOString(), value: lotteryVirtualPortfolio.bankroll }],
         valueLabel: `${lotteryVirtualPortfolio.bankroll.toFixed(0)} €`,
         statusLabel: virtualAppsEnabled.loto && lotteryVirtualPortfolio.enabled ? 'Actif' : 'Inactif',
         statusTone: virtualAppsEnabled.loto && lotteryVirtualPortfolio.enabled ? 'ok' : 'idle',
@@ -5523,6 +5577,7 @@ export default function RobinApp() {
           targetId: portfolio.id,
           label: portfolio.label,
           subtitle: `Loto reel · ${portfolio.providerName}`,
+          history: [],
           valueLabel: `${relatedCount} reco`,
           statusLabel: portfolio.status === 'active' ? 'Connecte' : 'Disponible',
           statusTone: portfolio.status === 'active' ? 'ok' : 'idle',
@@ -5586,7 +5641,7 @@ export default function RobinApp() {
   );
   const homePendingAiCount = visibleDecisionInsights.length + filteredTopTipsterRecommendations.length + racingPendingSignalsDisplay.length;
   const homeTransactionsInFlight = activeBettingBets.length + racingStrategies.flatMap((strategy) => strategy.recentBets).filter((bet) => bet.result === 'pending').length + lotteryPendingTickets.length;
-  const homeUpcomingTransactions = useMemo<HomeTransactionRow[]>(() => {
+  const homeUpcomingTransactionsAll = useMemo<HomeTransactionRow[]>(() => {
     const nowTs = Date.now();
     const financeUpcoming = allPortfolios.flatMap((portfolio) => portfolio.operations
       .filter((operation) => {
@@ -5598,6 +5653,7 @@ export default function RobinApp() {
         return {
           id: `home-up-finance-${portfolio.id}-${operation.id}`,
           appKey: 'finance',
+          targetId: portfolio.id,
           lane: 'upcoming',
           title: `${operation.side === 'buy' ? 'Achat' : 'Vente'} ${operation.asset}`,
           portfolioLabel: portfolio.label,
@@ -5616,6 +5672,7 @@ export default function RobinApp() {
         return {
           id: `home-up-betting-${strategy.id}-${bet.id}`,
           appKey: 'betting',
+          targetId: strategy.id,
           lane: 'upcoming',
           title: bet.event,
           portfolioLabel: strategy.name,
@@ -5634,6 +5691,7 @@ export default function RobinApp() {
         return {
           id: `home-up-racing-${strategy.id}-${bet.id}`,
           appKey: 'racing',
+          targetId: strategy.id,
           lane: 'upcoming',
           title: bet.event,
           portfolioLabel: strategy.name,
@@ -5650,6 +5708,7 @@ export default function RobinApp() {
       return {
         id: `home-up-loto-ticket-${ticket.id}`,
         appKey: 'loto',
+        targetId: 'loto-virtual',
         lane: 'upcoming',
         title: `${LOTTERY_CONFIG[ticket.game].label} · ${ticket.gridLabel}`,
         portfolioLabel: 'Portefeuille fictif Loto',
@@ -5666,6 +5725,7 @@ export default function RobinApp() {
       return {
         id: `home-up-loto-request-${request.id}`,
         appKey: 'loto',
+        targetId: request.targetPortfolioId,
         lane: 'upcoming',
         title: `${LOTTERY_CONFIG[request.game].label} · ${request.gridLabel}`,
         portfolioLabel: request.targetPortfolioLabel,
@@ -5677,17 +5737,80 @@ export default function RobinApp() {
         moodImpact: 0,
       };
     });
-    return [...financeUpcoming, ...bettingUpcoming, ...racingUpcoming, ...lotoTicketUpcoming, ...lotoExecutionUpcoming]
-      .sort((a, b) => a.timestamp - b.timestamp)
-      .slice(0, 8);
-  }, [allPortfolios, bettingStrategies, racingStrategies, lotteryPendingTickets, lotteryExecutionRequests]);
-  const homeClosedTransactions = useMemo<HomeTransactionRow[]>(() => {
+    const financeAiQueue = visibleDecisionInsights.map<HomeTransactionRow>((insight, index) => {
+      const ts = nowTs + ((index + 1) * 5 * 60 * 1000);
+      return {
+        id: `home-up-finance-ai-${insight.id}`,
+        appKey: 'finance',
+        targetId: insight.portfolio_id ?? 'finance-virtual',
+        lane: 'upcoming',
+        title: insight.title,
+        portfolioLabel: insight.portfolio_label ?? 'Portefeuille finance',
+        date: new Date(ts).toISOString(),
+        timestamp: ts,
+        note: insight.detail,
+        gainLoss: null,
+        taxes: null,
+        moodImpact: 0,
+      };
+    });
+    const bettingAiQueue = activeBettingVirtualStrategy && activeBettingVirtualStrategy.enabled && activeBettingVirtualStrategy.ai_enabled
+      ? filteredTopTipsterRecommendations.map<HomeTransactionRow>((signal) => {
+        const ts = Date.parse(signal.deadline);
+        return {
+          id: `home-up-betting-ai-${signal.id}`,
+          appKey: 'betting',
+          targetId: activeBettingVirtualStrategy.id,
+          lane: 'upcoming',
+          title: signal.event,
+          portfolioLabel: activeBettingVirtualStrategy.name,
+          date: signal.deadline,
+          timestamp: Number.isFinite(ts) ? ts : nowTs + 9_999_999,
+          note: `${signal.market} · IA ${activeBettingVirtualStrategy.mode}`,
+          gainLoss: null,
+          taxes: null,
+          moodImpact: 0,
+        };
+      })
+      : [];
+    const racingAiQueue = activeRacingVirtualStrategy && activeRacingVirtualStrategy.enabled && activeRacingVirtualStrategy.ai_enabled
+      ? racingPendingSignalsDisplay.map<HomeTransactionRow>((signal) => {
+        const ts = Date.parse(signal.deadline);
+        return {
+          id: `home-up-racing-ai-${signal.id}`,
+          appKey: 'racing',
+          targetId: activeRacingVirtualStrategy.id,
+          lane: 'upcoming',
+          title: signal.event,
+          portfolioLabel: activeRacingVirtualStrategy.name,
+          date: signal.deadline,
+          timestamp: Number.isFinite(ts) ? ts : nowTs + 9_999_999,
+          note: `${signal.market} · IA ${activeRacingVirtualStrategy.mode}`,
+          gainLoss: null,
+          taxes: null,
+          moodImpact: 0,
+        };
+      })
+      : [];
+    return [
+      ...financeUpcoming,
+      ...bettingUpcoming,
+      ...racingUpcoming,
+      ...lotoTicketUpcoming,
+      ...lotoExecutionUpcoming,
+      ...financeAiQueue,
+      ...bettingAiQueue,
+      ...racingAiQueue,
+    ].sort((a, b) => a.timestamp - b.timestamp);
+  }, [allPortfolios, bettingStrategies, racingStrategies, lotteryPendingTickets, lotteryExecutionRequests, visibleDecisionInsights, activeBettingVirtualStrategy, filteredTopTipsterRecommendations, activeRacingVirtualStrategy, racingPendingSignalsDisplay]);
+  const homeClosedTransactionsAll = useMemo<HomeTransactionRow[]>(() => {
     const financeClosed = allPortfolios.flatMap((portfolio) => portfolio.operations.map<HomeTransactionRow>((operation) => {
       const ts = Date.parse(operation.date);
       const taxes = (operation.tax_state ?? 0) + (operation.tax_intermediary ?? 0);
       return {
         id: `home-closed-finance-${portfolio.id}-${operation.id}`,
         appKey: 'finance',
+        targetId: portfolio.id,
         lane: 'closed',
         title: `${operation.side === 'buy' ? 'Achat' : 'Vente'} ${operation.asset}`,
         portfolioLabel: portfolio.label,
@@ -5706,6 +5829,7 @@ export default function RobinApp() {
         return {
           id: `home-closed-betting-${strategy.id}-${bet.id}`,
           appKey: 'betting',
+          targetId: strategy.id,
           lane: 'closed',
           title: bet.event,
           portfolioLabel: strategy.name,
@@ -5724,6 +5848,7 @@ export default function RobinApp() {
         return {
           id: `home-closed-racing-${strategy.id}-${bet.id}`,
           appKey: 'racing',
+          targetId: strategy.id,
           lane: 'closed',
           title: bet.event,
           portfolioLabel: strategy.name,
@@ -5741,6 +5866,7 @@ export default function RobinApp() {
       return {
         id: `home-closed-loto-${ticket.id}`,
         appKey: 'loto',
+        targetId: 'loto-virtual',
         lane: 'closed',
         title: `${LOTTERY_CONFIG[ticket.game].label} · ${ticket.gridLabel}`,
         portfolioLabel: 'Portefeuille fictif Loto',
@@ -5753,12 +5879,15 @@ export default function RobinApp() {
       };
     });
     return [...financeClosed, ...bettingClosed, ...racingClosed, ...lotoClosed]
-      .sort((a, b) => b.timestamp - a.timestamp)
-      .slice(0, 8);
+      .sort((a, b) => b.timestamp - a.timestamp);
   }, [allPortfolios, bettingStrategies, racingStrategies, lotterySettledTickets]);
+  const homeClosedTransactions = useMemo(
+    () => homeClosedTransactionsAll.slice(0, 8),
+    [homeClosedTransactionsAll],
+  );
   const homeMood = useMemo(() => {
     const threshold = HOME_MOOD_THRESHOLDS[HOME_MOOD_PROFILE];
-    const net = homeClosedTransactions.reduce((sum, row) => sum + row.moodImpact, 0);
+    const net = homeClosedTransactionsAll.reduce((sum, row) => sum + row.moodImpact, 0);
     if (net >= threshold) {
       return {
         tone: 'up' as const,
@@ -5778,14 +5907,36 @@ export default function RobinApp() {
       title: 'Mood stable',
       detail: `Equilibre recent ${formatSignedEuro(net, '0.00 €')}`,
     };
-  }, [homeClosedTransactions]);
+  }, [homeClosedTransactionsAll]);
   const homeUpcomingTransactions48h = useMemo(() => {
     const nowTs = Date.now();
     const horizonTs = nowTs + 48 * 60 * 60 * 1000;
-    return homeUpcomingTransactions
+    return homeUpcomingTransactionsAll
       .filter((row) => row.timestamp >= nowTs && row.timestamp <= horizonTs)
       .slice(0, 12);
-  }, [homeUpcomingTransactions]);
+  }, [homeUpcomingTransactionsAll]);
+  const homePortfolioActivity = useMemo(() => {
+    const nowTs = Date.now();
+    const rollingWindowStart = nowTs - (7 * 24 * 60 * 60 * 1000);
+    return homePortfolioRows.reduce<Record<string, {
+      upcoming: HomeTransactionRow[];
+      rollingBalance: number;
+      rollingTone: 'up' | 'down' | 'neutral';
+    }>>((acc, row) => {
+      const upcoming = homeUpcomingTransactionsAll
+        .filter((item) => item.appKey === row.appKey && item.targetId === row.targetId)
+        .slice(0, 2);
+      const rollingBalance = homeClosedTransactionsAll
+        .filter((item) => item.appKey === row.appKey && item.targetId === row.targetId && item.timestamp >= rollingWindowStart)
+        .reduce((sum, item) => sum + (item.gainLoss ?? 0), 0);
+      acc[row.id] = {
+        upcoming,
+        rollingBalance,
+        rollingTone: numericChangeTone(rollingBalance),
+      };
+      return acc;
+    }, {});
+  }, [homePortfolioRows, homeUpcomingTransactionsAll, homeClosedTransactionsAll]);
   const homeFinanceVirtualPortfolio = useMemo(
     () => allPortfolios.find((portfolio) => portfolio.type === 'virtual') ?? null,
     [allPortfolios],
@@ -7963,6 +8114,7 @@ export default function RobinApp() {
                     ['--trend-scale' as string]: `${trendArrowScale}`,
                     ['--goal-progress' as string]: `${topbarProgressRatio}`,
                     ['--goal-progress-pct' as string]: `${topbarProgressPct}%`,
+                    ['--goal-negative-pct' as string]: `${Math.round(topbarNegativeRatio * 100)}%`,
                     ['--goal-elapsed-pct' as string]: `${topbarDelayConsumedPct}%`,
                   } as Record<string, string>}
                 >
@@ -7970,9 +8122,11 @@ export default function RobinApp() {
                     <span className="batteryEyebrow">Objectif:</span>
                     <strong>{topbarProgressLabel}</strong>
                     <span>{goalProgressText}</span>
+                    <span className={`metaPill ${goalMoodTone}`}>{goalMoodLabel}</span>
                   </div>
                   <div className="batteryShell">
                     <div className="batteryChargingFlow" />
+                    <div className="batteryNegativeLevel" />
                     <div className="batteryLevel" />
                     <div className="batteryNeedle" />
                     <div className="batteryPercent">{topbarObjectiveLabel}</div>
@@ -7981,7 +8135,7 @@ export default function RobinApp() {
                     <div className="batteryTimelineRail">
                       <div className="batteryTimelineProgress" />
                     </div>
-                    <div className="batteryTimelineMascot" aria-hidden="true">🦊</div>
+                    <div className="batteryTimelineMascot" aria-hidden="true">🏃</div>
                     <div
                       className={`batteryDelayInfo ${loading ? 'loading' : topbarDelayConsumedPct >= 100 ? 'done' : topbarDelayConsumedPct >= 75 ? 'warn' : 'ok'}`}
                     >
@@ -8555,48 +8709,137 @@ export default function RobinApp() {
             <section className="workspaceGrid" style={{ gap: 16 }}>
               <article className="featureCard" style={{ gridColumn: '1 / -1' }}>
                 <div className="cardHeader">
-                  <h2>Home · État cumulé des portefeuilles</h2>
+                  <h2>Home · Liste des portefeuilles</h2>
                   <span>{homeMood.title} · {homeMood.detail}</span>
                 </div>
-                <div className="homePortfolioColumns" style={{ marginBottom: 0 }}>
-                  <section className="homePortfolioColumn real">
-                    <div className="cardHeader" style={{ marginBottom: 6 }}>
-                      <h3>Réels</h3>
-                      <span>Finance, Sportif, Hippique, Loto</span>
+                <div className="homePortfolioStack">
+                  <section className="homePortfolioSection real">
+                    <div className="cardHeader" style={{ marginBottom: 8 }}>
+                      <h3>Portefeuilles réels</h3>
+                      <span>{homeRealPortfolioRows.length} élément(s)</span>
                     </div>
-                    <div className="homeTransactionList">
-                      {homeCumulativeRows.realRows.map((row) => (
-                        <article className="homeTransactionItem" key={row.key}>
-                          <div className="homeTransactionTop">
-                            <strong>{row.category}</strong>
-                            <span className="metaPill">Cumulé</span>
-                          </div>
-                          <p>{row.value}</p>
-                          <div className="homeTransactionBottom">
-                            <small>{row.evolution}</small>
-                          </div>
-                        </article>
-                      ))}
+                    <div className="homePortfolioList">
+                      {homeRealPortfolioRows.map((row) => {
+                        const activity = homePortfolioActivity[row.id];
+                        return (
+                          <article className="homePortfolioCard real" key={row.id}>
+                            <div className="homePortfolioTop">
+                              <div>
+                                <strong>{row.label}</strong>
+                                <p>{row.subtitle}</p>
+                              </div>
+                              <button
+                                className="homePortfolioBadgeButton portfolioTypeBadge real"
+                                onClick={() => openHomePortfolio(row)}
+                                type="button"
+                              >
+                                Cumulé
+                              </button>
+                            </div>
+                            <div className="homePortfolioMetrics">
+                              <div>
+                                <span className="homeMetricLabel">Valorisation</span>
+                                <div className="homePortfolioValue">{row.valueLabel}</div>
+                              </div>
+                              <div>
+                                <span className="homeMetricLabel">Balance glissante 7j</span>
+                                <div className={`homePortfolioTrend ${activity?.rollingTone ?? 'neutral'}`}>
+                                  {formatSignedEuro(activity?.rollingBalance ?? 0, '0.00 €')}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="homePortfolioGraphWrap">
+                              {row.history.length > 1 ? (
+                                <Sparkline data={row.history.slice(-30)} color={row.trendTone === 'down' ? 'var(--danger)' : row.trendTone === 'up' ? 'var(--ok)' : 'var(--brand)'} />
+                              ) : (
+                                <div className="homeGraphPlaceholder">Aucune évolution graphique exploitable</div>
+                              )}
+                            </div>
+                            <div className="homePortfolioBottom">
+                              <div className="homePortfolioMetaBlock">
+                                <span className={`statusBadge ${row.statusTone === 'ok' ? 'ok' : row.statusTone === 'warn' ? 'warn' : 'idle'}`}>{row.statusLabel}</span>
+                                <span className={`homePortfolioTrend ${row.trendTone}`}>{row.trendLabel}</span>
+                                {row.autonomousActive ? <span className="homeAutoBadge">IA autonome</span> : null}
+                              </div>
+                              <div className="homePortfolioPlanBlock">
+                                <strong>{activity?.upcoming.length ?? 0} planifiée(s)</strong>
+                                {(activity?.upcoming.length ?? 0) === 0 ? (
+                                  <small>Aucune action en attente</small>
+                                ) : (
+                                  activity?.upcoming.map((item) => (
+                                    <small key={item.id}>{formatDateTimeFr(item.date)} · {item.title}</small>
+                                  ))
+                                )}
+                              </div>
+                            </div>
+                          </article>
+                        );
+                      })}
                     </div>
                   </section>
-                  <section className="homePortfolioColumn virtual">
-                    <div className="cardHeader" style={{ marginBottom: 6 }}>
-                      <h3>Fictifs</h3>
-                      <span>Finance, Sportif, Hippique, Loto</span>
+
+                  <section className="homePortfolioSection virtual">
+                    <div className="cardHeader" style={{ marginBottom: 8 }}>
+                      <h3>Portefeuilles fictifs</h3>
+                      <span>{homeVirtualPortfolioRows.length} élément(s)</span>
                     </div>
-                    <div className="homeTransactionList">
-                      {homeCumulativeRows.virtualRows.map((row) => (
-                        <article className="homeTransactionItem" key={row.key}>
-                          <div className="homeTransactionTop">
-                            <strong>{row.category}</strong>
-                            <span className="metaPill">Simulation</span>
-                          </div>
-                          <p>{row.value}</p>
-                          <div className="homeTransactionBottom">
-                            <small>{row.evolution}</small>
-                          </div>
-                        </article>
-                      ))}
+                    <div className="homePortfolioList">
+                      {homeVirtualPortfolioRows.map((row) => {
+                        const activity = homePortfolioActivity[row.id];
+                        return (
+                          <article className="homePortfolioCard virtual" key={row.id}>
+                            <div className="homePortfolioTop">
+                              <div>
+                                <strong>{row.label}</strong>
+                                <p>{row.subtitle}</p>
+                              </div>
+                              <button
+                                className="homePortfolioBadgeButton portfolioTypeBadge virtual"
+                                onClick={() => openHomePortfolio(row)}
+                                type="button"
+                              >
+                                Simulation
+                              </button>
+                            </div>
+                            <div className="homePortfolioMetrics">
+                              <div>
+                                <span className="homeMetricLabel">Valorisation</span>
+                                <div className="homePortfolioValue">{row.valueLabel}</div>
+                              </div>
+                              <div>
+                                <span className="homeMetricLabel">Balance glissante 7j</span>
+                                <div className={`homePortfolioTrend ${activity?.rollingTone ?? 'neutral'}`}>
+                                  {formatSignedEuro(activity?.rollingBalance ?? 0, '0.00 €')}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="homePortfolioGraphWrap">
+                              {row.history.length > 1 ? (
+                                <Sparkline data={row.history.slice(-30)} color={row.trendTone === 'down' ? 'var(--danger)' : row.trendTone === 'up' ? 'var(--ok)' : 'var(--brand)'} />
+                              ) : (
+                                <div className="homeGraphPlaceholder">Aucune évolution graphique exploitable</div>
+                              )}
+                            </div>
+                            <div className="homePortfolioBottom">
+                              <div className="homePortfolioMetaBlock">
+                                <span className={`statusBadge ${row.statusTone === 'ok' ? 'ok' : row.statusTone === 'warn' ? 'warn' : 'idle'}`}>{row.statusLabel}</span>
+                                <span className={`homePortfolioTrend ${row.trendTone}`}>{row.trendLabel}</span>
+                                {row.autonomousActive ? <span className="homeAutoBadge">IA autonome</span> : null}
+                              </div>
+                              <div className="homePortfolioPlanBlock">
+                                <strong>{activity?.upcoming.length ?? 0} planifiée(s)</strong>
+                                {(activity?.upcoming.length ?? 0) === 0 ? (
+                                  <small>Aucune action en attente</small>
+                                ) : (
+                                  activity?.upcoming.map((item) => (
+                                    <small key={item.id}>{formatDateTimeFr(item.date)} · {item.title}</small>
+                                  ))
+                                )}
+                              </div>
+                            </div>
+                          </article>
+                        );
+                      })}
                     </div>
                   </section>
                 </div>
@@ -8712,11 +8955,11 @@ export default function RobinApp() {
           ) : null}
 
           {appView === 'account' ? (
-            <section className="workspaceGrid settingsGrid">
+            <section className="workspaceGrid settingsGrid rightDockLayout accountLayoutGrid">
               <article className="featureCard settingsIntroCard">
                 <div className="cardHeader">
                   <h2>Mon compte</h2>
-                  <span>Profil, securite, communication et pilotage personnel</span>
+                  <span>Mes infos, mes alertes, mes objectifs et mes garde-fous</span>
                 </div>
                 <div className="accountHeroStats">
                   <span className="metaPill">Compte {user.mfa_enabled ? 'protege' : 'a renforcer'}</span>
@@ -8724,9 +8967,35 @@ export default function RobinApp() {
                   <span className="metaPill">Risque: {settingsForm.riskProfile === 'low' ? 'Prudent' : settingsForm.riskProfile === 'high' ? 'Dynamique' : 'Equilibre'}</span>
                 </div>
                 <p style={{ fontSize: '.85rem', color: 'var(--muted)', margin: 0 }}>
-                  Votre cockpit personnel pour garder la main sur votre identite, vos canaux d alertes et vos garde-fous.
-                  Objectif: savoir en moins d une minute si votre compte est bien configure et joignable.
+                  Vue personnelle recentrée sur l essentiel: identité, joignabilité, préférences IA et objectif sur période définie.
                 </p>
+              </article>
+
+              <article className="featureCard settingsCard accountQuickControlCard">
+                <div className="cardHeader">
+                  <h2>Pilotage rapide</h2>
+                  <span>Boutons et toggles globaux</span>
+                </div>
+                <div className="accountQuickControlGrid">
+                  <button className="secondaryButton" onClick={() => { setActiveApp('finance'); setAppView('settings'); window.scrollTo({ top: 0, behavior: 'smooth' }); }} type="button">Intégrations</button>
+                  <button className="ghostButton" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} type="button">Mes infos</button>
+                  <button className="ghostButton" onClick={() => setCommunicationTestResult(null)} type="button">Réinitialiser tests</button>
+                  <button className="ghostButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">Enregistrer tout</button>
+                </div>
+                <div className="accountToggleStrip">
+                  <label className="checkRow" style={{ margin: 0 }}>
+                    <input type="checkbox" checked={settingsForm.notifyEmail} onChange={(e) => setSettingsForm((s) => ({ ...s, notifyEmail: e.target.checked }))} />
+                    <span>Email</span>
+                  </label>
+                  <label className="checkRow" style={{ margin: 0 }}>
+                    <input type="checkbox" checked={settingsForm.notifyWhatsapp} onChange={(e) => setSettingsForm((s) => ({ ...s, notifyWhatsapp: e.target.checked }))} />
+                    <span>WhatsApp</span>
+                  </label>
+                  <label className="checkRow" style={{ margin: 0 }}>
+                    <input type="checkbox" checked={settingsForm.notifyPush} onChange={(e) => setSettingsForm((s) => ({ ...s, notifyPush: e.target.checked }))} />
+                    <span>Push</span>
+                  </label>
+                </div>
               </article>
 
               <article className="featureCard settingsCard">
@@ -8761,7 +9030,7 @@ export default function RobinApp() {
 
               <article className="featureCard settingsCard">
                 <div className="cardHeader">
-                  <h2>Informations personnelles & connexion</h2>
+                  <h2>Mes infos & connexion</h2>
                   <span>Identité, contact et sécurité</span>
                 </div>
                 <form className="authForm" onSubmit={saveSettings}>
@@ -8806,7 +9075,7 @@ export default function RobinApp() {
 
               <article className="featureCard settingsCard">
                 <div className="cardHeader">
-                  <h2>Niveau de risque accepté par les agents IA</h2>
+                  <h2>Agents IA globaux</h2>
                   <span>Préférence globale de risque</span>
                 </div>
                 <div style={{ display: 'grid', gap: 10 }}>
@@ -8851,7 +9120,7 @@ export default function RobinApp() {
 
               <article className="featureCard settingsCard">
                 <div className="cardHeader">
-                  <h2>Communication</h2>
+                  <h2>Canaux de communication</h2>
                   <span>Préférences de suivi</span>
                 </div>
                 <div style={{ display: 'grid', gap: 12 }}>
@@ -8889,8 +9158,8 @@ export default function RobinApp() {
 
               <article className="featureCard settingsCard">
                 <div className="cardHeader">
-                  <h2>Bloc objectif</h2>
-                  <span>Montant visé, durée et perte possible estimée</span>
+                  <h2>Objectif personnel</h2>
+                  <span>Montant visé, période et perte possible estimée</span>
                 </div>
                 <div style={{ display: 'grid', gap: 12 }}>
                   <label>
@@ -8934,7 +9203,7 @@ export default function RobinApp() {
                       Estimation basée sur le profil de risque ({riskLossProfilePct}%) et votre garde-fou de perte configuré.
                     </p>
                   </div>
-                  <p className="helperText">Flèche verte: vous êtes en avance sur la trajectoire attendue. Flèche rouge: vous êtes en retard sur la trajectoire attendue.</p>
+                  <p className="helperText">La jauge du bandeau compare votre gain net réel sur la période à la cible définie. Elle peut passer en négatif si la période est perdante.</p>
                   <button className="primaryButton" disabled={submitting} onClick={() => void submitSettingsUpdate()} type="button">
                     {submitting ? 'Sauvegarde...' : 'Enregistrer le bloc objectif'}
                   </button>
@@ -11608,6 +11877,11 @@ export default function RobinApp() {
                         <strong>{winRateToShow.toFixed(0)} %</strong>
                         <small>{bettingAnalytics ? `${betsToShow} paris` : `${totalWon} / ${totalBets} paris`}</small>
                       </div>
+                      <div className="heroKpiItem">
+                        <span>P/L clôturé</span>
+                        <strong className={settledBettingProfit >= 0 ? 'up' : ''}>{settledBettingProfit >= 0 ? '+' : ''}{settledBettingProfit.toFixed(1)} €</strong>
+                        <small className={settledBettingProfit >= 0 ? 'up' : 'down'}>{settledBettingBets.length} pari(s) clôturé(s)</small>
+                      </div>
                       {bettingAnalytics ? (
                         <div className="heroKpiItem">
                           <span>Drawdown max</span>
@@ -11643,6 +11917,52 @@ export default function RobinApp() {
                   <strong>{recentBettingBets.length}</strong>
                   <small>Cliquez pour ouvrir le détail complet</small>
                 </button>
+              </section>
+
+              <section className="bettingPortfolioGrid">
+                {activeBettingStrategies.length === 0 ? (
+                  <article className="featureCard" style={{ gridColumn: '1 / -1' }}>
+                    <div className="infoPanel mutedPanel" style={{ margin: 0 }}>
+                      <strong>Aucun portefeuille de paris actif</strong>
+                      <p>Activez une stratégie ou le portefeuille fictif pour alimenter ce cockpit.</p>
+                    </div>
+                  </article>
+                ) : (
+                  activeBettingStrategies.map((strategy) => {
+                    const strategyActiveBets = strategy.recentBets.filter((bet) => bet.result === 'pending');
+                    const strategyClosedBets = strategy.recentBets.filter((bet) => bet.result !== 'pending');
+                    const strategyProfit = strategyClosedBets.reduce((sum, bet) => sum + bet.profit, 0);
+                    return (
+                      <button
+                        key={`betting-cockpit-strategy-${strategy.id}`}
+                        className="bettingPortfolioCard"
+                        onClick={() => { setSelectedStrategy(strategy); if (strategy.isVirtual) setVirtualRiskProfile((strategy.risk_profile ?? 'medium') as VirtualRiskProfile); setStrategyDetailOpen(true); setAppView('strategies'); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                        type="button"
+                      >
+                        <div className="bettingPortfolioCardHeader">
+                          <div>
+                            <strong>{strategy.name}</strong>
+                            <p>{strategy.isVirtual ? 'Portefeuille fictif' : 'Portefeuille actif'} · {strategy.mode === 'autonomous' ? 'Autopilot' : strategy.mode === 'supervised' ? 'Supervisé' : 'Manuel'}</p>
+                          </div>
+                          <span className="metaPill">{strategy.bankroll.toFixed(0)} €</span>
+                        </div>
+                        <div className="bettingPortfolioCardMetrics">
+                          <span>En cours <strong>{strategyActiveBets.length}</strong></span>
+                          <span>Clos <strong>{strategyClosedBets.length}</strong></span>
+                          <span>P/L <strong className={strategyProfit >= 0 ? 'up' : 'down'}>{strategyProfit >= 0 ? '+' : ''}{strategyProfit.toFixed(1)} €</strong></span>
+                          <span>ROI <strong className={strategy.roi >= 0 ? 'up' : 'down'}>{strategy.roi >= 0 ? '+' : ''}{strategy.roi.toFixed(1)}%</strong></span>
+                        </div>
+                        <div className="bettingPortfolioCardSparkline">
+                          <Sparkline data={strategy.history.slice(-20)} color={strategyProfit >= 0 ? 'var(--ok)' : 'var(--danger)'} />
+                        </div>
+                        <div className="bettingPortfolioCardFooter">
+                          <span>{strategy.betsWon} gagné(s) sur {strategy.betsTotal}</span>
+                          <span className="metaPill">Voir détail</span>
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
               </section>
 
               <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 12 }}>
@@ -13789,11 +14109,11 @@ export default function RobinApp() {
           ) : null}
 
           {appView === 'admin' ? (
-            <section className="workspaceGrid adminGrid">
+            <section className="workspaceGrid adminGrid rightDockLayout adminLayoutGrid">
               <article className="featureCard adminConsoleHero" style={{ gridColumn: '1 / -1' }}>
                 <div className="cardHeader" style={{ marginBottom: 8 }}>
                   <h2>Console Admin</h2>
-                  <span>Pilotage comptes, audit, sécurité et transactions</span>
+                  <span>Vue système globale, santé plateforme, comptes et sécurité</span>
                 </div>
                 <div className="adminConsoleStats">
                   <article className="adminConsoleStatCard">
@@ -13818,6 +14138,9 @@ export default function RobinApp() {
                   </article>
                 </div>
                 <div className="adminChildMenu adminConsoleTabs">
+                  <button className={adminSection === 'home' ? 'tagButton active' : 'tagButton'} onClick={() => setAdminSection('home')} type="button">
+                    Home système
+                  </button>
                   <button className={adminSection === 'approvals' ? 'tagButton active' : 'tagButton'} onClick={() => setAdminSection('approvals')} type="button">
                     Validation comptes ({pendingAdminUsers.length})
                   </button>
@@ -13835,6 +14158,73 @@ export default function RobinApp() {
                   </button>
                 </div>
               </article>
+
+              {adminSection === 'home' ? (
+              <>
+                <article className="featureCard adminSystemHealthCard">
+                  <div className="cardHeader">
+                    <h2>Santé du système</h2>
+                    <span>Admin sans portefeuille, orienté supervision</span>
+                  </div>
+                  <div className="adminHealthGrid">
+                    <div className="adminHealthItem">
+                      <span>Utilisateurs actifs</span>
+                      <strong>{adminActiveUsersCount}</strong>
+                      <small>{pendingAdminUsers.length} validation(s) à traiter</small>
+                    </div>
+                    <div className="adminHealthItem">
+                      <span>Audit warning</span>
+                      <strong>{siteAuditSummary.warnings}</strong>
+                      <small>{siteAuditSummary.total} événements tracés</small>
+                    </div>
+                    <div className="adminHealthItem">
+                      <span>Connecteurs actifs</span>
+                      <strong>{integrationConnections.filter((item) => item.status === 'active').length}</strong>
+                      <small>{integrationConnections.length} intégration(s) connues</small>
+                    </div>
+                    <div className="adminHealthItem">
+                      <span>Kill switch</span>
+                      <strong>{emergencyStopActive ? 'Actif' : 'Inactif'}</strong>
+                      <small>{emergencyStopActive ? 'Transactions bloquées' : 'Plateforme opérationnelle'}</small>
+                    </div>
+                  </div>
+                  <div className="adminQuickActions">
+                    <button className="secondaryButton" onClick={() => setAdminSection('approvals')} type="button">Traiter les validations</button>
+                    <button className="ghostButton" onClick={() => setAdminSection('users')} type="button">Ouvrir l’annuaire</button>
+                    <button className="ghostButton" onClick={() => setAdminSection('security')} type="button">Sécurité plateforme</button>
+                  </div>
+                </article>
+
+                <article className="featureCard">
+                  <div className="cardHeader">
+                    <h2>Activité récente</h2>
+                    <span>8 derniers événements significatifs</span>
+                  </div>
+                  {recentSiteAudit.length === 0 ? (
+                    <div className="infoPanel mutedPanel">
+                      <strong>Aucun événement récent</strong>
+                      <p>Le journal d audit se remplira au fil des connexions et actions d administration.</p>
+                    </div>
+                  ) : (
+                    <div className="compactAuditTimeline">
+                      {recentSiteAudit.map((entry) => (
+                        <div className="auditEntry" key={`admin-home-audit-${entry.id}`}>
+                          <div className="auditDot" />
+                          <div>
+                            <div className="compactRow noBorder">
+                              <strong>{entry.event_type}</strong>
+                              <span>{new Date(entry.created_at).toLocaleString('fr-FR')}</span>
+                            </div>
+                            <p>Acteur: {entry.actor_id}</p>
+                            <p>Sévérité: {entry.severity}{entry.ip_address ? ` · IP ${entry.ip_address}` : ''}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </article>
+              </>
+              ) : null}
 
               {/* === KILL SWITCH — redesigned prominent ===  */}
               {(adminSection === 'security') ? (
