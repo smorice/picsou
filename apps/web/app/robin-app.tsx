@@ -342,6 +342,36 @@ function normalizeFinanceVirtualRuntime(raw: unknown): FinanceVirtualSimulation 
   };
 }
 
+function normalizeLocalPortfolioOperations(raw: unknown): Record<string, Portfolio['operations']> {
+  if (!raw || typeof raw !== 'object') {
+    return {};
+  }
+  const source = raw as Record<string, unknown>;
+  const result: Record<string, Portfolio['operations']> = {};
+  for (const [portfolioId, entries] of Object.entries(source)) {
+    if (!portfolioId || !Array.isArray(entries)) {
+      continue;
+    }
+    const normalized = entries
+      .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object')
+      .map((entry) => ({
+        id: typeof entry.id === 'string' && entry.id.trim() ? entry.id : `local-op-restored-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        date: typeof entry.date === 'string' && entry.date.trim() ? entry.date : new Date().toISOString(),
+        side: String(entry.side ?? '').toLowerCase() === 'sell' ? 'sell' as const : 'buy' as const,
+        asset: typeof entry.asset === 'string' && entry.asset.trim() ? entry.asset : 'Asset',
+        amount: Number.isFinite(Number(entry.amount)) ? Math.max(0, Number(entry.amount)) : 0,
+        tax_state: Number.isFinite(Number(entry.tax_state)) ? Number(entry.tax_state) : null,
+        tax_intermediary: Number.isFinite(Number(entry.tax_intermediary)) ? Number(entry.tax_intermediary) : null,
+        intermediary: typeof entry.intermediary === 'string' && entry.intermediary.trim() ? entry.intermediary : 'Robin IA',
+      }))
+      .slice(0, 300);
+    if (normalized.length > 0) {
+      result[portfolioId] = normalized;
+    }
+  }
+  return result;
+}
+
 type BetSport = 'football' | 'tennis' | 'basketball' | 'rugby' | 'other';
 
 type BetRecord = {
@@ -1987,7 +2017,7 @@ function Sparkline({ data, color = 'var(--brand)' }: { data: Array<{ value: numb
 const ACCESS_TOKEN_KEY = 'robin_access_token';
 const REFRESH_TOKEN_KEY = 'robin_refresh_token';
 const SESSION_LAST_ACTIVITY_AT_KEY = 'robin_session_last_activity_at';
-const SESSION_TIMEOUT_MS = 2 * 60 * 1000;
+const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
 const ADMIN_CONNECTED_WINDOW_MS = 15 * 60 * 1000;
 const COOKIE_SESSION_MARKER = '__cookie_session__';
 const OTHER_COUNTRY_VALUE = '__OTHER__';
@@ -3094,6 +3124,7 @@ export default function RobinApp() {
       setAgentConfigs({});
       setPortfolioSetupStepDone(false);
       setLotteryVirtualPortfolio(DEFAULT_LOTTERY_VIRTUAL_PORTFOLIO);
+      setLocalPortfolioOperations({});
       return;
     }
     setSettingsForm(defaultSettingsFromUser(user));
@@ -3121,6 +3152,7 @@ export default function RobinApp() {
       }
     }
     setResolvedDecisionKeys(nextDecisionResolutions);
+    setLocalPortfolioOperations(normalizeLocalPortfolioOperations(user.personal_settings.local_portfolio_operations));
 
     const riskBasedDefaults = defaultAgentConfigFromUserRisk(user);
     const savedGlobalAgentConfig = user.personal_settings.agent_global_quota;
@@ -3401,8 +3433,9 @@ export default function RobinApp() {
     }
 
     let timeoutId: number | null = null;
+    const timeoutMinutes = Math.round(SESSION_TIMEOUT_MS / 60000);
     const logoutForInactivity = () => {
-      setError('Session expiree apres 2 minutes d inactivite. Reconnectez-vous.');
+      setError(`Session expiree apres ${timeoutMinutes} minutes d inactivite. Reconnectez-vous.`);
       void handleLogout();
     };
 
@@ -3525,7 +3558,16 @@ export default function RobinApp() {
 
   useEffect(() => {
     if (!dashboard?.virtual_portfolio) {
-      setFinanceVirtualSimulation(null);
+      const savedRuntime = normalizeFinanceVirtualRuntime(user?.personal_settings?.finance_virtual_runtime);
+      if (savedRuntime) {
+        setFinanceVirtualSimulation(savedRuntime);
+        return;
+      }
+      setFinanceVirtualSimulation({
+        currentValue: 100,
+        history: [{ date: new Date().toISOString(), value: 100 }],
+        operations: [],
+      });
       return;
     }
     const vp = dashboard.virtual_portfolio;
@@ -3727,6 +3769,7 @@ export default function RobinApp() {
     bettingStrategiesState: BettingStrategy[] = bettingStrategies,
     racingStrategiesState: BettingStrategy[] = racingStrategies,
     agentConfigsState: Record<string, AgentQuotaConfig> = agentConfigsRef.current,
+    localOperationsState: Record<string, Portfolio['operations']> = localPortfolioOperations,
   ) {
     const globalAgentConfig = agentConfigsState[GLOBAL_AGENT_CONFIG_KEY] ?? defaultAgentConfig;
     return {
@@ -3775,6 +3818,7 @@ export default function RobinApp() {
       racing_strategy_settings: serializeBettingStrategySettings(racingStrategiesState),
       racing_strategy_runtime: serializeBettingStrategyRuntime(racingStrategiesState),
       finance_virtual_runtime: financeVirtualSimulation,
+      local_portfolio_operations: localOperationsState,
       decision_resolutions: decisionState,
       agent_global_quota: globalAgentConfig,
       agent_quotas: agentConfigsState,
@@ -5524,7 +5568,15 @@ export default function RobinApp() {
   );
   const filteredTopTipsterRecommendations = useMemo(
     () => {
-      const base = topTipsterRecommendations.filter((signal) => bettingThemeVisibility[signal.sport as BettingThemeKey] !== false);
+      const nowTs = Date.now();
+      const maxHorizonTs = nowTs + (42 * 24 * 60 * 60 * 1000);
+      const base = topTipsterRecommendations
+        .filter((signal) => bettingThemeVisibility[signal.sport as BettingThemeKey] !== false)
+        .filter((signal) => {
+          const deadlineTs = Date.parse(signal.deadline);
+          return Number.isFinite(deadlineTs) && deadlineTs >= nowTs && deadlineTs <= maxHorizonTs;
+        })
+        .filter((signal) => signal.profileConfidenceIndex >= 65 && signal.value_pct >= 3);
       const bettingAgentEnabled = bettingStrategies.some((strategy) => strategy.enabled && strategy.ai_enabled);
       return bettingAgentEnabled ? base : [];
     },
@@ -7004,6 +7056,27 @@ export default function RobinApp() {
     return Math.min(Math.max(1, cfg.max_transactions_per_day), adminCap);
   }
 
+  function hasSufficientDecisionQuality(insight: InsightItem, side: 'buy' | 'sell', portfolio: Portfolio): { ok: boolean; reason: string } {
+    const text = `${insight.title} ${insight.trend} ${insight.detail}`.toLowerCase();
+    const hasBullishSignal = text.includes('↑') || text.includes('up') || text.includes('hausse') || text.includes('momentum');
+    const hasBearishSignal = text.includes('↓') || text.includes('down') || text.includes('baisse') || text.includes('repli');
+    const hasHighRiskFlag = text.includes('risque eleve') || text.includes('volatilite elevee') || text.includes('incertain');
+    const perf7d = computePortfolioEvolutionPct(portfolio.history, 7) ?? 0;
+
+    let qualityScore = 0;
+    if (side === 'buy' && hasBullishSignal) qualityScore += 1;
+    if (side === 'sell' && hasBearishSignal) qualityScore += 1;
+    if (side === 'buy' && perf7d >= 0.8) qualityScore += 1;
+    if (side === 'sell' && perf7d <= -0.8) qualityScore += 1;
+    if (text.includes('value') || text.includes('%')) qualityScore += 1;
+    if (hasHighRiskFlag) qualityScore -= 1;
+
+    if (qualityScore < 2) {
+      return { ok: false, reason: 'Signal IA insuffisamment robuste pour une transaction fiable (qualité < seuil).' };
+    }
+    return { ok: true, reason: '' };
+  }
+
   function isDecisionAllowedByAgentPolicy(insight: InsightItem, portfolioId: string, additionalAmount = 0) {
     const cfg = getAgentConfig(portfolioId);
     const asset = inferDecisionAsset(insight);
@@ -7072,6 +7145,10 @@ export default function RobinApp() {
         ? Math.max(MIN_MONETARY_LIMIT, options.amount)
         : notional;
       notional = Math.min(requestedAmount, config.max_amount);
+      const qualityCheck = hasSufficientDecisionQuality(insight, side, linkedPortfolio);
+      if (!qualityCheck.ok) {
+        throw new Error(qualityCheck.reason);
+      }
       const policyCheck = isDecisionAllowedByAgentPolicy(insight, portfolioId, notional);
       if (!policyCheck.allowed) {
         throw new Error(policyCheck.reason);
@@ -8478,6 +8555,8 @@ export default function RobinApp() {
     virtualAppsEnabled,
     lotteryVirtualPortfolio,
     portfolioActivation,
+    financeVirtualSimulation,
+    localPortfolioOperations,
   ]);
 
   useEffect(() => {

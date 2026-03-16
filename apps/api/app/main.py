@@ -2171,9 +2171,27 @@ async def betting_live_odds_fetch(payload: BettingLiveOddsFetchRequest, current_
     except OddsProviderError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
+    now_utc = datetime.utcnow()
+    max_horizon_utc = now_utc + timedelta(days=42)
+    filtered_rows: list[dict] = []
+    for event in rows:
+        commence_raw = str(event.get("commence_time") or "").strip()
+        if not commence_raw:
+            continue
+        parsed_commence: datetime | None = None
+        try:
+            parsed_commence = datetime.fromisoformat(commence_raw.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            parsed_commence = None
+        if not parsed_commence:
+            continue
+        if parsed_commence < now_utc or parsed_commence > max_horizon_utc:
+            continue
+        filtered_rows.append(event)
+
     response = BettingLiveOddsFetchResponse(
         source="the-odds-api",
-        fetched_events=len(rows),
+        fetched_events=len(filtered_rows),
         events=[
             BettingLiveOddsEvent(
                 event_id=str(event.get("event_id") or ""),
@@ -2190,7 +2208,7 @@ async def betting_live_odds_fetch(payload: BettingLiveOddsFetchRequest, current_
                     for selection in (event.get("selections") if isinstance(event.get("selections"), list) else [])
                 ],
             )
-            for event in rows
+            for event in filtered_rows
         ],
     )
     write_audit_log(
