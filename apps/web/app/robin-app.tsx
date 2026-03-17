@@ -556,6 +556,7 @@ type HomePortfolioRow = {
   statusTone: 'ok' | 'idle' | 'warn';
   trendLabel: string;
   trendTone: 'up' | 'down' | 'neutral';
+  portfolioEnabled: boolean;
   aiEnabled: boolean;
   autonomousActive: boolean;
 };
@@ -592,6 +593,7 @@ type CockpitUpcomingRow = {
   date: string;
   timestamp: number;
   title: string;
+  icon?: string;
   portfolioLabel: string;
   amountLabel: string;
   detail: string;
@@ -605,6 +607,7 @@ type CockpitRecentRow = {
   date: string;
   timestamp: number;
   title: string;
+  icon?: string;
   portfolioLabel: string;
   pnlAmount: number;
   pnlPct: number | null;
@@ -5041,6 +5044,18 @@ export default function RobinApp() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
+  function openFinanceTransactionsView() {
+    setActiveApp('finance');
+    setAppView('portfolios');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function openRacingTransactionsView() {
+    setActiveApp('racing');
+    setAppView('strategies');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
   function scrollToSection(sectionId: string) {
     const section = document.getElementById(sectionId);
     if (!section) {
@@ -5259,6 +5274,8 @@ export default function RobinApp() {
     ? (topbarVirtualTrendAmount / topbarVirtualTrendBase) * 100
     : null;
   const topbarVirtualTrendTone = numericChangeTone(topbarVirtualTrendAmount);
+  const topbarTotalValue = topbarRealValue + topbarVirtualValue;
+  const topbarTotalValueLabel = `${topbarTotalValue.toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €`;
   const topbarProgressLabel = loading
     ? `Chargement ${topbarProgressPct}%`
     : `${goalProgress >= 0 ? '+' : ''}${Math.round(goalProgress * 100)}% vs cible`;
@@ -5905,6 +5922,7 @@ export default function RobinApp() {
         statusTone: portfolio.status === 'active' ? 'ok' : portfolio.status === 'pending_user_consent' ? 'warn' : 'idle',
         trendLabel: `7j: ${evolution.value}`,
         trendTone: evolution.tone,
+        portfolioEnabled: portfolio.status === 'active',
         aiEnabled: portfolio.status === 'active' && cfg.enabled,
         autonomousActive: portfolio.status === 'active' && cfg.enabled && cfg.mode === 'autopilot',
       };
@@ -5925,6 +5943,7 @@ export default function RobinApp() {
         statusTone: strategy.enabled ? 'ok' : 'idle',
         trendLabel: `7j: ${evolution.value}`,
         trendTone: evolution.tone,
+        portfolioEnabled: strategy.enabled,
         aiEnabled: strategy.enabled && strategy.ai_enabled,
         autonomousActive: strategy.enabled && strategy.ai_enabled && strategy.mode === 'autonomous',
       };
@@ -5945,6 +5964,7 @@ export default function RobinApp() {
         statusTone: strategy.enabled ? 'ok' : 'idle',
         trendLabel: `7j: ${evolution.value}`,
         trendTone: evolution.tone,
+        portfolioEnabled: strategy.enabled,
         aiEnabled: strategy.enabled && strategy.ai_enabled,
         autonomousActive: strategy.enabled && strategy.ai_enabled && strategy.mode === 'autonomous',
       };
@@ -5964,6 +5984,7 @@ export default function RobinApp() {
         statusTone: virtualAppsEnabled.loto && lotteryVirtualPortfolio.enabled ? 'ok' : 'idle',
         trendLabel: `PnL ${lotteryVirtualPnl >= 0 ? '+' : ''}${lotteryVirtualPnl.toFixed(2)} €`,
         trendTone: lotteryVirtualPnl > 0 ? 'up' : lotteryVirtualPnl < 0 ? 'down' : 'neutral',
+        portfolioEnabled: virtualAppsEnabled.loto && lotteryVirtualPortfolio.enabled,
         aiEnabled: virtualAppsEnabled.loto && lotteryVirtualPortfolio.enabled && lotteryVirtualPortfolio.ai_enabled,
         autonomousActive: virtualAppsEnabled.loto && lotteryVirtualPortfolio.enabled && lotteryVirtualPortfolio.ai_enabled && lotteryVirtualPortfolio.mode === 'autonomous',
       },
@@ -5984,6 +6005,7 @@ export default function RobinApp() {
           statusTone: portfolio.status === 'active' ? 'ok' : 'idle',
           trendLabel: cfg.enabled ? `IA ${cfg.mode}` : 'IA inactive',
           trendTone: cfg.enabled && cfg.mode === 'autopilot' ? 'up' : 'neutral',
+          portfolioEnabled: portfolio.status === 'active',
           aiEnabled: portfolio.status === 'active' && cfg.enabled,
           autonomousActive: portfolio.status === 'active' && cfg.enabled && cfg.mode === 'autopilot',
         };
@@ -6665,7 +6687,7 @@ export default function RobinApp() {
     return [...scheduledOperations, ...aiQueue]
       .filter((row, index, rows) => rows.findIndex((candidate) => candidate.id === row.id) === index)
       .sort((a, b) => a.timestamp - b.timestamp)
-      .slice(0, 8);
+      .slice(0, 5);
   }, [allPortfolios, visibleDecisionInsights]);
   const financeRecentCockpitRows = useMemo<CockpitRecentRow[]>(() => {
     const nowTs = Date.now();
@@ -6696,7 +6718,7 @@ export default function RobinApp() {
         };
       }))
       .sort((a, b) => b.timestamp - a.timestamp)
-      .slice(0, 8);
+        .slice(0, 5);
   }, [allPortfolios]);
   const bettingUpcomingCockpitRows = useMemo<CockpitUpcomingRow[]>(() => activeBettingBets
     .map((bet) => {
@@ -6709,6 +6731,7 @@ export default function RobinApp() {
         date: eventDate,
         timestamp: Date.parse(eventDate),
         title: bet.event,
+        icon: sportEmoji(bet.sport),
         portfolioLabel: bet.strategyName,
         amountLabel: `${bet.stake.toFixed(2)} €`,
         detail: `${bet.market} · ${bookmaker}`,
@@ -6718,13 +6741,14 @@ export default function RobinApp() {
       };
     })
     .sort((a, b) => a.timestamp - b.timestamp)
-    .slice(0, 8), [activeBettingBets, tipsterSignals, liveClockTs]);
+    .slice(0, 5), [activeBettingBets, tipsterSignals, liveClockTs]);
   const bettingRecentCockpitRows = useMemo<CockpitRecentRow[]>(() => settledBettingBets
     .map((bet) => ({
       id: `betting-recent-${bet.id}`,
       date: bet.date,
       timestamp: Date.parse(bet.date),
       title: bet.event,
+      icon: sportEmoji(bet.sport),
       portfolioLabel: bettingStrategies.find((strategy) => strategy.id === bet.strategyId)?.name ?? 'Portefeuille Paris',
       pnlAmount: bet.profit,
       pnlPct: bet.stake > 0 ? (bet.profit / bet.stake) * 100 : null,
@@ -6733,7 +6757,7 @@ export default function RobinApp() {
       detail: `${bet.market} · ${bet.bookmaker}`,
     }))
     .sort((a, b) => b.timestamp - a.timestamp)
-    .slice(0, 8), [settledBettingBets, bettingStrategies]);
+    .slice(0, 5), [settledBettingBets, bettingStrategies]);
   const racingActiveBets = useMemo(
     () => racingStrategies
       .flatMap((strategy) => strategy.recentBets
@@ -6768,6 +6792,7 @@ export default function RobinApp() {
         date: eventDate,
         timestamp: Date.parse(eventDate),
         title: bet.event,
+        icon: '🏇',
         portfolioLabel: bet.strategyName,
         amountLabel: `${bet.stake.toFixed(2)} €`,
         detail: `${bet.market} · ${bookmaker}`,
@@ -6777,13 +6802,14 @@ export default function RobinApp() {
       };
     })
     .sort((a, b) => a.timestamp - b.timestamp)
-    .slice(0, 8), [racingActiveBets, racingSignals, liveClockTs]);
+    .slice(0, 5), [racingActiveBets, racingSignals, liveClockTs]);
   const racingRecentCockpitRows = useMemo<CockpitRecentRow[]>(() => racingSettledBets
     .map((bet) => ({
       id: `racing-recent-${bet.id}`,
       date: bet.date,
       timestamp: Date.parse(bet.date),
       title: bet.event,
+      icon: '🏇',
       portfolioLabel: bet.strategyName,
       pnlAmount: bet.profit,
       pnlPct: bet.stake > 0 ? (bet.profit / bet.stake) * 100 : null,
@@ -6792,7 +6818,7 @@ export default function RobinApp() {
       detail: `${bet.market} · ${bet.bookmaker}`,
     }))
     .sort((a, b) => b.timestamp - a.timestamp)
-    .slice(0, 8), [racingSettledBets]);
+    .slice(0, 5), [racingSettledBets]);
   const supervisedFinanceMessages = useMemo(() => {
     const supervisedPortfolios = allPortfolios.filter((portfolio) => {
       if (portfolio.status !== 'active') {
@@ -7013,6 +7039,64 @@ export default function RobinApp() {
       enabled,
       mode: enabled ? (cfg.mode === 'manual' ? 'supervised' : cfg.mode) : 'manual',
     });
+  }
+
+  async function toggleHomePortfolioEnabled(row: HomePortfolioRow, enabled: boolean) {
+    if (row.appKey === 'finance') {
+      const portfolio = allPortfolios.find((entry) => entry.id === row.targetId);
+      if (!portfolio) {
+        return;
+      }
+      await togglePortfolioActivation(portfolio, enabled);
+      return;
+    }
+    if (row.appKey === 'betting') {
+      const strategy = bettingStrategies.find((entry) => entry.id === row.targetId);
+      if (!strategy) {
+        return;
+      }
+      updateBettingStrategy(row.targetId, {
+        enabled,
+        ai_enabled: enabled ? strategy.ai_enabled : false,
+        mode: enabled ? strategy.mode : 'manual',
+      });
+      return;
+    }
+    if (row.appKey === 'racing') {
+      const strategy = racingStrategies.find((entry) => entry.id === row.targetId);
+      if (!strategy) {
+        return;
+      }
+      updateRacingStrategy(row.targetId, {
+        enabled,
+        ai_enabled: enabled ? strategy.ai_enabled : false,
+        mode: enabled ? strategy.mode : 'manual',
+      });
+      return;
+    }
+    if (row.targetId === 'loto-virtual') {
+      await updateVirtualAppPreference('loto', enabled);
+      if (!enabled && lotteryVirtualPortfolio.ai_enabled) {
+        persistLotteryVirtualPortfolio({
+          ...lotteryVirtualPortfolio,
+          ai_enabled: false,
+          mode: 'manual',
+        });
+      }
+      return;
+    }
+    const integrationPortfolio = allPortfolios.find((entry) => entry.id === row.targetId);
+    if (integrationPortfolio) {
+      await togglePortfolioActivation(integrationPortfolio, enabled);
+      return;
+    }
+    if (!enabled) {
+      const cfg = getAgentConfig(row.targetId);
+      void updateAgentConfig(row.targetId, {
+        enabled: false,
+        mode: cfg.mode === 'autopilot' ? 'supervised' : cfg.mode,
+      });
+    }
   }
 
   function pushLocalPortfolioOperation(portfolioId: string, operation: Portfolio['operations'][number]) {
@@ -7702,6 +7786,10 @@ export default function RobinApp() {
       setBettingAlert('Sélectionnez un portefeuille Loto avant de confirmer la recommandation IA.');
       return;
     }
+    if (lotteryVirtualPortfolio.tickets.some((ticket) => ticket.status === 'pending')) {
+      setBettingAlert('Une seule transaction Loto peut rester en cours à la fois.');
+      return;
+    }
 
     const normalizedWeeks = Math.max(1, Math.min(8, Math.round(weeks)));
     const scheduledDraws = buildLotteryUpcomingDrawSeries(game, normalizedWeeks)
@@ -7803,6 +7891,12 @@ export default function RobinApp() {
     if (source === 'autonomous' && (!lotteryVirtualPortfolio.ai_enabled || lotteryVirtualPortfolio.mode !== 'autonomous')) {
       return;
     }
+    if (lotteryVirtualPortfolio.tickets.some((ticket) => ticket.status === 'pending')) {
+      if (!options.silent) {
+        setBettingAlert('Une seule transaction Loto peut rester en cours à la fois.');
+      }
+      return;
+    }
     if (emergencyStopActive) {
       if (!options.silent) {
         setBettingAlert('Kill switch actif — simulation Loto suspendue.');
@@ -7883,6 +7977,10 @@ export default function RobinApp() {
     }
     if (emergencyStopActive) {
       setBettingAlert('Kill switch actif — abonnement Loto suspendu.');
+      return;
+    }
+    if (lotteryVirtualPortfolio.tickets.some((ticket) => ticket.status === 'pending')) {
+      setBettingAlert('Une seule transaction Loto peut rester en cours à la fois.');
       return;
     }
 
@@ -8039,6 +8137,12 @@ export default function RobinApp() {
     if (!virtual.enabled && !sourceSignal) {
       return;
     }
+    if (activeBettingBets.length > 0) {
+      if (!options.silent) {
+        setBettingAlert('Une seule transaction Paris sportifs peut rester en cours à la fois.');
+      }
+      return;
+    }
     const activeRiskProfile = (virtual.risk_profile ?? virtualRiskProfile) as VirtualRiskProfile;
     const profile = VIRTUAL_RISK_PRESETS[activeRiskProfile];
 
@@ -8160,6 +8264,10 @@ export default function RobinApp() {
       setBettingAlert(`✅ Pari validé : ${signal.event} — ${signal.market}`);
       return;
     }
+    if (activeBettingBets.length > 0) {
+      setBettingAlert('Une seule transaction Paris sportifs peut rester en cours à la fois.');
+      return;
+    }
     if (preferredStrategy.isVirtual) {
       if (!preferredStrategy.enabled || !preferredStrategy.ai_enabled) {
         updateBettingStrategy(preferredStrategy.id, {
@@ -8250,6 +8358,12 @@ export default function RobinApp() {
     if (!virtual || !virtual.enabled || !virtual.ai_enabled) {
       return;
     }
+    if (racingActiveBets.length > 0) {
+      if (!options.silent) {
+        setBettingAlert('Une seule transaction hippique peut rester en cours à la fois.');
+      }
+      return;
+    }
     const maxStakeAllowed = Math.max(
       MIN_MONETARY_LIMIT,
       Math.min(Math.max(MIN_MONETARY_LIMIT, virtual.max_stake), Math.max(MIN_MONETARY_LIMIT, virtual.bankroll)),
@@ -8288,6 +8402,10 @@ export default function RobinApp() {
     const targetStrategy = racingStrategies.find((strategy) => strategy.id === targetStrategyId);
     if (!targetStrategy) {
       setBettingAlert('Sélectionnez un portefeuille hippique avant de confirmer cette recommandation.');
+      return;
+    }
+    if (racingActiveBets.length > 0) {
+      setBettingAlert('Une seule transaction hippique peut rester en cours à la fois.');
       return;
     }
 
@@ -8945,6 +9063,126 @@ export default function RobinApp() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
+  if (!user) {
+    return (
+      <main className="investShell appTheme-finance">
+        <header className="heroTopbar">
+          <div className="brandRow">
+            <div className="brandCluster">
+              <div className="brandBadge" aria-hidden="true">
+                <svg width="30" height="30" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <rect x="4" y="4" width="92" height="92" rx="30" fill="#fff5e9" stroke="#7a3412" strokeWidth="4"/>
+                  <path d="M18 45 L36 18 L42 46 Z" fill="#f97316" stroke="#9a3412" strokeWidth="3" strokeLinejoin="round"/>
+                  <path d="M82 45 L64 18 L58 46 Z" fill="#f97316" stroke="#9a3412" strokeWidth="3" strokeLinejoin="round"/>
+                  <path d="M20 52 C20 34 34 24 50 24 C66 24 80 34 80 52 C80 72 66 84 50 84 C34 84 20 72 20 52 Z" fill="#fb923c"/>
+                  <ellipse cx="50" cy="67" rx="22" ry="13" fill="#fff7ed"/>
+                  <circle cx="40" cy="52" r="8" fill="#fff"/>
+                  <circle cx="60" cy="52" r="8" fill="#fff"/>
+                  <circle cx="41" cy="53" r="3.5" fill="#111827"/>
+                  <circle cx="59" cy="53" r="3.5" fill="#111827"/>
+                  <path d="M34 43 Q39 39 44 43" stroke="#7a3412" strokeWidth="3" strokeLinecap="round"/>
+                  <path d="M56 43 Q61 39 66 43" stroke="#7a3412" strokeWidth="3" strokeLinecap="round"/>
+                  <path d="M50 58 L56 65 L50 68 L44 65 Z" fill="#7a3412"/>
+                  <path d="M44 71 Q50 76 56 71" stroke="#7a3412" strokeWidth="3" strokeLinecap="round"/>
+                  <circle cx="71" cy="30" r="7" fill="#86efac" stroke="#166534" strokeWidth="2"/>
+                  <path d="M68.5 30 L70.5 32.5 L74 27.5" stroke="#166534" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </div>
+              <div className="brandInfo">
+                <strong>
+                  <span className="robinWord">ROBIN</span>
+                </strong>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <section className="landingCanvas">
+          <article className="authExperienceCard">
+            <div className="cardHeader">
+              <h2>{authMode === 'login' ? 'Connexion' : 'Créer un compte'}</h2>
+              <span>{authMode === 'login' ? 'Accès sécurisé' : 'Validation admin requise'}</span>
+            </div>
+
+            <div className="providerActions" style={{ marginBottom: 10 }}>
+              <button className={authMode === 'login' ? 'primaryButton' : 'secondaryButton'} onClick={() => setAuthMode('login')} type="button">Connexion</button>
+              <button className={authMode === 'register' ? 'primaryButton' : 'secondaryButton'} onClick={() => setAuthMode('register')} type="button">Inscription</button>
+            </div>
+
+            {authMode === 'login' ? (
+              <form className="authExperienceForm" onSubmit={handleLogin}>
+                <label className="authField">Email
+                  <input
+                    type="email"
+                    value={loginForm.email}
+                    onChange={(event) => setLoginForm((state) => ({ ...state, email: event.target.value }))}
+                    autoComplete="username"
+                    placeholder="votre@email.com"
+                    required
+                  />
+                </label>
+                <label className="authField">Mot de passe
+                  <input
+                    type="password"
+                    value={loginForm.password}
+                    onChange={(event) => setLoginForm((state) => ({ ...state, password: event.target.value }))}
+                    autoComplete="current-password"
+                    placeholder="Votre mot de passe"
+                    required
+                  />
+                </label>
+                {mfaRequired ? (
+                  <label className="authField">Code MFA
+                    <input
+                      type="text"
+                      value={loginForm.mfaCode}
+                      onChange={(event) => setLoginForm((state) => ({ ...state, mfaCode: event.target.value }))}
+                      placeholder="Code reçu"
+                    />
+                  </label>
+                ) : null}
+                <button className="primaryButton" disabled={submitting} type="submit">Se connecter</button>
+              </form>
+            ) : (
+              <form className="authExperienceForm" onSubmit={handleRegister}>
+                <label className="authField">Nom complet
+                  <input
+                    type="text"
+                    value={registerForm.fullName}
+                    onChange={(event) => setRegisterForm((state) => ({ ...state, fullName: event.target.value }))}
+                    placeholder="Nom et prenom"
+                    required
+                  />
+                </label>
+                <label className="authField">Email
+                  <input
+                    type="email"
+                    value={registerForm.email}
+                    onChange={(event) => setRegisterForm((state) => ({ ...state, email: event.target.value }))}
+                    placeholder="votre@email.com"
+                    required
+                  />
+                </label>
+                <label className="authField">Mot de passe
+                  <input
+                    type="password"
+                    value={registerForm.password}
+                    onChange={(event) => setRegisterForm((state) => ({ ...state, password: event.target.value }))}
+                    placeholder="Choisissez un mot de passe"
+                    required
+                  />
+                </label>
+                <button className="primaryButton" disabled={submitting} type="submit">Créer le compte</button>
+              </form>
+            )}
+
+            {error ? <p className="formMessage">{error}</p> : null}
+          </article>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className={`investShell appTheme-${activeApp}`}>
       <div className="appWatermarkLayer" aria-hidden="true">
@@ -8982,9 +9220,6 @@ export default function RobinApp() {
               </strong>
             </div>
           </div>
-          {user ? (
-            <button className="appSwitchBtn logoutBtn" onClick={handleLogout} type="button">↪ Se déconnecter</button>
-          ) : null}
         </div>
         {user ? (
           <div className="headerActions">
@@ -9000,6 +9235,7 @@ export default function RobinApp() {
               </div>
             ) : null}
             <button className={appView === 'account' ? 'appSwitchBtn account active' : 'appSwitchBtn account'} onClick={() => openAccountWorkspace('account-overview')} type="button">👤 Mon compte</button>
+            <button className="appSwitchBtn logoutBtn" onClick={handleLogout} type="button">🚪 Quitter</button>
           </div>
         ) : null}
         <div className="topbarUniverseProgressRow">
@@ -9080,7 +9316,7 @@ export default function RobinApp() {
                 } as Record<string, string>}
               >
                 <div className="batteryHeader">
-                  <span className="batteryEyebrow">Progression nette</span>
+                  <span className="batteryEyebrow">Progression</span>
                   <strong>{topbarProgressLabel}</strong>
                   <span className={`metaPill ${goalMoodTone}`}>{goalMoodLabel}</span>
                 </div>
@@ -9088,18 +9324,16 @@ export default function RobinApp() {
                   <div className="batteryChargingFlow" />
                   <div className="batteryLevel" />
                   <div className="batteryNeedle" />
-                  <div className="batteryPercent">{uiNavigationProgressPct}% navigation</div>
+                  <div className="batteryPercent">{topbarTotalValueLabel}</div>
                 </div>
                 <div className="batteryTimeline">
                   <div className="batteryTimelineRail">
                     <div className="batteryTimelineProgress" />
                     <div className="batteryTimelineMascot" aria-hidden="true">🏃</div>
-                    <div className="batteryTimelineFinishDate">Arrivee: {objectiveDeadlineLabel}</div>
-                  </div>
-                  <div
-                    className={`batteryDelayInfo ${loading ? 'loading' : topbarDelayConsumedPct >= 100 ? 'done' : topbarDelayConsumedPct >= 75 ? 'warn' : 'ok'}`}
-                  >
-                    Fenêtre active en direct
+                    <div className="batteryTimelineFinishDate">
+                      <span className="batteryTimelineFlag" aria-hidden="true">🏁</span>
+                      <span>Arrivee: {objectiveDeadlineLabel}</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -9180,6 +9414,7 @@ export default function RobinApp() {
           onOpenPortfolio={openHomePortfolio}
           onOpenTransaction={openHomeTransaction}
           onTogglePortfolioAi={toggleHomePortfolioAi}
+          onTogglePortfolioEnabled={(row, enabled) => void toggleHomePortfolioEnabled(row, enabled)}
           renderSparkline={(history, tone) => <Sparkline data={history} color={tone === 'down' ? 'var(--danger)' : tone === 'up' ? 'var(--ok)' : 'var(--brand)'} />}
         />
       ) : null}
@@ -9695,14 +9930,14 @@ export default function RobinApp() {
                   ) : (
                     <div className="cockpitTransactionList">
                       {financeUpcomingCockpitRows.map((row) => (
-                        <article className="cockpitTransactionRow" key={row.id}>
+                        <button className="cockpitTransactionRow cockpitTransactionButton" key={row.id} onClick={openFinanceTransactionsView} type="button">
                           <div className="cockpitTransactionMeta">
                             <span>{formatDateTimeFr(row.date)}</span>
                             <strong>{row.amountLabel}</strong>
                           </div>
-                          <div className="cockpitTransactionTitle">{row.title}</div>
+                          <div className="cockpitTransactionTitle">💹 {row.title}</div>
                           <div className="cockpitTransactionDetail">{row.portfolioLabel} · {row.detail}</div>
-                        </article>
+                        </button>
                       ))}
                     </div>
                   )}
@@ -9718,12 +9953,12 @@ export default function RobinApp() {
                   ) : (
                     <div className="cockpitTransactionList">
                       {financeRecentCockpitRows.map((row) => (
-                        <article className="cockpitTransactionRow" key={row.id}>
+                        <button className="cockpitTransactionRow cockpitTransactionButton" key={row.id} onClick={openFinanceTransactionsView} type="button">
                           <div className="cockpitTransactionMeta">
                             <span>{formatDateTimeFr(row.date)}</span>
                             <strong className={row.pnlAmount >= 0 ? 'up' : 'down'}>{formatSignedEuro(row.pnlAmount, '0.00 €')}</strong>
                           </div>
-                          <div className="cockpitTransactionTitle">{row.title}</div>
+                          <div className="cockpitTransactionTitle">💹 {row.title}</div>
                           <div className="cockpitTransactionDetail">{row.portfolioLabel} · {row.detail}</div>
                           <div className="cockpitTransactionMetrics">
                             <span className={row.pnlAmount >= 0 ? 'up' : 'down'}>
@@ -9732,7 +9967,7 @@ export default function RobinApp() {
                             <span>Frais {row.fees.toFixed(2)} €</span>
                             <span>Impôts FR {row.taxesFr.toFixed(2)} €</span>
                           </div>
-                        </article>
+                        </button>
                       ))}
                     </div>
                   )}
@@ -9742,7 +9977,7 @@ export default function RobinApp() {
               <section className="cockpitPortfolioColumns">
                 <article className="featureCard cockpitPortfolioSection real">
                   <div className="cardHeader">
-                    <h2>Portefeuilles réels</h2>
+                    <h2>Portefeuilles connectés (suivi fictif)</h2>
                     <span>{financeRealPortfoliosForCockpit.length} portefeuille(s)</span>
                   </div>
                   {financeRealPortfoliosForCockpit.length === 0 ? (
@@ -9754,11 +9989,11 @@ export default function RobinApp() {
                         return (
                           <button className="cockpitPortfolioMiniCard real" key={`finance-real-cockpit-${portfolio.id}`} onClick={() => openFinancePortfolioDetail(portfolio)} type="button">
                             <div className="cockpitPortfolioMiniMeta">
-                              <span className="portfolioTypeBadge real">Réel</span>
+                              <span className="portfolioTypeBadge real">Suivi fictif</span>
                               <span className="metaPill">{portfolio.agent_name}</span>
                             </div>
                             <strong>₿ {portfolio.label}</strong>
-                            <p>{portfolio.last_sync_at ? `Synchronisé le ${formatDateTimeFr(portfolio.last_sync_at)}` : 'Synchronisation requise'}</p>
+                            <p>{portfolio.last_sync_at ? `Synchronisé le ${formatDateTimeFr(portfolio.last_sync_at)} · aucune transaction réelle lancée` : 'Synchronisation requise'}</p>
                             <div className="cockpitPortfolioMiniValue">{portfolio.current_value.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €</div>
                             <div className={`cockpitPortfolioMiniTrend ${evolution.tone}`}>Tendance 7j · {evolution.value}</div>
                             <div className="cockpitPortfolioMiniSparkline"><Sparkline data={portfolio.history.slice(-30)} color={evolution.tone === 'down' ? 'var(--danger)' : 'var(--teal)'} /></div>
@@ -9771,7 +10006,7 @@ export default function RobinApp() {
 
                 <article className="featureCard cockpitPortfolioSection virtual">
                   <div className="cardHeader">
-                    <h2>Portefeuilles fictifs</h2>
+                    <h2>Portefeuilles actions & cryptos fictifs</h2>
                     <span>{financeVirtualPortfoliosForCockpit.length} portefeuille(s)</span>
                   </div>
                   {financeVirtualPortfoliosForCockpit.length === 0 ? (
@@ -11748,7 +11983,7 @@ export default function RobinApp() {
                   ) : (
                     <div className="cockpitTransactionList">
                       {bettingUpcomingCockpitRows.map((row) => (
-                        <article className={`cockpitTransactionRow${row.isLive ? ` isLive live-${row.liveKind}` : ''}`} key={row.id}>
+                        <button className={`cockpitTransactionRow cockpitTransactionButton${row.isLive ? ` isLive live-${row.liveKind}` : ''}`} key={row.id} onClick={() => focusBettingDetailPanel('active')} type="button">
                           <div className="cockpitTransactionMeta">
                             <span>{formatDateTimeFr(row.date)}</span>
                             <strong>{row.amountLabel}</strong>
@@ -11759,9 +11994,9 @@ export default function RobinApp() {
                               <span>{row.liveLabel}</span>
                             </div>
                           ) : null}
-                          <div className="cockpitTransactionTitle">{row.title}</div>
+                          <div className="cockpitTransactionTitle">{row.icon ?? '🏆'} {row.title}</div>
                           <div className="cockpitTransactionDetail">{row.portfolioLabel} · {row.detail}</div>
-                        </article>
+                        </button>
                       ))}
                     </div>
                   )}
@@ -11777,12 +12012,12 @@ export default function RobinApp() {
                   ) : (
                     <div className="cockpitTransactionList">
                       {bettingRecentCockpitRows.map((row) => (
-                        <article className="cockpitTransactionRow" key={row.id}>
+                        <button className="cockpitTransactionRow cockpitTransactionButton" key={row.id} onClick={() => focusBettingDetailPanel('recent')} type="button">
                           <div className="cockpitTransactionMeta">
                             <span>{formatDateTimeFr(row.date)}</span>
                             <strong className={row.pnlAmount >= 0 ? 'up' : 'down'}>{formatSignedEuro(row.pnlAmount, '0.00 €')}</strong>
                           </div>
-                          <div className="cockpitTransactionTitle">{row.title}</div>
+                          <div className="cockpitTransactionTitle">{row.icon ?? '🏆'} {row.title}</div>
                           <div className="cockpitTransactionDetail">{row.portfolioLabel} · {row.detail}</div>
                           <div className="cockpitTransactionMetrics">
                             <span className={row.pnlAmount >= 0 ? 'up' : 'down'}>
@@ -11791,7 +12026,7 @@ export default function RobinApp() {
                             <span>Frais {row.fees.toFixed(2)} €</span>
                             <span>Impôts FR {row.taxesFr.toFixed(2)} €</span>
                           </div>
-                        </article>
+                        </button>
                       ))}
                     </div>
                   )}
@@ -11892,7 +12127,7 @@ export default function RobinApp() {
                             <span className="metaPill">Gain potentiel +{signal.potentialGain.toFixed(1)} €</span>
                           </div>
                           <div className="decisionActions">
-                            <button className="approveButton" disabled={emergencyStopActive || !selectedBettingRecommendationStrategyId} onClick={() => approveTipsterSignal(signal, 'manual', selectedBettingRecommendationStrategyId)} type="button">Appliquer maintenant</button>
+                            <button className="approveButton" disabled={emergencyStopActive || !selectedBettingRecommendationStrategyId || activeBettingBets.length > 0} onClick={() => approveTipsterSignal(signal, 'manual', selectedBettingRecommendationStrategyId)} type="button">Appliquer maintenant</button>
                             <button className="rejectButton" onClick={() => setTipsterSignals((prev) => prev.map((entry) => entry.id === signal.id ? { ...entry, status: 'rejected' } : entry))} type="button">Ignorer</button>
                           </div>
                         </div>
@@ -12200,7 +12435,7 @@ export default function RobinApp() {
                       <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                         <button
                           className="approveButton"
-                          disabled={emergencyStopActive}
+                          disabled={emergencyStopActive || activeBettingBets.length > 0}
                           onClick={() => {
                             approveTipsterSignal(signal, 'manual');
                           }}
@@ -12735,7 +12970,7 @@ export default function RobinApp() {
                   ) : (
                     <div className="cockpitTransactionList">
                       {racingUpcomingCockpitRows.map((row) => (
-                        <article className={`cockpitTransactionRow${row.isLive ? ` isLive live-${row.liveKind}` : ''}`} key={row.id}>
+                        <button className={`cockpitTransactionRow cockpitTransactionButton${row.isLive ? ` isLive live-${row.liveKind}` : ''}`} key={row.id} onClick={openRacingTransactionsView} type="button">
                           <div className="cockpitTransactionMeta">
                             <span>{formatDateTimeFr(row.date)}</span>
                             <strong>{row.amountLabel}</strong>
@@ -12746,9 +12981,9 @@ export default function RobinApp() {
                               <span>{row.liveLabel}</span>
                             </div>
                           ) : null}
-                          <div className="cockpitTransactionTitle">{row.title}</div>
+                          <div className="cockpitTransactionTitle">{row.icon ?? '🏇'} {row.title}</div>
                           <div className="cockpitTransactionDetail">{row.portfolioLabel} · {row.detail}</div>
-                        </article>
+                        </button>
                       ))}
                     </div>
                   )}
@@ -12764,12 +12999,12 @@ export default function RobinApp() {
                   ) : (
                     <div className="cockpitTransactionList">
                       {racingRecentCockpitRows.map((row) => (
-                        <article className="cockpitTransactionRow" key={row.id}>
+                        <button className="cockpitTransactionRow cockpitTransactionButton" key={row.id} onClick={openRacingTransactionsView} type="button">
                           <div className="cockpitTransactionMeta">
                             <span>{formatDateTimeFr(row.date)}</span>
                             <strong className={row.pnlAmount >= 0 ? 'up' : 'down'}>{formatSignedEuro(row.pnlAmount, '0.00 €')}</strong>
                           </div>
-                          <div className="cockpitTransactionTitle">{row.title}</div>
+                          <div className="cockpitTransactionTitle">{row.icon ?? '🏇'} {row.title}</div>
                           <div className="cockpitTransactionDetail">{row.portfolioLabel} · {row.detail}</div>
                           <div className="cockpitTransactionMetrics">
                             <span className={row.pnlAmount >= 0 ? 'up' : 'down'}>
@@ -12778,7 +13013,7 @@ export default function RobinApp() {
                             <span>Frais {row.fees.toFixed(2)} €</span>
                             <span>Impôts FR {row.taxesFr.toFixed(2)} €</span>
                           </div>
-                        </article>
+                        </button>
                       ))}
                     </div>
                   )}
@@ -12960,6 +13195,11 @@ export default function RobinApp() {
                         ) : null;
                       })()}
                     </div>
+                    {racingActiveBets.length > 0 && (
+                      <div className="infoPanel" style={{ margin: '0', background: 'var(--warn-soft)', color: 'var(--warn)', border: '1px solid var(--warn)', borderRadius: 8 }}>
+                        ⚠️ 1 pari hippique en cours — vous ne pouvez participer qu'à un seul pari à la fois. Attendez la résolution avant de confirmer une nouvelle recommandation.
+                      </div>
+                    )}
                     {racingPendingSignalsDisplay.map((signal) => {
                       const confidenceLevel = confidenceLevelFromScale(signal.confidence, 5);
                       return (
@@ -12979,7 +13219,7 @@ export default function RobinApp() {
                         </div>
                         <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
                           <span className="statusBadge ok">{signal.bookmaker}</span>
-                          <button className="secondaryButton" onClick={() => confirmRacingRecommendation(signal, selectedRacingRecommendationStrategyId)} type="button">Confirmer sur le portefeuille</button>
+                          <button className="secondaryButton" disabled={racingActiveBets.length > 0} onClick={() => confirmRacingRecommendation(signal, selectedRacingRecommendationStrategyId)} type="button">Confirmer sur le portefeuille</button>
                         </div>
                       </div>
                     );})}

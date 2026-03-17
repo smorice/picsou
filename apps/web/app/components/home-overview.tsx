@@ -54,6 +54,7 @@ type HomePortfolioRowLike = {
   statusTone: StatusTone;
   trendLabel: string;
   trendTone: Tone;
+  portfolioEnabled: boolean;
   aiEnabled: boolean;
   autonomousActive: boolean;
 };
@@ -72,6 +73,7 @@ type HomeOverviewProps = {
   onOpenTransaction: (row: HomeTransactionRowLike) => void;
   onOpenPortfolio: (row: HomePortfolioRowLike) => void;
   onTogglePortfolioAi: (row: HomePortfolioRowLike, enabled: boolean) => void;
+  onTogglePortfolioEnabled: (row: HomePortfolioRowLike, enabled: boolean) => void;
   renderSparkline: (history: Array<{ value: number }>, tone: Tone) => ReactNode;
 };
 
@@ -212,6 +214,7 @@ const PortfolioCard = memo(function PortfolioCard({
   formatSignedEuro,
   onOpenPortfolio,
   onTogglePortfolioAi,
+  onTogglePortfolioEnabled,
   renderSparkline,
 }: {
   row: HomePortfolioRowLike;
@@ -221,6 +224,7 @@ const PortfolioCard = memo(function PortfolioCard({
   formatSignedEuro: (value: number | null, fallback?: string) => string;
   onOpenPortfolio: (row: HomePortfolioRowLike) => void;
   onTogglePortfolioAi: (row: HomePortfolioRowLike, enabled: boolean) => void;
+  onTogglePortfolioEnabled: (row: HomePortfolioRowLike, enabled: boolean) => void;
   renderSparkline: (history: Array<{ value: number }>, tone: Tone) => ReactNode;
 }) {
   return (
@@ -232,6 +236,22 @@ const PortfolioCard = memo(function PortfolioCard({
         </div>
         <div className="homePortfolioBadges">
           <button className={`homePortfolioBadgeButton portfolioTypeBadge ${variant}`} onClick={(event) => { event.stopPropagation(); onOpenPortfolio(row); }} type="button">{variant === 'real' ? 'Cumulé' : 'Simulation'}</button>
+          <button
+            aria-checked={row.portfolioEnabled}
+            aria-label={`Activer ou desactiver le portefeuille ${row.label}`}
+            className={`homeToggle homeAiToggle${row.portfolioEnabled ? ' isChecked' : ''}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onTogglePortfolioEnabled(row, !row.portfolioEnabled);
+            }}
+            onMouseDown={(event) => event.stopPropagation()}
+            role="switch"
+            style={{ margin: 0 }}
+            type="button"
+          >
+            <span className="homeToggleTrack"><span className="homeToggleThumb" /></span>
+            <span className="homeToggleLabel">Portefeuille</span>
+          </button>
           <button
             aria-checked={row.aiEnabled}
             aria-label={`Basculer l agent IA pour ${row.label}`}
@@ -299,6 +319,7 @@ function HomeOverviewComponent({
   onOpenTransaction,
   onOpenPortfolio,
   onTogglePortfolioAi,
+  onTogglePortfolioEnabled,
   renderSparkline,
 }: HomeOverviewProps) {
   return (
@@ -333,7 +354,7 @@ function HomeOverviewComponent({
               <span>{homeRealPortfolioRows.length} élément(s)</span>
             </div>
             <div className="homePortfolioList">
-              {homeRealPortfolioRows.map((row) => <PortfolioCard activity={homePortfolioActivity[row.id]} formatDateTimeFr={formatDateTimeFr} formatSignedEuro={formatSignedEuro} key={row.id} onOpenPortfolio={onOpenPortfolio} onTogglePortfolioAi={onTogglePortfolioAi} renderSparkline={renderSparkline} row={row} variant="real" />)}
+              {homeRealPortfolioRows.map((row) => <PortfolioCard activity={homePortfolioActivity[row.id]} formatDateTimeFr={formatDateTimeFr} formatSignedEuro={formatSignedEuro} key={row.id} onOpenPortfolio={onOpenPortfolio} onTogglePortfolioAi={onTogglePortfolioAi} onTogglePortfolioEnabled={onTogglePortfolioEnabled} renderSparkline={renderSparkline} row={row} variant="real" />)}
             </div>
           </section>
 
@@ -343,7 +364,7 @@ function HomeOverviewComponent({
               <span>{homeVirtualPortfolioRows.length} élément(s)</span>
             </div>
             <div className="homePortfolioList">
-              {homeVirtualPortfolioRows.map((row) => <PortfolioCard activity={homePortfolioActivity[row.id]} formatDateTimeFr={formatDateTimeFr} formatSignedEuro={formatSignedEuro} key={row.id} onOpenPortfolio={onOpenPortfolio} onTogglePortfolioAi={onTogglePortfolioAi} renderSparkline={renderSparkline} row={row} variant="virtual" />)}
+              {homeVirtualPortfolioRows.map((row) => <PortfolioCard activity={homePortfolioActivity[row.id]} formatDateTimeFr={formatDateTimeFr} formatSignedEuro={formatSignedEuro} key={row.id} onOpenPortfolio={onOpenPortfolio} onTogglePortfolioAi={onTogglePortfolioAi} onTogglePortfolioEnabled={onTogglePortfolioEnabled} renderSparkline={renderSparkline} row={row} variant="virtual" />)}
             </div>
           </section>
         </div>

@@ -1782,6 +1782,7 @@ def admin_broker_connections(_: User = Depends(require_admin_user), db: Session 
 
 
 @app.get("/health")
+@app.get("/api/health")
 def health(db: Session = Depends(get_db)) -> dict:
     db.execute(select(Portfolio).limit(1))
     redis_ok = bool(redis_client.ping())

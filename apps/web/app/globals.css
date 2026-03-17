@@ -97,6 +97,7 @@ h1,h2,h3,p { margin:0; }
 @keyframes liveRowSweep { 0%{ transform:translateX(-130%) skewX(-18deg); opacity:0 } 18%{ opacity:.55 } 100%{ transform:translateX(180%) skewX(-18deg); opacity:0 } }
 @keyframes liveBadgePulse { 0%,100%{ box-shadow:0 0 0 0 rgba(239,68,68,.18) } 50%{ box-shadow:0 0 0 8px rgba(239,68,68,0) } }
 @keyframes horseGallop { 0%,100%{ transform:translateX(-2px) translateY(0) } 25%{ transform:translateX(1px) translateY(-2px) } 50%{ transform:translateX(4px) translateY(0) } 75%{ transform:translateX(1px) translateY(-1px) } }
+@keyframes runningRunner { 0%,100%{ transform:scaleX(-1) translateY(0); filter:drop-shadow(0 3px 6px rgba(15,23,42,.18)) } 25%{ transform:scaleX(-1) translateY(-2px); filter:drop-shadow(0 2px 4px rgba(15,23,42,.12)) } 50%{ transform:scaleX(-1) translateY(0); filter:drop-shadow(0 3px 6px rgba(15,23,42,.18)) } 75%{ transform:scaleX(-1) translateY(-1.5px); filter:drop-shadow(0 2.5px 5px rgba(15,23,42,.15)) } }
 @keyframes lotteryBallSpin { 0%{ transform:rotate(0deg) scale(1) } 50%{ transform:rotate(180deg) translateY(-2px) scale(1.08) } 100%{ transform:rotate(360deg) scale(1) } }
 @keyframes jackpotPulse { 0%,100%{ transform:scale(1); filter:drop-shadow(0 0 0 rgba(245,158,11,0)) } 50%{ transform:scale(1.12); filter:drop-shadow(0 0 10px rgba(245,158,11,.35)) } }
 @keyframes navDepthReveal {
@@ -186,14 +187,30 @@ h1,h2,h3,p { margin:0; }
   display: flex;
   align-items: center;
   gap: 14px;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  justify-content: flex-start;
   order: 1;
+  position: relative;
+  z-index: 130;
+}
+.brandActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.brandActions .appSwitchBtn {
+  display: inline-flex;
+  min-height: 32px;
 }
 .brandCluster { 
   display: flex; 
   align-items: center; 
   gap: 12px;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .appSwitchBtn.logoutBtn {
   font-size: .78rem;
@@ -215,13 +232,17 @@ h1,h2,h3,p { margin:0; }
 .brandCluster strong {
   display:block; font-size:.82rem; font-weight:800;
   letter-spacing:.1em; text-transform:uppercase; color:var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: min(64vw, 760px);
 }
 .robinWord {
   color:#2f5d37;
   letter-spacing:.14em;
   text-shadow:0 1px 0 rgba(255,255,255,.65);
 }
-.brandInfo { display:grid; gap:5px; }
+.brandInfo { display:grid; gap:5px; min-width:0; }
 .brandCluster p { font-size:.72rem; color:var(--muted); margin-top:1px; max-width:40ch; }
 .persistentBreadcrumbNav {
   position: sticky;
@@ -378,20 +399,25 @@ h1,h2,h3,p { margin:0; }
 }
 
 .batteryTimelineMascot {
-  position:absolute;
-  top:14px;
-  left:calc(var(--goal-elapsed-pct, 0%) - 10px);
-  font-size:1rem;
-  line-height:1;
-  filter:drop-shadow(0 3px 6px rgba(15,23,42,.18));
-  transform:scaleX(-1);
+  position: absolute;
+  top: -2px;
+  left: clamp(0px, calc(var(--goal-elapsed-pct, 0%) - 10px), calc(100% - 18px));
+  font-size: .98rem;
+  line-height: 1;
+  filter: drop-shadow(0 3px 6px rgba(15,23,42,.18));
+  transform: scaleX(-1);
+  z-index: 50;
+  animation: runningRunner 0.6s infinite ease-in-out;
 }
 
 .batteryTimelineFinishDate {
   position: absolute;
   right: 0;
-  top: 12px;
+  top: 11px;
   transform: translateY(-108%);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: .6rem;
   font-weight: 800;
   letter-spacing: .03em;
@@ -401,6 +427,11 @@ h1,h2,h3,p { margin:0; }
   border-radius: 999px;
   padding: 3px 7px;
   white-space: nowrap;
+}
+
+.batteryTimelineFlag {
+  line-height: 1;
+  font-size: .76rem;
 }
 
 .batteryDelayInfo {
@@ -990,7 +1021,7 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
 
 /* ============================================================ LANDING */
 .landingCanvas {
-  display:grid; grid-template-columns:1.35fr 1fr; gap:24px; align-items:start;
+  display:grid; grid-template-columns:minmax(320px, 560px); gap:24px; align-items:start; justify-content:center;
   animation:fadeUp var(--dur-md) var(--ease-out) both;
 }
 .landingStoryCard {
@@ -1042,6 +1073,38 @@ h2 { font-size:.95rem; font-weight:700; color:var(--text); }
   background:var(--surface); box-shadow:var(--shadow-lg);
   position:sticky; top:80px;
   animation:popIn .35s var(--ease-out) .05s both;
+}
+
+.authExperienceForm {
+  display: grid;
+  gap: 12px;
+}
+
+.authField {
+  display: grid;
+  gap: 7px;
+  font-size: .8rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.authField input {
+  width: 100%;
+  padding: 13px 14px;
+  border-radius: 12px;
+  border: 1.5px solid var(--border-md);
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+
+.authField input:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+  transform: translateY(-1px);
+}
+
+.authField input::placeholder {
+  color: var(--subtle);
 }
 .toggleRow {
   display:flex; gap:4px; margin-bottom:22px;
@@ -2387,6 +2450,19 @@ small.neutral { color: var(--muted); font-weight: 700; }
     flex: 0 0 auto;
     margin-left: auto;
   }
+  .brandRow {
+    flex-wrap: nowrap;
+    row-gap: 0;
+    justify-content: flex-start;
+  }
+  .brandActions {
+    width: auto;
+    justify-content: flex-end;
+    margin-left: auto;
+  }
+  .brandCluster strong {
+    max-width: 50vw;
+  }
   .topbarUniverseProgressRow,
   .topbarMenuDock,
   .topbarProgressDock {
@@ -2927,6 +3003,7 @@ small.neutral { color: var(--muted); font-weight: 700; }
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
   margin-top: 14px;
+  order: 12;
 }
 
 .cockpitColumnPanel {
@@ -2948,6 +3025,19 @@ small.neutral { color: var(--muted); font-weight: 700; }
   border-radius: 14px;
   border: 1px solid var(--border);
   background: linear-gradient(145deg, rgba(255,255,255,.94), rgba(248,250,252,.92));
+}
+
+.cockpitTransactionButton {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  appearance: none;
+}
+
+.cockpitTransactionButton:hover {
+  border-color: var(--brand-border);
+  box-shadow: 0 10px 24px rgba(59,130,246,.09);
 }
 
 .cockpitTransactionRow.isLive {
@@ -3063,6 +3153,7 @@ small.neutral { color: var(--muted); font-weight: 700; }
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
   margin-top: 14px;
+  order: 11;
 }
 
 .cockpitPortfolioSection.real {
