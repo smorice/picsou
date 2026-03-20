@@ -4,17 +4,17 @@ import { memo } from 'react';
 
 type HeaderMenuSection = 'home' | 'finance' | 'paris' | 'account' | 'admin';
 type FinanceSubApp = 'crypto' | 'actions';
-type ParisApp = 'betting' | 'racing' | 'loto';
+type ParisApp = 'betting' | 'racing' | 'loto' | 'paris_test';
 type AdminSection = 'home' | 'approvals' | 'users' | 'audit' | 'transactions' | 'security';
 type AppView = 'overview' | 'dashboard' | 'portfolios' | 'settings' | 'admin' | 'strategies' | 'account';
 
 type TopbarNavigationProps = {
   animationKey: string;
   currentHeaderSection: HeaderMenuSection;
-  allowedApps: Array<'finance' | 'betting' | 'racing' | 'loto'>;
+  allowedApps: Array<'finance' | 'betting' | 'racing' | 'loto' | 'paris_test'>;
   hasParisApps: boolean;
   canAccessAdmin: boolean;
-  activeApp: 'finance' | 'betting' | 'racing' | 'loto';
+  activeApp: 'finance' | 'betting' | 'racing' | 'loto' | 'paris_test';
   appView: AppView;
   financeSubApp: FinanceSubApp;
   topbarParisActiveApp: ParisApp;
@@ -57,7 +57,7 @@ function TopbarNavigationComponent({
   openParisTopbarView,
   onAdminSectionChange,
 }: TopbarNavigationProps) {
-  const isParisSectionActive = activeApp === 'betting' || activeApp === 'racing' || activeApp === 'loto';
+  const isParisSectionActive = activeApp === 'betting' || activeApp === 'racing' || activeApp === 'loto' || activeApp === 'paris_test';
 
   return (
     <div className="topbarNavStack" key={animationKey}>
@@ -71,6 +71,9 @@ function TopbarNavigationComponent({
             ) : null}
             {hasParisApps ? (
               <button className={isParisSectionActive && appView !== 'account' && appView !== 'admin' && appView !== 'overview' ? 'appSwitchBtn betting active' : 'appSwitchBtn betting'} onClick={openParisParentMenu} type="button">🎲 Paris en ligne</button>
+            ) : null}
+            {allowedApps.includes('paris_test') ? (
+              <button className={activeApp === 'paris_test' && appView !== 'account' && appView !== 'admin' && appView !== 'overview' ? 'appSwitchBtn betting active' : 'appSwitchBtn betting'} onClick={() => openParisTopbarBranch('paris_test')} type="button">🗼 Paris - TEST</button>
             ) : null}
           </div>
           <div className="topbarParentNavRight">
@@ -127,6 +130,7 @@ function TopbarNavigationComponent({
             <div className="topbarDepthChildren">
               {allowedApps.includes('betting') ? <button className={`topbarDepthBtn paris${topbarParisActiveApp === 'betting' ? ' active' : ''}`} onClick={() => openParisTopbarBranch('betting')} type="button">⚽ Paris sportifs</button> : null}
               {allowedApps.includes('racing') ? <button className={`topbarDepthBtn paris${topbarParisActiveApp === 'racing' ? ' active' : ''}`} onClick={() => openParisTopbarBranch('racing')} type="button">🏇 Paris hippiques</button> : null}
+              {allowedApps.includes('paris_test') ? <button className={`topbarDepthBtn paris${topbarParisActiveApp === 'paris_test' ? ' active' : ''}`} onClick={() => openParisTopbarBranch('paris_test')} type="button">🗼 Paris - TEST</button> : null}
               {allowedApps.includes('loto') ? <button className={`topbarDepthBtn paris${topbarParisActiveApp === 'loto' ? ' active' : ''}`} onClick={() => openParisTopbarBranch('loto')} type="button">🎟️ Loto</button> : null}
             </div>
           </div>
@@ -134,8 +138,12 @@ function TopbarNavigationComponent({
             <span className="topbarDepthLabel">Vues</span>
             <div className="topbarDepthChildren">
               <button className={`topbarDepthBtn paris isView${appView === 'dashboard' ? ' active' : ''}`} onClick={() => openParisTopbarView('dashboard')} type="button">Cockpit</button>
-              <button className={`topbarDepthBtn paris isView${((topbarParisActiveApp === 'loto' && appView === 'portfolios') || (topbarParisActiveApp !== 'loto' && appView === 'strategies')) ? ' active' : ''}`} onClick={() => openParisTopbarView(topbarParisActiveApp === 'loto' ? 'portfolios' : 'strategies')} type="button">Portefeuilles</button>
-              <button className={`topbarDepthBtn paris isView${appView === 'settings' ? ' active' : ''}`} onClick={() => openParisTopbarView('settings')} type="button">Options</button>
+              {topbarParisActiveApp === 'paris_test' ? (
+                <button className={`topbarDepthBtn paris isView${appView === 'dashboard' ? ' active' : ''}`} onClick={() => openParisTopbarView('dashboard')} type="button">Univers TEST</button>
+              ) : (
+                <button className={`topbarDepthBtn paris isView${((topbarParisActiveApp === 'loto' && appView === 'portfolios') || (topbarParisActiveApp !== 'loto' && appView === 'strategies')) ? ' active' : ''}`} onClick={() => openParisTopbarView(topbarParisActiveApp === 'loto' ? 'portfolios' : 'strategies')} type="button">Portefeuilles</button>
+              )}
+              <button className={`topbarDepthBtn paris isView${appView === 'settings' ? ' active' : ''}`} onClick={() => openParisTopbarView(topbarParisActiveApp === 'paris_test' ? 'dashboard' : 'settings')} type="button">Options</button>
             </div>
           </div>
         </>

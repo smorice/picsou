@@ -2,7 +2,7 @@
 
 import { memo } from 'react';
 
-type AppKey = 'finance' | 'betting' | 'racing' | 'loto';
+type AppKey = 'finance' | 'betting' | 'racing' | 'loto' | 'paris_test';
 type GoalPeriod = '7d' | '1m' | '3m' | '1y';
 type UserRiskProfile = 'low' | 'medium' | 'high';
 type AgentMode = 'manual' | 'supervised' | 'autopilot';

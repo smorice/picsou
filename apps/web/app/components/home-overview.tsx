@@ -2,7 +2,7 @@
 
 import { memo, ReactNode } from 'react';
 
-type HomeAppKey = 'finance' | 'betting' | 'racing' | 'loto';
+type HomeAppKey = 'finance' | 'betting' | 'racing' | 'loto' | 'paris_test';
 type Tone = 'up' | 'down' | 'neutral';
 type StatusTone = 'ok' | 'idle' | 'warn';
 
@@ -88,6 +88,7 @@ const LIVE_WINDOWS_MS: Record<HomeAppKey, number> = {
   finance: 20 * 60 * 1000,
   betting: 2 * 60 * 60 * 1000 + 20 * 60 * 1000,
   racing: 35 * 60 * 1000,
+  paris_test: 2 * 60 * 60 * 1000 + 20 * 60 * 1000,
   loto: 18 * 60 * 1000,
 };
 
@@ -95,6 +96,7 @@ const BOARD_SIGNAL_LABELS: Record<HomeAppKey, string> = {
   finance: 'MKT',
   betting: 'BET',
   racing: 'PMU',
+  paris_test: 'TEST',
   loto: 'FDJ',
 };
 
@@ -102,6 +104,7 @@ const HOME_APP_ICONS: Record<HomeAppKey, string> = {
   finance: '🏦',
   betting: '⚽',
   racing: '🏇',
+  paris_test: '🗼',
   loto: '🎟️',
 };
 
